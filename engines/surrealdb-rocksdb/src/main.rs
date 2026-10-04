@@ -469,7 +469,7 @@ async fn main() -> Result<()> {
     let db_bytes = dir_size(&path);
 
     let result = Measurement {
-        format_version: 4,
+        format_version: 5,
         lane: "record",
         engine: args.engine,
         engine_version: args.engine.version(),

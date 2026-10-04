@@ -79,6 +79,12 @@ Dimensional KV sweeps (locality, misses, key shape/size, value entropy, write pl
 
     ./scripts/run-kv-dimensional-matrix.sh quick
 
+Shared-database concurrency scaling on a multi-core host (fixed total work at 1/2/4/8 clients in quick mode; full mode also includes 16-client oversubscription):
+
+    ./scripts/run-kv-concurrency-matrix.sh quick
+
+The concurrency lane uses native engine sharing/cloning, not one database per client and not a benchmark-side global mutex. lkv 0.2.1 is explicitly unsupported because its current writer API cannot be shared/cloned without external serialization.
+
 Calibrated I/O-dependence, using a completed fio baseline run:
 
     ./scripts/run-io-contention-matrix.sh quick results/runs/FIO_RUN_ID

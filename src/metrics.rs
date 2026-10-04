@@ -1,5 +1,11 @@
 use serde::Serialize;
-use std::{collections::BTreeMap, fs, process::Command, sync::OnceLock, time::Duration};
+use std::{
+    collections::BTreeMap,
+    fs,
+    process::Command,
+    sync::OnceLock,
+    time::{Duration, Instant},
+};
 
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct ProcSnapshot {
@@ -25,6 +31,8 @@ pub struct ProcSnapshot {
     process_cpu_ticks: u64,
     #[serde(skip)]
     clock_ticks_per_second: u64,
+    #[serde(skip)]
+    captured_at: Option<Instant>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -39,6 +47,8 @@ struct TaskCounters {
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct ProcDelta {
     pub cpu_runtime_ns: u64,
+    pub process_cpu_tick_runtime_ns: u64,
+    pub process_cpu_tick_minus_task_ns: u64,
     pub runqueue_wait_ns: u64,
     pub timeslices: u64,
     pub minflt: u64,
@@ -58,6 +68,7 @@ pub struct ProcDelta {
     pub threads_after: u64,
     pub cpu_runtime_fraction_of_wall: f64,
     pub runqueue_wait_fraction_of_wall: f64,
+    pub accounting_wall_ns: u64,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -78,6 +89,8 @@ pub struct SystemSnapshot {
     pub pswpout: u64,
     pub pgscan_direct: u64,
     pub pgscan_kswapd: u64,
+    #[serde(skip)]
+    captured_at: Option<Instant>,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -93,6 +106,7 @@ pub struct SystemDelta {
     pub pswpout: u64,
     pub pgscan_direct: u64,
     pub pgscan_kswapd: u64,
+    pub accounting_wall_ns: u64,
 }
 
 fn parse_colon_numbers(path: &str) -> BTreeMap<String, u64> {
@@ -287,11 +301,18 @@ impl ProcSnapshot {
             task_counters,
             process_cpu_ticks,
             clock_ticks_per_second,
+            captured_at: Some(Instant::now()),
         }
     }
 
     pub fn delta(&self, after: &Self, elapsed: Duration) -> ProcDelta {
-        let wall_ns = elapsed.as_nanos().max(1) as f64;
+        let accounting_elapsed = self
+            .captured_at
+            .zip(after.captured_at)
+            .and_then(|(before, after)| after.checked_duration_since(before))
+            .unwrap_or(elapsed);
+        let accounting_wall_ns = accounting_elapsed.as_nanos().max(1).min(u64::MAX as u128) as u64;
+        let wall_ns = accounting_wall_ns as f64;
 
         let task_cpu_runtime_ns = task_delta(&self.task_counters, &after.task_counters, |task| {
             task.cpu_runtime_ns
@@ -304,7 +325,13 @@ impl ProcSnapshot {
         let process_cpu_runtime_ns = ((tick_delta as u128) * 1_000_000_000u128
             / ticks_per_second as u128)
             .min(u64::MAX as u128) as u64;
-        let cpu_runtime_ns = task_cpu_runtime_ns.max(process_cpu_runtime_ns);
+        // schedstat is nanosecond-resolution and is the reported CPU metric.
+        // The process-wide USER_HZ counter remains diagnostic only: taking
+        // max(task_ns, tick_ns) badly overestimates very short runs because one
+        // 10 ms tick can dwarf a millisecond-scale benchmark interval.
+        let cpu_runtime_ns = task_cpu_runtime_ns;
+        let process_cpu_tick_minus_task_ns =
+            process_cpu_runtime_ns.saturating_sub(task_cpu_runtime_ns);
         let runqueue_wait_ns = task_delta(&self.task_counters, &after.task_counters, |task| {
             task.runqueue_wait_ns
         });
@@ -322,6 +349,8 @@ impl ProcSnapshot {
 
         ProcDelta {
             cpu_runtime_ns,
+            process_cpu_tick_runtime_ns: process_cpu_runtime_ns,
+            process_cpu_tick_minus_task_ns,
             runqueue_wait_ns,
             timeslices,
             minflt: saturating_delta(after.minflt, self.minflt),
@@ -344,6 +373,7 @@ impl ProcSnapshot {
             threads_after: after.threads,
             cpu_runtime_fraction_of_wall: cpu_runtime_ns as f64 / wall_ns,
             runqueue_wait_fraction_of_wall: runqueue_wait_ns as f64 / wall_ns,
+            accounting_wall_ns,
         }
     }
 }
@@ -373,10 +403,17 @@ impl SystemSnapshot {
             pswpout: *vm.get("pswpout").unwrap_or(&0),
             pgscan_direct: *vm.get("pgscan_direct").unwrap_or(&0),
             pgscan_kswapd: *vm.get("pgscan_kswapd").unwrap_or(&0),
+            captured_at: Some(Instant::now()),
         }
     }
 
     pub fn delta(&self, after: &Self) -> SystemDelta {
+        let accounting_wall_ns = self
+            .captured_at
+            .zip(after.captured_at)
+            .and_then(|(before, after)| after.checked_duration_since(before))
+            .map(|elapsed| elapsed.as_nanos().max(1).min(u64::MAX as u128) as u64)
+            .unwrap_or(1);
         SystemDelta {
             psi_cpu_some_us: saturating_delta(after.psi_cpu_some_us, self.psi_cpu_some_us),
             psi_io_some_us: saturating_delta(after.psi_io_some_us, self.psi_io_some_us),
@@ -389,6 +426,7 @@ impl SystemSnapshot {
             pswpout: saturating_delta(after.pswpout, self.pswpout),
             pgscan_direct: saturating_delta(after.pgscan_direct, self.pgscan_direct),
             pgscan_kswapd: saturating_delta(after.pgscan_kswapd, self.pgscan_kswapd),
+            accounting_wall_ns,
         }
     }
 }

@@ -69,6 +69,7 @@ def main() -> None:
             r["workload"],
             r["records"],
             r["ops_requested"],
+            r.get("clients", 1),
             r.get("value_bytes", r.get("payload_bytes")),
             r.get("value_pattern", "pseudo-random"),
             r.get("key_bytes", 8),
@@ -95,6 +96,7 @@ def main() -> None:
             workload,
             records,
             ops_requested,
+            clients,
             value_bytes,
             value_pattern,
             key_bytes,
@@ -139,6 +141,7 @@ def main() -> None:
                 "workload": workload,
                 "records": records,
                 "ops_requested": ops_requested,
+                "clients": clients,
                 "value_bytes": value_bytes,
                 "value_pattern": value_pattern,
                 "key_bytes": key_bytes,
@@ -150,11 +153,19 @@ def main() -> None:
                 "scan_len": scan_len,
                 "settle_ms": settle_ms,
                 "configuration": (
-                    f"k={key_bytes}/{key_shape} v={value_bytes}/{value_pattern} "
-                    f"access={access_pattern} miss={miss_percent}% "
-                    f"write={write_pattern} settle={settle_ms}ms"
-                    if lane == "kv"
-                    else f"payload={value_bytes} txn={txn_size}"
+                    (
+                        f"clients={clients} k={key_bytes}/{key_shape} "
+                        f"v={value_bytes}/{value_pattern} access={access_pattern} "
+                        f"miss={miss_percent}% write={write_pattern}"
+                    )
+                    if lane == "kv-concurrency"
+                    else (
+                        f"k={key_bytes}/{key_shape} v={value_bytes}/{value_pattern} "
+                        f"access={access_pattern} miss={miss_percent}% "
+                        f"write={write_pattern} settle={settle_ms}ms"
+                        if lane == "kv"
+                        else f"payload={value_bytes} txn={txn_size}"
+                    )
                 ),
                 "trials": trials,
                 "ops_per_s_median": statistics.median(throughputs),
@@ -172,6 +183,23 @@ def main() -> None:
                     float(r.get("measured_process", {}).get("cpu_runtime_ns", 0)) / max(int(r["ops_completed"]), 1)
                     for r in rs
                 ]) if any("measured_process" in r for r in rs) else None,
+                "cpu_cores_median": statistics.median([
+                    float(r.get("measured_process", {}).get("cpu_runtime_fraction_of_wall", 0.0))
+                    for r in rs
+                ]) if any("measured_process" in r for r in rs) else None,
+                "client_throughput_max_min_ratio_median": statistics.median([
+                    float(r["client_throughput_max_min_ratio"])
+                    for r in rs if "client_throughput_max_min_ratio" in r
+                ]) if any("client_throughput_max_min_ratio" in r for r in rs) else None,
+                "write_conflict_retries_median": statistics.median([
+                    int(r.get("write_conflict_retries", 0))
+                    for r in rs
+                ]) if any("write_conflict_retries" in r for r in rs) else None,
+                "write_conflict_retries_per_k_write_ops_median": statistics.median([
+                    1000.0 * float(r.get("write_conflict_retries", 0))
+                    / max(int(r.get("writes", 0)) + int(r.get("deletes", 0)), 1)
+                    for r in rs
+                ]) if any("write_conflict_retries" in r for r in rs) else None,
                 "runqueue_wait_fraction_median": statistics.median([
                     float(r.get("measured_process", {}).get("runqueue_wait_fraction_of_wall", 0.0))
                     for r in rs
@@ -189,7 +217,13 @@ def main() -> None:
                     for r in rs
                 ]) if any("measured_process" in r for r in rs) else None,
                 "io_psi_full_fraction_median": statistics.median([
-                    float(r.get("measured_system_delta", {}).get("psi_io_full_us", 0)) / max(float(r["elapsed_s"]) * 1_000_000.0, 1.0)
+                    float(r.get("measured_system_delta", {}).get("psi_io_full_us", 0))
+                    / max(
+                        float(r.get("measured_system_delta", {}).get("accounting_wall_ns", 0))
+                        / 1000.0
+                        or float(r["elapsed_s"]) * 1_000_000.0,
+                        1.0,
+                    )
                     for r in rs
                 ]) if any("measured_system_delta" in r for r in rs) else None,
                 "swap_activity_pages_median": statistics.median([
@@ -212,6 +246,52 @@ def main() -> None:
             }
         )
 
+    # Concurrency rows are grouped by client count. Attach scaling metrics
+    # against the otherwise-identical 1-client row after all groups exist.
+    concurrency_baselines = {}
+    for item in summary:
+        if item["lane"] != "kv-concurrency" or item["clients"] != 1:
+            continue
+        identity = (
+            item["format_version"], item["scenario"], item["engine"],
+            item["engine_version"], item["durability"], item["workload"],
+            item["records"], item["ops_requested"], item["value_bytes"],
+            item["value_pattern"], item["key_bytes"], item["key_shape"],
+            item["access_pattern"], item["miss_percent"], item["write_pattern"],
+            item["txn_size"], item["scan_len"], item["settle_ms"],
+        )
+        concurrency_baselines[identity] = item
+
+    for item in summary:
+        item["speedup_vs_c1"] = None
+        item["parallel_efficiency_vs_c1"] = None
+        item["p99_read_multiplier_vs_c1"] = None
+        item["p99_write_txn_multiplier_vs_c1"] = None
+        if item["lane"] != "kv-concurrency":
+            continue
+        identity = (
+            item["format_version"], item["scenario"], item["engine"],
+            item["engine_version"], item["durability"], item["workload"],
+            item["records"], item["ops_requested"], item["value_bytes"],
+            item["value_pattern"], item["key_bytes"], item["key_shape"],
+            item["access_pattern"], item["miss_percent"], item["write_pattern"],
+            item["txn_size"], item["scan_len"], item["settle_ms"],
+        )
+        base = concurrency_baselines.get(identity)
+        if base is None:
+            continue
+        base_rate = float(base["ops_per_s_median"])
+        if base_rate > 0:
+            speedup = float(item["ops_per_s_median"]) / base_rate
+            item["speedup_vs_c1"] = speedup
+            item["parallel_efficiency_vs_c1"] = speedup / max(int(item["clients"]), 1)
+        base_p99_read = base["p99_read_us_median"]
+        if base_p99_read not in (None, 0) and item["p99_read_us_median"] is not None:
+            item["p99_read_multiplier_vs_c1"] = float(item["p99_read_us_median"]) / float(base_p99_read)
+        base_p99_write = base["p99_write_txn_us_median"]
+        if base_p99_write not in (None, 0) and item["p99_write_txn_us_median"] is not None:
+            item["p99_write_txn_multiplier_vs_c1"] = float(item["p99_write_txn_us_median"]) / float(base_p99_write)
+
     md = []
     if problems:
         md += ["# Completeness warnings", ""]
@@ -223,8 +303,8 @@ def main() -> None:
         for durability in sorted({s["durability"] for s in summary if s["lane"] == lane}):
             md += [f"## {durability}", ""]
             md += [
-                "| schema | scenario | workload | config | engine | trials | median ops/s | IQR ops/s | median p99 read/op us | median p99 write-txn us | DB MiB | peak RSS MiB | prefill s | CPU ns/op | rq wait %wall | read B/op | write B/op | IO PSI full %wall | swap pages |",
-                "|---:|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+                "| schema | scenario | workload | config | engine | trials | median ops/s | IQR ops/s | speedup vs c1 | efficiency | CPU cores | client max/min | conflict retries/k write ops | median p99 read/op us | median p99 write-txn us | DB MiB | peak RSS MiB | prefill s | CPU ns/op | rq wait %wall | read B/op | write B/op | IO PSI full %wall | swap pages |",
+                "|---:|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
             ]
             block = [
                 s for s in summary
@@ -236,7 +316,7 @@ def main() -> None:
                 if p99 is None:
                     p99 = s["p99_operation_us_median"]
                 md.append(
-                    "| {schema} | {scenario} | {workload} | {config} | {engine} {version} | {trials} | {median} | {q1}–{q3} | {p99} | {tx} | {mib} | {rss} | {prefill} | {cpu} | {rq} | {readb} | {writeb} | {iopsi} | {swap} |".format(
+                    "| {schema} | {scenario} | {workload} | {config} | {engine} {version} | {trials} | {median} | {q1}–{q3} | {speedup} | {efficiency} | {cpucores} | {fairness} | {conflicts} | {p99} | {tx} | {mib} | {rss} | {prefill} | {cpu} | {rq} | {readb} | {writeb} | {iopsi} | {swap} |".format(
                         schema=s["format_version"],
                         scenario=s["scenario"],
                         workload=s["workload"],
@@ -247,6 +327,11 @@ def main() -> None:
                         median=fmt(s["ops_per_s_median"]),
                         q1=fmt(s["ops_per_s_q1"]),
                         q3=fmt(s["ops_per_s_q3"]),
+                        speedup=fmt(s["speedup_vs_c1"]) if s["speedup_vs_c1"] is not None else "—",
+                        efficiency=fmt(s["parallel_efficiency_vs_c1"]) if s["parallel_efficiency_vs_c1"] is not None else "—",
+                        cpucores=fmt(s["cpu_cores_median"]) if s["cpu_cores_median"] is not None else "—",
+                        fairness=fmt(s["client_throughput_max_min_ratio_median"]) if s["client_throughput_max_min_ratio_median"] is not None else "—",
+                        conflicts=fmt(s["write_conflict_retries_per_k_write_ops_median"]) if s["write_conflict_retries_per_k_write_ops_median"] is not None else "—",
                         p99=fmt(p99) if p99 is not None else "—",
                         tx=fmt(s["p99_write_txn_us_median"]) if s["p99_write_txn_us_median"] is not None else "—",
                         mib=fmt(s["db_bytes_median"] / (1024 * 1024)),

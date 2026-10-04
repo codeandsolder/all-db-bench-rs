@@ -4,7 +4,7 @@ use hdrhistogram::Histogram;
 use rand::{Rng, SeedableRng, rngs::SmallRng, seq::SliceRandom};
 use serde::Serialize;
 #[path = "../metrics.rs"]
-mod metrics;
+pub(crate) mod metrics;
 use metrics::{ProcDelta, ProcSnapshot, SystemDelta, SystemSnapshot};
 use std::{
     fs,
@@ -60,7 +60,7 @@ const HIST_MAX_NS: u64 = 60_000_000_000;
 
 #[derive(Clone, Copy, Debug, Serialize, ValueEnum)]
 #[serde(rename_all = "kebab-case")]
-enum EngineKind {
+pub(crate) enum EngineKind {
     Redb,
     Fjall,
     Surrealkv,
@@ -87,14 +87,14 @@ enum EngineKind {
 
 #[derive(Clone, Copy, Debug, Serialize, ValueEnum, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
-enum Durability {
+pub(crate) enum Durability {
     Relaxed,
     Sync,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, ValueEnum)]
 #[serde(rename_all = "kebab-case")]
-enum Workload {
+pub(crate) enum Workload {
     PointRead,
     RangeScan,
     ReadHeavy,
@@ -107,7 +107,7 @@ enum Workload {
 
 #[derive(Clone, Copy, Debug, Serialize, ValueEnum, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
-enum AccessPattern {
+pub(crate) enum AccessPattern {
     Auto,
     Uniform,
     Hot80,
@@ -116,7 +116,7 @@ enum AccessPattern {
 
 #[derive(Clone, Copy, Debug, Serialize, ValueEnum, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
-enum KeyShape {
+pub(crate) enum KeyShape {
     Sequential,
     SharedPrefix,
     Hashed,
@@ -124,7 +124,7 @@ enum KeyShape {
 
 #[derive(Clone, Copy, Debug, Serialize, ValueEnum, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
-enum ValuePattern {
+pub(crate) enum ValuePattern {
     PseudoRandom,
     Zeros,
     Repeated,
@@ -132,7 +132,7 @@ enum ValuePattern {
 
 #[derive(Clone, Copy, Debug, Serialize, ValueEnum, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
-enum WritePattern {
+pub(crate) enum WritePattern {
     Append,
     UpdateUniform,
     UpdateHot,
@@ -202,7 +202,7 @@ struct Args {
 }
 
 #[derive(Debug, Serialize)]
-struct Quantiles {
+pub(crate) struct Quantiles {
     count: u64,
     p50_us: f64,
     p95_us: f64,
@@ -294,7 +294,7 @@ struct Measurement {
     verification: Option<Verification>,
 }
 
-enum Engine {
+pub(crate) enum Engine {
     Redb(RedbDb),
     Fjall {
         db: FjallDb,
@@ -335,7 +335,7 @@ impl Args {
 }
 
 impl EngineKind {
-    fn version(self) -> &'static str {
+    pub(crate) fn version(self) -> &'static str {
         match self {
             Self::Redb => "4.3.0",
             Self::Fjall => "3.1.12",
@@ -361,7 +361,7 @@ impl EngineKind {
         }
     }
 
-    fn durability_mapping(self, d: Durability) -> Result<&'static str> {
+    pub(crate) fn durability_mapping(self, d: Durability) -> Result<&'static str> {
         Ok(match (self, d) {
             (Self::Redb, Durability::Relaxed) => "redb Durability::None",
             (Self::Redb, Durability::Sync) => "redb Durability::Immediate",
@@ -440,7 +440,11 @@ impl EngineKind {
 }
 
 impl Engine {
-    async fn open(kind: EngineKind, durability: Durability, path: &Path) -> Result<Self> {
+    pub(crate) async fn open(
+        kind: EngineKind,
+        durability: Durability,
+        path: &Path,
+    ) -> Result<Self> {
         fs::create_dir_all(path)?;
         match kind {
             EngineKind::Redb => {
@@ -607,7 +611,7 @@ impl Engine {
         }
     }
 
-    async fn get(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+    pub(crate) async fn get(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>> {
         Ok(match self {
             Self::Redb(db) => {
                 let txn = db.begin_read()?;
@@ -675,7 +679,7 @@ impl Engine {
         })
     }
 
-    async fn write_batch(
+    pub(crate) async fn write_batch(
         &mut self,
         durability: Durability,
         puts: &[(Vec<u8>, Vec<u8>)],
@@ -897,7 +901,7 @@ impl Engine {
         Ok(())
     }
 
-    async fn scan_count(&mut self, start: &[u8], end: &[u8]) -> Result<usize> {
+    pub(crate) async fn scan_count(&mut self, start: &[u8], end: &[u8]) -> Result<usize> {
         Ok(match self {
             Self::Redb(db) => {
                 let txn = db.begin_read()?;
@@ -1059,7 +1063,7 @@ impl Engine {
         })
     }
 
-    async fn close(&mut self) -> Result<()> {
+    pub(crate) async fn close(&mut self) -> Result<()> {
         if let Self::Turbokv(slot) = self {
             if let Some(db) = slot.take() {
                 db.close().await?;
@@ -1069,7 +1073,7 @@ impl Engine {
     }
 }
 
-fn mix_u64(mut x: u64) -> u64 {
+pub(crate) fn mix_u64(mut x: u64) -> u64 {
     x ^= x >> 30;
     x = x.wrapping_mul(0xbf58_476d_1ce4_e5b9);
     x ^= x >> 27;
@@ -1077,7 +1081,7 @@ fn mix_u64(mut x: u64) -> u64 {
     x ^ (x >> 31)
 }
 
-fn key(id: u64, len: usize, shape: KeyShape, seed: u64) -> Vec<u8> {
+pub(crate) fn key(id: u64, len: usize, shape: KeyShape, seed: u64) -> Vec<u8> {
     debug_assert!(len >= 8);
     let mut out = vec![0u8; len];
     match shape {
@@ -1107,7 +1111,7 @@ fn key(id: u64, len: usize, shape: KeyShape, seed: u64) -> Vec<u8> {
     out
 }
 
-fn sample_existing_id(
+pub(crate) fn sample_existing_id(
     rng: &mut SmallRng,
     records: u64,
     pattern: AccessPattern,
@@ -1155,7 +1159,7 @@ fn sample_read_id(rng: &mut SmallRng, args: &Args) -> (u64, bool) {
     }
 }
 
-fn value(id: u64, len: usize, salt: u64, pattern: ValuePattern) -> Vec<u8> {
+pub(crate) fn value(id: u64, len: usize, salt: u64, pattern: ValuePattern) -> Vec<u8> {
     match pattern {
         ValuePattern::Zeros => vec![0u8; len],
         ValuePattern::Repeated => {
@@ -1181,16 +1185,16 @@ fn value(id: u64, len: usize, salt: u64, pattern: ValuePattern) -> Vec<u8> {
     }
 }
 
-fn hist() -> Histogram<u64> {
+pub(crate) fn hist() -> Histogram<u64> {
     Histogram::new_with_bounds(1, HIST_MAX_NS, 3).unwrap()
 }
 
-fn record(h: &mut Histogram<u64>, d: Duration) {
+pub(crate) fn record(h: &mut Histogram<u64>, d: Duration) {
     let ns = d.as_nanos().min(HIST_MAX_NS as u128) as u64;
     let _ = h.record(ns.max(1));
 }
 
-fn quantiles(h: &Histogram<u64>) -> Quantiles {
+pub(crate) fn quantiles(h: &Histogram<u64>) -> Quantiles {
     let us = |v: u64| v as f64 / 1000.0;
     if h.is_empty() {
         return Quantiles {
@@ -1212,7 +1216,7 @@ fn quantiles(h: &Histogram<u64>) -> Quantiles {
     }
 }
 
-fn peak_rss_kib() -> u64 {
+pub(crate) fn peak_rss_kib() -> u64 {
     let Ok(status) = fs::read_to_string("/proc/self/status") else {
         return 0;
     };
@@ -1225,7 +1229,7 @@ fn peak_rss_kib() -> u64 {
         .unwrap_or(0)
 }
 
-fn dir_size(path: &Path) -> u64 {
+pub(crate) fn dir_size(path: &Path) -> u64 {
     fn walk(p: &Path, sum: &mut u64) {
         let Ok(md) = fs::symlink_metadata(p) else {
             return;
@@ -1739,7 +1743,7 @@ async fn main() -> Result<()> {
     let db_bytes = dir_size(&path);
 
     let result = Measurement {
-        format_version: 4,
+        format_version: 5,
         engine: args.engine,
         engine_version: args.engine.version(),
         durability: args.durability,

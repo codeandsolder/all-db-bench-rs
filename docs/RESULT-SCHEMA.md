@@ -126,7 +126,7 @@ verification.verification_ok is a measured property, not universally an assertio
 - Transaction holes or partial recovered batches remain consistency failures; durability mode does not excuse structural corruption.
 
 
-## Schema v4 process-accounting correction — 2026-10-04
+## Historical schema v4 process-accounting correction — 2026-10-04
 
 All newly generated raw-KV and record/database results use format_version 4. The lane-specific configuration fields introduced by v2/v3 remain unchanged; v4 exists because process CPU accounting changed materially.
 
@@ -135,3 +135,49 @@ Process snapshots now sum /proc/self/task/*/{schedstat,stat,status} across every
 A thread created and destroyed entirely between the two snapshots cannot be reconstructed from procfs, so these counters remain a lower bound for extremely short-lived worker threads. Process /proc/self/io remains process-wide.
 
 The summarizer includes format_version in its exact-match aggregation key and prints it in Markdown output. Results from old schemas therefore cannot be silently combined with v4 even when every workload field matches.
+
+
+## KV concurrency lane — schema v5
+
+kvconcurrency writes the same schema-v5 process/system resource objects as the raw-KV lane, with lane: "kv-concurrency" and additional concurrency identity/diagnostic fields:
+
+- clients: simultaneous client count; this is part of the exact aggregation key.
+- ops_requested: total logical work across all clients, held fixed when calculating scaling.
+- concurrency_handle: human-readable native sharing strategy (Arc/shared handle, native clones, or sled per-client clones).
+- client_measurements[]: per-client requested/completed operations, elapsed time, throughput, read/write/delete counts and HDR read/write-transaction latency quantiles.
+- client_elapsed_s_min/median/max.
+- client_ops_per_s_min/median/max.
+- client_throughput_max_min_ratio: a simple fairness/straggler indicator; 1.0 is perfectly even, larger is less even.
+- write_conflict_retries: total transparent optimistic-write retries across all clients. SurrealKV TransactionWriteConflict/TransactionRetry are retried with the same logical write set; successful-operation and latency accounting includes those attempts.
+- client_measurements[].write_conflict_retries: the corresponding per-client retry count.
+
+The coordinator records foreground wall time from the synchronized start barrier until all clients report completion. Client threads are kept alive until the process-after snapshot is captured so per-thread scheduler accounting does not lose completed-client TIDs.
+
+The summarizer keeps client count separate and, when a matching 1-client row exists, adds:
+
+- speedup_vs_c1;
+- parallel_efficiency_vs_c1 = speedup / clients;
+- p99_read_multiplier_vs_c1;
+- p99_write_txn_multiplier_vs_c1;
+- cpu_cores_median from process CPU runtime / wall time;
+- client_throughput_max_min_ratio_median.
+- write_conflict_retries_median and write_conflict_retries_per_k_write_ops_median.
+
+A 1-client concurrency result is the baseline for these ratios. It is not silently substituted with a row from the ordinary kv lane because the concurrency binary has different thread/barrier/runtime mechanics.
+
+
+## Schema v5 CPU-accounting precision correction — 2026-10-04
+
+All newly generated raw-KV, record/database and KV-concurrency results use format_version 5.
+
+Schema v4 introduced per-TID scheduler accounting but reported cpu_runtime_ns as max(per-TID schedstat delta, process-wide /proc/self/stat utime+stime converted from USER_HZ ticks). The latter is monotonic but coarse (typically 10 ms per tick); on millisecond-scale smoke cases it could therefore imply physically impossible CPU-core counts.
+
+In v5:
+
+- measured_process.cpu_runtime_ns is the sum of nanosecond-resolution schedstat CPU deltas matched by TID across the measurement boundaries;
+- process_cpu_tick_runtime_ns exposes the coarse process-wide utime+stime delta only as a diagnostic;
+- process_cpu_tick_minus_task_ns exposes its positive difference from the schedstat total, useful for spotting possible CPU from threads that were created and destroyed entirely between snapshots, but it must not be treated as exact unattributed CPU because tick quantization is coarse;
+- cpu_runtime_fraction_of_wall and all CPU-per-operation summaries use the schedstat value only.
+- measured_process.accounting_wall_ns is the monotonic time between completed process snapshots and is the denominator for CPU/runqueue fractions; measured_system_delta.accounting_wall_ns analogously brackets the system snapshots and is used for PSI fractions. Foreground elapsed_s remains the barrier-to-completion throughput timer.
+
+Concurrency client threads are intentionally kept alive through the after-snapshot, so their TIDs are present at both boundaries. Persistent engine/runtime workers are covered the same way. Extremely short-lived transient workers can still be undercounted; the process-tick diagnostic exists to make that risk visible rather than silently biasing the primary metric upward.

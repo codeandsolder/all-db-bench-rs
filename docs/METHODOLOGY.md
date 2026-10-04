@@ -135,9 +135,30 @@ Result NDJSON, summaries and provenance metadata are durable. Per-run database d
 
 ## Concurrency
 
-The primary throughput matrices remain single-client so their historical semantics do not change. The current laptop execution host exposes 8 logical CPUs, so a separate multi-client lane is now worthwhile, but it must be adapter-aware rather than forcing every database through an external lock.
+Concurrency is a separate raw-KV result lane (lane = "kv-concurrency"); it is never merged with the historical single-client throughput matrix.
 
-A compile-time probe showed that sled 1.0.0-alpha.124's current handle is Clone but not Sync, while lkv's write transaction API requires mutable database access. Hiding either behind one global mutex would make a graph that looks like engine scaling but actually measures benchmark-side serialization. The concurrency lane is therefore being implemented separately using only native share/clone/multi-handle mechanisms that preserve one logical database, and unsupported combinations will be reported explicitly. Concurrency results must never be merged with this single-client baseline.
+scripts/run-kv-concurrency-matrix.sh keeps total logical work fixed across client counts. Quick mode measures 1/2/4/8 simultaneous clients on the 8-logical-CPU laptop; full mode also includes 16 clients as a deliberate oversubscription/suboptimal case. Every case uses one shared logical database, one common prefill, one synchronized start barrier and disjoint append/delete ID ranges. Reads and update-in-place workloads intentionally contend on the same populated/hot sets.
+
+The harness uses each engine's native concurrency surface rather than forcing a common external lock:
+
+- redb, Manifold, TurboKV, ParityDB, RocksDB, MDBX, RoughDB and lsm-db use shared thread-safe handles via Arc;
+- Fjall, SurrealKV, heed, Persy and jammdb use their native cloneable handles;
+- sled 1.0.0-alpha.124 is Send + Clone but deliberately not Sync, so each client receives a native sled::Db clone pointing at the same database;
+- lkv 0.2.1 is explicitly unsupported for this lane: write transactions require mutable Database access and there is no native clone/shared writer handle. Putting it behind a benchmark mutex would falsely measure harness serialization as engine scaling.
+
+Async-capable engines share one multi-thread Tokio runtime. Client OS threads enter that runtime through a common Handle; this is important for engines such as TurboKV whose background durability tasks are tied to the runtime where the database was opened. The coordinator's synchronous wait is wrapped in Tokio block_in_place, so Tokio provisions replacement runtime capacity instead of silently stealing one worker from engine background tasks. An earlier per-client/current-thread runtime prototype was rejected because it could strand async durability work.
+
+Client threads remain alive until the coordinator takes the process-after resource snapshot. This preserves their TIDs for schedstat/runqueue/context-switch accounting. Reported CPU runtime uses nanosecond per-TID schedstat deltas. The coarser process-wide /proc/self/stat utime+stime delta is retained only as a diagnostic for CPU consumed by threads that are created and destroyed entirely between snapshots; it is never maxed into the reported CPU value because USER_HZ quantization badly distorts millisecond-scale runs.
+
+Each result includes aggregate HDR latency histograms plus per-client throughput/latency records and a max/min client-throughput ratio. The summarizer computes median speedup versus the otherwise-identical 1-client case, parallel efficiency (speedup / clients), CPU-core equivalents consumed and client fairness.
+
+Optimistic transaction conflicts are treated as part of the engine's concurrency cost, not as benchmark corruption. SurrealKV TransactionWriteConflict and TransactionRetry are retried with the same logical write set until commit succeeds (bounded at 10,000 retries for fail-safe termination). The timed write-transaction latency includes every failed attempt, and aggregate/per-client retry counts are emitted. Other errors still fail the case.
+
+Primary durability is strongest-supported: sync for engines with a durable-before-return API and relaxed/background for ParityDB. A smaller relaxed-mode scaling subset is run separately for engines that expose a meaningful relaxed path. Durability remains part of the exact grouping key.
+
+The core concurrency matrix includes point reads, read-heavy, balanced, tiny one-record transactions, batched write bursts and churn. A smaller dedicated delete-burst slice measures concurrent tombstone/free-space behavior without multiplying every client count into every stress dimension.
+
+Range-scan concurrency uses only engines/configurations with a native ordered seek/range API. paritydb-hash is omitted while paritydb-btree participates. Full mode includes 16 clients on the 8-CPU laptop intentionally; those rows measure oversubscription/queueing behavior rather than pretending 16 hardware threads exist.
 
 ## Comprehensive matrix expansion — 2026-10-04
 
