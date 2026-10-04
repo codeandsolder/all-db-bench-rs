@@ -1,0 +1,116 @@
+# Result schema
+
+Each isolated benchmark invocation appends exactly one JSON object to NDJSON.
+
+## Identity and configuration
+
+- `format_version`: schema version.
+- `engine`, `engine_version`: exact adapter target.
+- `durability`, `durability_mapping`: comparison lane plus the concrete engine API/configuration used.
+- `workload`, `records`, `value_bytes` or `payload_bytes`, `txn_size`, `scan_len`, `trial`, `seed`: complete workload definition needed to group repetitions.
+
+## Timing
+
+- `prefill_s`: database population time; never included in measured workload throughput.
+- `warmup_s`: deterministic warmup time; never included in measured workload throughput.
+- `elapsed_s`: measured workload wall time only.
+- `ops_completed`: logical workload operations completed.
+- `ops_per_s`: `ops_completed / elapsed_s`.
+
+For `range-scan`, one logical operation is one range query. `reads` records rows visited, while `ops_completed` records range queries, so row throughput can be derived as `reads / elapsed_s`.
+
+## Latency
+
+`read_latency` / `operation_latency` and `write_txn_latency` / `transaction_latency` contain actual HDR-histogram sample counts and p50/p95/p99/p99.9/max in microseconds.
+
+Write latency is per committed transaction, not divided by keys in the batch. Keep `txn_size` beside it when comparing results.
+
+## Resource/storage
+
+- `db_bytes`: recursive on-disk bytes after the engine has been closed and before optional cleanup. For schema-v3 KV runs with a settle window, `post_workload_settle.db_bytes_before/after` captures size while the engine remains open.
+- `peak_rss_kib`: Linux `VmHWM` for the process, including prefill and measured phase. It is a high-water mark, not steady-state RSS.
+- `db_kept`: whether the scratch database was retained with `--keep-db`.
+- `path`: logical scratch path used for the run; it may no longer exist when `db_kept=false`.
+
+## Aggregation
+
+`scripts/summarize.py` groups exact-compatible configurations and reports median throughput, IQR, median p99 latency, database size, peak RSS and prefill time across independent trials. It does not average unlike workload shapes or create uncertainty bands from adjacent database sizes.
+
+## Schema v2 additions — 2026-10-04
+
+All new results use format_version 2.
+
+Identity now includes scenario, allowing the core matrix, size sweeps, reopen lanes and recovery lanes to coexist without accidental aggregation. The summarizer also keys on ops_requested; unlike operation counts are never silently grouped.
+
+Open/reopen fields:
+
+- open_s: database open/recovery time before prefill.
+- reused_db: this invocation opened a pre-existing benchmark database.
+- prefill_skipped: no population phase ran in this invocation.
+- warmup_reads: requested deterministic benchmark warmup count.
+
+Measured-process resource object measured_process is a delta around the measured workload only:
+
+- cpu_runtime_ns, runqueue_wait_ns, timeslices
+- minflt, majflt
+- voluntary/involuntary context switches
+- rchar, wchar, syscr, syscw
+- kernel-accounted read_bytes, write_bytes, cancelled_write_bytes
+- RSS and thread count before/after the measured interval
+- CPU-runtime and runqueue-wait fractions of measured wall time
+
+system_before, system_after and measured_system_delta record load/memory snapshots plus PSI, page-fault, swap and reclaim counters. These are shared-host interference/context metrics, not process attribution.
+
+Crash-recovery verification runs may include verification:
+
+- expected/checked acknowledged prefix size and missing-prefix count;
+- number of tail records inspected;
+- contiguous unreported tail length, total tail records found and records found after the first gap;
+- whether the recovered tail preserves transaction-size atomicity;
+- aggregate verification_ok;
+- verification wall time.
+
+Wide KV campaigns also write one sidecar per case under device/ with raw whole-device block-stat counters before and after that case. Whole-device deltas must not be reported as process I/O on a shared host.
+
+
+## Schema v3 KV additions — 2026-10-04
+
+Raw-KV results now use `format_version: 3`. The record/database lane remains schema v2 because these new byte-KV shape controls do not apply there.
+
+Additional identity/configuration fields are part of the aggregation key:
+
+- `key_bytes`: exact generated key length. Minimum 8 bytes.
+- `key_shape`:
+  - `sequential`: ordered 64-bit ID prefix plus deterministic suffix;
+  - `shared-prefix`: constant prefix with the ordered 64-bit ID in the final 8 bytes;
+  - `hashed`: deterministic one-to-one 64-bit permutation plus deterministic suffix. This deliberately destroys ID order and is not valid for the ID-ordered range-scan workload.
+- `value_pattern`:
+  - `pseudo-random`: high-entropy deterministic bytes;
+  - `zeros`: maximally compressible zero-filled values;
+  - `repeated`: one deterministic 8-byte block repeated across the value.
+- `access_pattern`:
+  - `auto`: preserves the historical core behavior (uniform point-read/churn, 80/20 hot-set behavior for read-heavy/balanced);
+  - `uniform`;
+  - `hot80`: 80% of accesses target a 20% hot set;
+  - `hot95`: 95% of accesses target a 5% hot set.
+- `miss_percent`: requested percentage of reads aimed at deterministic keys outside the populated/written ID space.
+- `write_pattern` for tiny-txn/write-burst:
+  - `append`: new monotonically allocated IDs;
+  - `update-uniform`: updates uniformly sampled existing IDs;
+  - `update-hot`: updates an existing hot set using the configured locality, defaulting to 80/20 when access_pattern is auto/uniform.
+
+`delete-burst` is a new workload that deletes a unique sequential subset of the populated keys in transaction-sized batches. It intentionally rejects `ops > records` so a tombstone/reclamation run cannot silently become a repeated-delete benchmark.
+
+### Post-workload settle/deferred-work object
+
+When `settle_ms > 0`, `post_workload_settle` measures background/deferred work **after foreground throughput timing stops but before the engine is closed**:
+
+- `requested_ms`, `sample_ms`, `elapsed_s`;
+- `db_bytes_before`, `db_bytes_after`;
+- aggregate process delta for the whole settle window;
+- aggregate shared-host system delta for the whole settle window;
+- `samples[]`, each with elapsed/interval milliseconds, current on-disk size, process delta and system delta.
+
+This lane is intended to expose deferred compaction/checkpoint/writeback cost without charging it to foreground throughput. A fast foreground result followed by substantial settle CPU/write traffic is therefore visible rather than hidden.
+
+The summarizer groups on all schema-v3 identity fields and reports median settle CPU time, process-attributed settle write bytes and settle-window DB-size change where present.

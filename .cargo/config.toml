@@ -1,0 +1,3 @@
+[build]
+target-dir = "/tmp/rust-db-realistic-bench-target"
+rustflags = ["-C", "target-cpu=native"]

@@ -1,0 +1,13 @@
+# Generated benchmark data and build state
+target/
+data/
+results/
+.deps/
+
+# Local/editor/intermediate state
+*.bak.*
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.DS_Store
