@@ -61,7 +61,7 @@ Measured-process resource object measured_process is a delta around the measured
 
 system_before, system_after and measured_system_delta record load/memory snapshots plus PSI, page-fault, swap and reclaim counters. These are shared-host interference/context metrics, not process attribution.
 
-Crash-recovery verification runs may include verification:
+Raw-KV and record-lane crash-recovery verification runs may include verification:
 
 - expected/checked acknowledged prefix size and missing-prefix count;
 - number of tail records inspected;
@@ -115,6 +115,18 @@ This lane is intended to expose deferred compaction/checkpoint/writeback cost wi
 
 The summarizer groups on all schema-v3 identity fields and reports median settle CPU time, process-attributed settle write bytes and settle-window DB-size change where present.
 
+
+## CPU-contention campaign sidecars
+
+The CPU-contention runner does not introduce a new JSON schema version because requested pressure is carried by the scenario identity (cpu-contention-Npct) and the existing resource objects already contain the required measurements.
+
+Each campaign writes support.json with:
+- the exact allowed logical-CPU IDs used for pinning;
+- the 20 ms per-CPU duty-cycle pressure method;
+- the fact that pressure spans open/prefill/warmup as well as the measured phase;
+- the interpretation of Npct as requested background duty per allowed logical CPU, not measured total host utilization.
+
+The summarizer reports cpu_psi_some_fraction_median from measured_system_delta.psi_cpu_some_us / measured_system_delta.accounting_wall_ns. It remains separate from measured_process.runqueue_wait_fraction_of_wall, which is benchmark-process scheduler delay rather than host-wide CPU pressure.
 
 ## Crash-result interpretation
 
@@ -179,5 +191,6 @@ In v5:
 - process_cpu_tick_minus_task_ns exposes its positive difference from the schedstat total, useful for spotting possible CPU from threads that were created and destroyed entirely between snapshots, but it must not be treated as exact unattributed CPU because tick quantization is coarse;
 - cpu_runtime_fraction_of_wall and all CPU-per-operation summaries use the schedstat value only.
 - measured_process.accounting_wall_ns is the monotonic time between completed process snapshots and is the denominator for CPU/runqueue fractions; measured_system_delta.accounting_wall_ns analogously brackets the system snapshots and is used for PSI fractions. Foreground elapsed_s remains the barrier-to-completion throughput timer.
+- the summarizer exposes cpu_psi_some_fraction_median using that system accounting wall, alongside the existing I/O PSI metric.
 
 Concurrency client threads are intentionally kept alive through the after-snapshot, so their TIDs are present at both boundaries. Persistent engine/runtime workers are covered the same way. Extremely short-lived transient workers can still be undercounted; the process-tick diagnostic exists to make that risk visible rather than silently biasing the primary metric upward.

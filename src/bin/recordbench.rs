@@ -83,6 +83,14 @@ struct Args {
     skip_prefill: bool,
     #[arg(long, default_value_t = 5_000)]
     warmup_reads: u64,
+    #[arg(long)]
+    db_name: Option<String>,
+    #[arg(long)]
+    progress_file: Option<PathBuf>,
+    #[arg(long)]
+    verify_prefix_records: Option<u64>,
+    #[arg(long, default_value_t = 0)]
+    verify_tail_records: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, SurrealValue)]
@@ -99,6 +107,20 @@ struct Quantiles {
     p99_us: f64,
     p999_us: f64,
     max_us: f64,
+}
+
+#[derive(Debug, Serialize)]
+struct Verification {
+    expected_prefix_records: u64,
+    checked_prefix_records: u64,
+    missing_prefix_records: u64,
+    tail_checked_records: u64,
+    tail_prefix_present: u64,
+    tail_total_present: u64,
+    tail_present_after_gap: u64,
+    transaction_atomic_tail: bool,
+    verification_ok: bool,
+    verify_s: f64,
 }
 
 #[derive(Debug, Serialize)]
@@ -136,6 +158,7 @@ struct Measurement {
     reused_db: bool,
     prefill_skipped: bool,
     warmup_reads: u64,
+    verification: Option<Verification>,
 }
 
 enum Engine {
@@ -530,6 +553,10 @@ async fn run(
                 engine.upsert_one(id, &data).await?;
                 record(tx_hist, t.elapsed());
                 done += 1;
+                if let Some(progress_file) = &args.progress_file {
+                    fs::write(progress_file, format!("{done}\n"))
+                        .context("write record recovery progress marker")?;
+                }
             }
         }
         Workload::WriteBurst => {
@@ -552,15 +579,79 @@ async fn run(
                 engine.upsert_batch(&rows).await?;
                 record(tx_hist, t.elapsed());
                 done += n as u64;
+                if let Some(progress_file) = &args.progress_file {
+                    fs::write(progress_file, format!("{done}\n"))
+                        .context("write record recovery progress marker")?;
+                }
             }
         }
     }
     Ok(done)
 }
 
+async fn verify_recovery(
+    engine: &Engine,
+    args: &Args,
+    expected_prefix_records: u64,
+    tail_records: u64,
+) -> Result<Verification> {
+    let started = Instant::now();
+    let mut missing_prefix_records = 0u64;
+    for id in 0..expected_prefix_records {
+        if !engine.get(id).await? {
+            missing_prefix_records += 1;
+        }
+    }
+
+    let mut tail_prefix_present = 0u64;
+    let mut tail_total_present = 0u64;
+    let mut tail_present_after_gap = 0u64;
+    let mut gap_seen = false;
+    for id in expected_prefix_records..expected_prefix_records.saturating_add(tail_records) {
+        let present = engine.get(id).await?;
+        if present {
+            tail_total_present += 1;
+            if gap_seen {
+                tail_present_after_gap += 1;
+            } else {
+                tail_prefix_present += 1;
+            }
+        } else {
+            gap_seen = true;
+        }
+    }
+
+    let txn = args.txn_size.max(1) as u64;
+    let transaction_atomic_tail = tail_prefix_present == 0 || tail_prefix_present % txn == 0;
+    let verification_ok =
+        missing_prefix_records == 0 && tail_present_after_gap == 0 && transaction_atomic_tail;
+
+    Ok(Verification {
+        expected_prefix_records,
+        checked_prefix_records: expected_prefix_records,
+        missing_prefix_records,
+        tail_checked_records: tail_records,
+        tail_prefix_present,
+        tail_total_present,
+        tail_present_after_gap,
+        transaction_atomic_tail,
+        verification_ok,
+        verify_s: started.elapsed().as_secs_f64(),
+    })
+}
+
 #[tokio::main(flavor = "multi_thread", worker_threads = 1)]
 async fn main() -> Result<()> {
     let args = Args::parse();
+    if args.records == 0 {
+        bail!("--records must be greater than zero");
+    }
+    if args.progress_file.is_some()
+        && !matches!(args.workload, Workload::TinyTxn | Workload::WriteBurst)
+    {
+        bail!("--progress-file requires tiny-txn or write-burst");
+    }
+
     let run_name = format!(
         "{:?}-{:?}-{:?}-n{}-p{}-tx{}-trial{}",
         args.engine,
@@ -573,7 +664,15 @@ async fn main() -> Result<()> {
     )
     .to_lowercase()
     .replace('_', "-");
-    let path = args.root.join(run_name);
+    let path = if let Some(name) = &args.db_name {
+        let candidate = Path::new(name);
+        if candidate.components().count() != 1 || name == "." || name == ".." {
+            bail!("--db-name must be one plain path component");
+        }
+        args.root.join(candidate)
+    } else {
+        args.root.join(run_name)
+    };
     if path.exists() && !args.reuse_db {
         fs::remove_dir_all(&path).context("remove stale run directory")?;
     }
@@ -594,6 +693,19 @@ async fn main() -> Result<()> {
         let prefill_started = Instant::now();
         prefill(&engine, &args).await?;
         prefill_started.elapsed().as_secs_f64()
+    };
+    let verification = if let Some(expected_prefix_records) = args.verify_prefix_records {
+        Some(
+            verify_recovery(
+                &engine,
+                &args,
+                expected_prefix_records,
+                args.verify_tail_records,
+            )
+            .await?,
+        )
+    } else {
+        None
     };
 
     let warmup_started = Instant::now();
@@ -650,6 +762,7 @@ async fn main() -> Result<()> {
         reused_db: args.reuse_db,
         prefill_skipped: args.skip_prefill,
         warmup_reads: args.warmup_reads,
+        verification,
     };
     let line = serde_json::to_string(&result)?;
     if args.output == "-" {

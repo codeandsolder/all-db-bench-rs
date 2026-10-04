@@ -211,7 +211,7 @@ between prepare and reopen. The script refuses to emulate this with a large evic
 
 ## Sudden process termination and recovery
 
-run-crash-recovery.sh is a process-crash test, not a simulated power failure.
+run-crash-recovery.sh (raw KV) and run-record-crash-recovery.sh (SurrealDB/Turso/SQLite record lane) are process-crash tests, not simulated power failures.
 
 For every selected engine/durability/batch-size/delay combination it:
 
@@ -262,6 +262,16 @@ Hashed keys deliberately destroy ID order. They are valid for point/update tests
 
 Foreground workload timing ends before the settle window begins. During settling, the engine remains open and the harness samples process CPU/I/O, shared-host pressure context and database size at fixed intervals. This makes "fast foreground because work was deferred" visible without charging that work to the foreground latency distribution.
 
+## Controlled CPU/scheduler-contention campaign
+
+scripts/run-cpu-contention-matrix.sh measures sensitivity to external CPU scheduler pressure separately from the ordinary no-pressure leaderboard. It derives the actual CPU IDs from the process affinity mask rather than assuming CPUs are numbered 0..N-1.
+
+For every nonzero pressure point the runner starts one taskset-pinned worker on every allowed logical CPU. Each worker uses a 20 ms duty-cycle period at the requested busy percentage. This is deliberate: fully occupying only a subset of CPUs lets Linux migrate the database workload onto idle CPUs, so a nominal 50% load can otherwise produce almost no scheduling contention. Quick mode uses 0/25/50/75/100%; full adds 12%; smoke uses 0/50/100%.
+
+Pressure is sustained for the whole benchmark process invocation, including open, prefill, warmup and the measured phase. The measured workload still has its normal process-accounting boundaries. Each run writes support.json documenting the allowed CPU list and pressure method, plus per-case /proc/pressure/cpu snapshots. Results are labeled cpu-contention-Npct and must remain separate from no-pressure throughput results.
+
+The summarizer reports CPU PSI some fraction in addition to the benchmark process's own runqueue-wait fraction. PSI describes host-wide runnable work delayed for CPU; runqueue_wait_fraction describes scheduler delay charged directly to benchmark threads.
+
 ## Controlled I/O-dependence campaign
 
 scripts/run-io-contention-matrix.sh takes a completed run-io-baseline.sh result and uses its measured 4 KiB QD1 70/30 random-I/O rate as the calibration point. It runs the same database cases with independent direct-I/O fio pressure capped at explicit fractions of that baseline (quick mode: 0/10/30/60%; full adds 90%).
@@ -286,8 +296,8 @@ This ratio is an input logical-footprint target, not a claim about exact databas
 
 Before each campaign the runner requires substantial free disk headroom for WAL/SSTable/compaction amplification and refuses the run instead of filling the volume.
 
-## Current execution host and concurrency follow-up
+## Current execution host
 
-Code and canonical history now live at https://github.com/codeandsolder/all-db-bench-rs. Validation/execution moved from the I/O-contended cold-storage VPS to the laptop checkout under /srv/scratch/db-bench-2026-09-27. The laptop's ZFS-backed /srv/scratch has substantially more free space and 8 logical CPUs, making it suitable for out-of-core, compaction and future concurrency campaigns.
+Code and canonical history live at https://github.com/codeandsolder/all-db-bench-rs. Validation/execution moved from the I/O-contended cold-storage VPS to the laptop checkout under /srv/scratch/db-bench-2026-09-27. The laptop's ZFS-backed /srv/scratch has substantially more free space and 8 logical CPUs, making it the primary host for out-of-core, compaction, concurrency and controlled-pressure campaigns.
 
-Concurrency remains a separate result class. It will use native engine concurrency primitives and explicit support metadata rather than an external benchmark mutex.
+Shared-database concurrency is implemented as its own result class with native engine sharing/cloning and explicit support metadata; see the Concurrency section above.

@@ -70,6 +70,7 @@ Reopen/cache-state lanes:
 Sudden-process-death recovery:
 
     ./scripts/run-crash-recovery.sh quick
+    ./scripts/run-record-crash-recovery.sh quick
 
 Raw backing-volume calibration:
 
@@ -85,6 +86,10 @@ Shared-database concurrency scaling on a multi-core host (fixed total work at 1/
 
 The concurrency lane uses native engine sharing/cloning, not one database per client and not a benchmark-side global mutex. lkv 0.2.1 is explicitly unsupported because its current writer API cannot be shared/cloned without external serialization.
 
+Controlled CPU/scheduler contention (uniform duty-cycle pressure on every allowed logical CPU):
+
+    ./scripts/run-cpu-contention-matrix.sh quick
+
 Calibrated I/O-dependence, using a completed fio baseline run:
 
     ./scripts/run-io-contention-matrix.sh quick results/runs/FIO_RUN_ID
@@ -97,7 +102,7 @@ Explicit cgroup memory-budget dependence is root-only by design; build the KV bi
 
     sudo ./scripts/run-memory-limit-matrix.sh quick
 
-Do not merge warm reopen, root cold-cache, SIGKILL recovery, raw fio, calibrated I/O pressure, memory-limit, out-of-core, relaxed durability, sync durability, raw-KV and record-layer results into one leaderboard. They answer different questions.
+Do not merge warm reopen, root cold-cache, SIGKILL recovery, raw fio, controlled CPU pressure, calibrated I/O pressure, memory-limit, out-of-core, relaxed durability, sync durability, raw-KV and record-layer results into one leaderboard. They answer different questions.
 
 
 ## Latest engine set

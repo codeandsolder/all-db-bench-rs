@@ -216,6 +216,16 @@ def main() -> None:
                     1000.0 * float(r.get("measured_process", {}).get("majflt", 0)) / max(int(r["ops_completed"]), 1)
                     for r in rs
                 ]) if any("measured_process" in r for r in rs) else None,
+                "cpu_psi_some_fraction_median": statistics.median([
+                    float(r.get("measured_system_delta", {}).get("psi_cpu_some_us", 0))
+                    / max(
+                        float(r.get("measured_system_delta", {}).get("accounting_wall_ns", 0))
+                        / 1000.0
+                        or float(r["elapsed_s"]) * 1_000_000.0,
+                        1.0,
+                    )
+                    for r in rs
+                ]) if any("measured_system_delta" in r for r in rs) else None,
                 "io_psi_full_fraction_median": statistics.median([
                     float(r.get("measured_system_delta", {}).get("psi_io_full_us", 0))
                     / max(
@@ -303,8 +313,8 @@ def main() -> None:
         for durability in sorted({s["durability"] for s in summary if s["lane"] == lane}):
             md += [f"## {durability}", ""]
             md += [
-                "| schema | scenario | workload | config | engine | trials | median ops/s | IQR ops/s | speedup vs c1 | efficiency | CPU cores | client max/min | conflict retries/k write ops | median p99 read/op us | median p99 write-txn us | DB MiB | peak RSS MiB | prefill s | CPU ns/op | rq wait %wall | read B/op | write B/op | IO PSI full %wall | swap pages |",
-                "|---:|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+                "| schema | scenario | workload | config | engine | trials | median ops/s | IQR ops/s | speedup vs c1 | efficiency | CPU cores | client max/min | conflict retries/k write ops | median p99 read/op us | median p99 write-txn us | DB MiB | peak RSS MiB | prefill s | CPU ns/op | rq wait %wall | CPU PSI some %wall | read B/op | write B/op | IO PSI full %wall | swap pages |",
+                "|---:|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
             ]
             block = [
                 s for s in summary
@@ -316,7 +326,7 @@ def main() -> None:
                 if p99 is None:
                     p99 = s["p99_operation_us_median"]
                 md.append(
-                    "| {schema} | {scenario} | {workload} | {config} | {engine} {version} | {trials} | {median} | {q1}–{q3} | {speedup} | {efficiency} | {cpucores} | {fairness} | {conflicts} | {p99} | {tx} | {mib} | {rss} | {prefill} | {cpu} | {rq} | {readb} | {writeb} | {iopsi} | {swap} |".format(
+                    "| {schema} | {scenario} | {workload} | {config} | {engine} {version} | {trials} | {median} | {q1}–{q3} | {speedup} | {efficiency} | {cpucores} | {fairness} | {conflicts} | {p99} | {tx} | {mib} | {rss} | {prefill} | {cpu} | {rq} | {cpupsi} | {readb} | {writeb} | {iopsi} | {swap} |".format(
                         schema=s["format_version"],
                         scenario=s["scenario"],
                         workload=s["workload"],
@@ -339,6 +349,7 @@ def main() -> None:
                         prefill=fmt(s["prefill_s_median"]) if s["prefill_s_median"] is not None else "—",
                         cpu=fmt(s["cpu_ns_per_op_median"]) if s["cpu_ns_per_op_median"] is not None else "—",
                         rq=fmt(100.0 * s["runqueue_wait_fraction_median"]) if s["runqueue_wait_fraction_median"] is not None else "—",
+                        cpupsi=fmt(100.0 * s["cpu_psi_some_fraction_median"]) if s["cpu_psi_some_fraction_median"] is not None else "—",
                         readb=fmt(s["read_bytes_per_op_median"]) if s["read_bytes_per_op_median"] is not None else "—",
                         writeb=fmt(s["write_bytes_per_op_median"]) if s["write_bytes_per_op_median"] is not None else "—",
                         iopsi=fmt(100.0 * s["io_psi_full_fraction_median"]) if s["io_psi_full_fraction_median"] is not None else "—",

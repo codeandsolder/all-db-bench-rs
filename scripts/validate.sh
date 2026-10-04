@@ -14,6 +14,7 @@ uv --version
 rustfmt +1.98.1 --edition 2024 engines/surrealdb-rocksdb/src/main.rs engines/surrealdb-rocksdb/src/metrics.rs --check
 bash -n scripts/*.sh
 uv run python -m py_compile scripts/summarize.py
+python3 -m py_compile scripts/cpu-pressure-worker.py
 
 CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target} \
   "$ROOT/scripts/cargo-local-1.98.1.sh" check --features kv-all --bin kvbench
