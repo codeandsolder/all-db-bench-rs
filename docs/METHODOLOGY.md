@@ -17,7 +17,7 @@ Engines:
 - sled 1.0.0-alpha.124
 - lkv 0.2.1
 - TurboKV 0.6.0
-- Manifold 3.1.0 (sync lane; column-family WAL path)
+- Manifold 3.1.0 (sync lane; column-family no-WAL + Durability::Immediate primary path; default-WAL path retained only as a diagnostic negative control)
 - RocksDB 0.25.0 (mature C++ LSM reference; compression disabled in the neutral raw-KV baseline)
 - libmdbx 0.9.0 / MDBX (NoWriteMap mmap/B+tree reference)
 - Persy 1.8.1 (pure-Rust copy-on-write + journal/index engine)
@@ -49,7 +49,7 @@ Mappings in the raw KV lane:
 | sled | apply_batch, no explicit flush | apply_batch + Db::flush |
 | lkv | unsupported | commit (sync_data before publication) |
 | TurboKV | DbOptions::durable | DbOptions::paranoid |
-| Manifold | omitted | column-family WAL + Durability::Immediate |
+| Manifold | omitted | column-family without WAL + Durability::Immediate |
 | ParityDB hash / B-tree | default background commit/WAL/data-sync pipeline; commit acknowledges before persistence completes | unsupported: no public durable-before-return commit API |
 | RocksDB | WAL, sync=false | WAL, sync=true |
 | MDBX | NoWriteMap + SafeNoSync | NoWriteMap + Durable |
@@ -301,3 +301,30 @@ Before each campaign the runner requires substantial free disk headroom for WAL/
 Code and canonical history live at https://github.com/codeandsolder/all-db-bench-rs. Validation/execution moved from the I/O-contended cold-storage VPS to the laptop checkout under /srv/scratch/db-bench-2026-09-27. The laptop's ZFS-backed /srv/scratch has substantially more free space and 8 logical CPUs, making it the primary host for out-of-core, compaction, concurrency and controlled-pressure campaigns.
 
 Shared-database concurrency is implemented as its own result class with native engine sharing/cloning and explicit support metadata; see the Concurrency section above.
+
+
+## Simulated power-loss durability — dm-log-writes lane
+
+`scripts/run-powerloss-matrix.sh` is a separate sync-durability lane for raw KV (`BENCH_KIND=kv`, the default) and the record products (`BENCH_KIND=record`). It requires real root-capable loop/device-mapper control and refuses to substitute a userspace cache-thrashing approximation.
+
+Every case uses a fresh ext4 filesystem image derived from a clean, fully synced base image. The database is mounted at one stable path for base creation, live mutation and recovery; this is required for engines such as TurboKV that persist absolute SSTable paths in metadata.
+
+The cut protocol is deliberately ordered:
+
+1. run synchronous write batches and update an external progress file only after a database transaction returns;
+2. after the configured delay, send `SIGSTOP` to the writer and wait until the process is actually stopped;
+3. read the acknowledged-prefix marker while userspace is frozen;
+4. call `dmsetup suspend --noflush` on the `dm-log-writes` target, which quiesces target I/O without manufacturing a filesystem flush;
+5. insert a unique `dm-log-writes` mark and wait until `replay-log --find --end-mark` can see it;
+6. snapshot the log, kill the stopped writer, resume/unmount/remove the original mapper, and discard that live image;
+7. replay the captured durable log onto a pristine copy of the pre-write base image;
+8. mount the reconstructed image, allowing ordinary ext4 journal recovery, reopen the database and verify the entire acknowledged prefix plus the bounded unreported tail;
+9. unmount and run `e2fsck -f -n` on the reconstructed image.
+
+The post-suspend mark is essential. `dm-log-writes` completes the original target bio first and queues its own log record to a separate kernel thread. A database `fsync`/FUA can therefore return correctly before the logging device's superblock has caught up. Reading the log immediately at the cut produced false one-transaction losses and occasional missing-log magic. The mark is queued after the device is quiescent and updates the log superblock in-order, so waiting for that mark drains already-durable FUA/flush records without splicing ordinary unflushed writes into the durable set.
+
+Likewise, recovery is never run while the original mapper remains suspended. Sled 1.0.0-alpha.124 invokes the global `sync` command during recovery; leaving the intentionally frozen source filesystem mounted would make that unrelated global sync block forever. The runner snapshots the cut log first, then resumes and tears down the live source before replay/reopen.
+
+This models a worst-case stable block image according to the kernel's flush/FUA ordering rules. It is stronger than SIGKILL-with-kernel-alive testing, but it is still a software fault-injection model rather than a claim about a particular SSD controller, capacitor, firmware bug or torn-sector behavior. Those require physical-device/power-interruption testing.
+
+The primary Manifold 3.1.0 sync comparison uses `without_wal()` + `Durability::Immediate`. The upstream-default WAL configuration is exposed as `manifold-wal` only as an explicit diagnostic/negative control: it reproducibly loses the acknowledged post-base transaction under both true SIGKILL and the simulated power-loss lane, while no-WAL Immediate passes. It is intentionally excluded from default campaigns.

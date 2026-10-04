@@ -194,3 +194,19 @@ In v5:
 - the summarizer exposes cpu_psi_some_fraction_median using that system accounting wall, alongside the existing I/O PSI metric.
 
 Concurrency client threads are intentionally kept alive through the after-snapshot, so their TIDs are present at both boundaries. Persistent engine/runtime workers are covered the same way. Extremely short-lived transient workers can still be undercounted; the process-tick diagnostic exists to make that risk visible rather than silently biasing the primary metric upward.
+
+
+## Schema v6 recovery verification and power-loss sidecars — 2026-10-04
+
+Raw-KV and record results that contain recovery verification now use `format_version: 6`.
+
+The verification object adds two prefix-structure fields:
+
+- `prefix_contiguous_present`: number of expected prefix records present before the first missing key;
+- `prefix_present_after_gap`: expected-prefix records found after the first missing key.
+
+`verification_ok` now requires all expected prefix records to exist, `prefix_present_after_gap == 0`, `tail_present_after_gap == 0`, and transaction-size atomicity of the contiguous unreported tail. This distinguishes simple suffix loss from a structurally impossible hole inside the acknowledged prefix.
+
+The simulated power-loss campaign also writes one `powerloss/<case_id>.json` sidecar per completed cut. It contains the benchmark kind, engine/trial/transaction/delay identity, externally acknowledged operation count, expected prefix size, number of durable log entries, the post-suspend logger-mark entry, raw device-mapper status, writer-stop and device-suspend timing, and replay/mount/verify/unmount/fsck return codes. `support.json` records the pinned replay-log provenance, dm-log-writes target version, benchmark binary hash, filesystem/image sizes, and the exact cut/replay model.
+
+Power-loss sidecars are campaign evidence, not ordinary throughput rows, and are not aggregated into the performance leaderboard.

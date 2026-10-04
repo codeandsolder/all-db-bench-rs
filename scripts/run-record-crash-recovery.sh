@@ -163,6 +163,16 @@ for trial in $(seq 1 "$TRIALS"); do
             continue
           fi
 
+          if ! jq -e '
+            .verification.prefix_present_after_gap == 0
+            and .verification.tail_present_after_gap == 0
+            and .verification.transaction_atomic_tail == true
+          ' "$out" >/dev/null; then
+            record_failure "$case_id" structural-verification 1 "$verify_err"
+            echo "$case_id recovery STRUCTURAL verification FAILED" >&2
+            continue
+          fi
+
           if ! jq -e '.verification.verification_ok == true' "$out" >/dev/null; then
             if [[ "$dur" == sync ]]; then
               record_failure "$case_id" durable-verification 1 "$verify_err"
@@ -173,7 +183,7 @@ for trial in $(seq 1 "$TRIALS"); do
             jq -c --arg case_id "$case_id" \
               '{case_id:$case_id, engine:.engine, durability:.durability, verification:.verification}' \
               "$out" >> "$RUN_DIR/relaxed-ack-losses.ndjson"
-            echo "$case_id relaxed lane lost acknowledged records; recorded, not a harness failure" >&2
+            echo "$case_id relaxed lane lost a contiguous acknowledged suffix; recorded, not a harness failure" >&2
           fi
           clear_failure "$case_id"
           if jq -e '.verification.verification_ok == true' "$out" >/dev/null; then

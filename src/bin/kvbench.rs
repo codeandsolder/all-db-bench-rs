@@ -68,6 +68,7 @@ pub(crate) enum EngineKind {
     Sled,
     Lkv,
     Manifold,
+    ManifoldWal,
     Turbokv,
     ParitydbHash,
     ParitydbBtree,
@@ -216,6 +217,8 @@ struct Verification {
     expected_prefix_records: u64,
     checked_prefix_records: u64,
     missing_prefix_records: u64,
+    prefix_contiguous_present: u64,
+    prefix_present_after_gap: u64,
     tail_checked_records: u64,
     tail_prefix_present: u64,
     tail_total_present: u64,
@@ -343,7 +346,7 @@ impl EngineKind {
             Self::Heed => "0.22.1",
             Self::Sled => "1.0.0-alpha.124",
             Self::Lkv => "0.2.1",
-            Self::Manifold => "3.1.0",
+            Self::Manifold | Self::ManifoldWal => "3.1.0",
             Self::Turbokv => "0.6.0",
             Self::ParitydbHash | Self::ParitydbBtree => "0.5.6",
             #[cfg(feature = "kv-external")]
@@ -376,9 +379,15 @@ impl EngineKind {
             (Self::Lkv, Durability::Sync) => "lkv commit; sync_data before publication",
             (Self::Lkv, Durability::Relaxed) => bail!("lkv 0.2.1 has no relaxed commit mode"),
             (Self::Manifold, Durability::Sync) => {
-                "Manifold column-family WAL + Durability::Immediate; WAL fsync before visibility"
+                "Manifold column-family without WAL + Durability::Immediate; direct durable commit"
             }
-            (Self::Manifold, Durability::Relaxed) => bail!(
+            (Self::Manifold, Durability::Relaxed) => {
+                bail!("Manifold no-WAL comparison is sync-only")
+            }
+            (Self::ManifoldWal, Durability::Sync) => {
+                "Manifold default column-family WAL + Durability::Immediate; diagnostic configuration (3.1.0 fails abrupt-process recovery)"
+            }
+            (Self::ManifoldWal, Durability::Relaxed) => bail!(
                 "Manifold WAL path fsyncs even non-durable transaction records; relaxed lane intentionally omitted"
             ),
             (Self::Turbokv, Durability::Relaxed) => {
@@ -502,11 +511,19 @@ impl Engine {
                 };
                 Ok(Self::Lkv(db))
             }
-            EngineKind::Manifold => {
+            EngineKind::Manifold | EngineKind::ManifoldWal => {
                 if durability == Durability::Relaxed {
-                    bail!("Manifold WAL path intentionally omitted from relaxed lane");
+                    bail!("Manifold configurations are sync-only in this benchmark");
                 }
-                let db = ManifoldDb::builder().open(path.join("bench.manifold"))?;
+                let db = match kind {
+                    EngineKind::Manifold => ManifoldDb::builder()
+                        .without_wal()
+                        .open(path.join("bench.manifold"))?,
+                    EngineKind::ManifoldWal => {
+                        ManifoldDb::builder().open(path.join("bench.manifold"))?
+                    }
+                    _ => unreachable!(),
+                };
                 let cf = db.column_family_or_create("kv")?;
                 Ok(Self::Manifold { _db: db, cf })
             }
@@ -1590,20 +1607,30 @@ async fn verify_recovery(
 ) -> Result<Verification> {
     let started = Instant::now();
     let mut missing_prefix_records = 0u64;
+    let mut prefix_contiguous_present = 0u64;
+    let mut prefix_present_after_gap = 0u64;
+    let mut gap_seen = false;
     for id in 0..expected_prefix_records {
-        if engine
+        let present = engine
             .get(&key(id, args.key_bytes, args.key_shape, args.seed))
             .await?
-            .is_none()
-        {
+            .is_some();
+        if present {
+            if gap_seen {
+                prefix_present_after_gap += 1;
+            } else {
+                prefix_contiguous_present += 1;
+            }
+        } else {
             missing_prefix_records += 1;
+            gap_seen = true;
         }
     }
 
     let mut tail_prefix_present = 0u64;
     let mut tail_total_present = 0u64;
     let mut tail_present_after_gap = 0u64;
-    let mut gap_seen = false;
+    gap_seen = false;
     for id in expected_prefix_records..expected_prefix_records.saturating_add(tail_records) {
         let present = engine
             .get(&key(id, args.key_bytes, args.key_shape, args.seed))
@@ -1623,12 +1650,16 @@ async fn verify_recovery(
 
     let txn = args.txn_size.max(1) as u64;
     let transaction_atomic_tail = tail_prefix_present == 0 || tail_prefix_present % txn == 0;
-    let verification_ok =
-        missing_prefix_records == 0 && tail_present_after_gap == 0 && transaction_atomic_tail;
+    let verification_ok = missing_prefix_records == 0
+        && prefix_present_after_gap == 0
+        && tail_present_after_gap == 0
+        && transaction_atomic_tail;
     Ok(Verification {
         expected_prefix_records,
         checked_prefix_records: expected_prefix_records,
         missing_prefix_records,
+        prefix_contiguous_present,
+        prefix_present_after_gap,
         tail_checked_records: tail_records,
         tail_prefix_present,
         tail_total_present,
@@ -1743,7 +1774,7 @@ async fn main() -> Result<()> {
     let db_bytes = dir_size(&path);
 
     let result = Measurement {
-        format_version: 5,
+        format_version: 6,
         engine: args.engine,
         engine_version: args.engine.version(),
         durability: args.durability,

@@ -30,7 +30,7 @@ Not a pure-Rust storage engine, but still a valuable mmap/B+tree reference with 
 
 Crate: manifold-db 3.1.0, published 2026-08-28.
 
-Manifold is explicitly a fork of redb with column families and a WAL/group-commit design. The benchmark uses the column-family API rather than its inherited redb-compatible single-database surface: the interesting path writes a WAL entry, waits for group-commit fsync, then makes the prepared changes visible. It participates in the sync lane because that is the novel durability path worth comparing; its WAL implementation performs the sync step even when the underlying transaction durability enum is None.
+Manifold is explicitly a fork of redb with column families plus an optional WAL/group-commit path. The benchmark still uses the column-family API, but the primary `manifold` sync configuration now disables the WAL and uses `Durability::Immediate`. This is not an arbitrary tuning choice: Manifold 3.1.0's default WAL path reproducibly loses transactions that had already returned success under true SIGKILL, and the same loss is reproduced by the independent dm-log-writes power-loss model. The default-WAL configuration remains available as `manifold-wal` only for diagnostic/negative-control runs and is excluded from normal rankings.
 
 
 ### ParityDB 0.5.6
@@ -81,4 +81,4 @@ Transactional on-disk data structures and a useful historical pure-Rust referenc
 
 ### Concurrency note
 
-Manifold's advertised advantage is parallel writes across column families. The current cold-storage allocation exposes one logical CPU, so this first matrix measures its WAL/column-family path but is not a meaningful test of its headline multi-writer scaling. That requires a separate multi-core run.
+Manifold's advertised advantage is parallel writes across column families. Shared-database concurrency is now measured separately on the 8-logical-CPU laptop using the same primary no-WAL Immediate configuration; the broken default-WAL diagnostic is not used as the concurrency baseline.

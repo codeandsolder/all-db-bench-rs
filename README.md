@@ -72,6 +72,19 @@ Sudden-process-death recovery:
     ./scripts/run-crash-recovery.sh quick
     ./scripts/run-record-crash-recovery.sh quick
 
+Simulated power-loss durability through `dm-log-writes` (requires passwordless sudo/root block-device control on the isolated disposable images):
+
+    ./scripts/run-powerloss-matrix.sh quick
+    BENCH_KIND=record ./scripts/run-powerloss-matrix.sh quick
+
+The power-loss lane is separate from SIGKILL recovery. It freezes the writer first, records the acknowledged prefix, suspends the disposable device without flushing, drains only `dm-log-writes`' asynchronous logger through a post-suspend mark, reconstructs the worst-case stable image on a pristine base copy, mounts it for normal filesystem recovery, then runs the same prefix/hole/transaction-atomicity verifier plus `e2fsck -f -n`.
+
+Summarize either SIGKILL or power-loss recovery campaigns without mixing them into throughput results:
+
+    uv run scripts/summarize-recovery.py results/runs/RUN_ID \
+      --json-out results/runs/RUN_ID/recovery-summary.json \
+      --markdown-out results/runs/RUN_ID/recovery-summary.md
+
 Raw backing-volume calibration:
 
     ./scripts/run-io-baseline.sh quick
@@ -102,7 +115,7 @@ Explicit cgroup memory-budget dependence is root-only by design; build the KV bi
 
     sudo ./scripts/run-memory-limit-matrix.sh quick
 
-Do not merge warm reopen, root cold-cache, SIGKILL recovery, raw fio, controlled CPU pressure, calibrated I/O pressure, memory-limit, out-of-core, relaxed durability, sync durability, raw-KV and record-layer results into one leaderboard. They answer different questions.
+Do not merge warm reopen, root cold-cache, SIGKILL recovery, simulated power-loss recovery, raw fio, controlled CPU pressure, calibrated I/O pressure, memory-limit, out-of-core, relaxed durability, sync durability, raw-KV and record-layer results into one leaderboard. They answer different questions.
 
 
 ## Latest engine set
