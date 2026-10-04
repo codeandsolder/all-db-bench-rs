@@ -45,8 +45,15 @@ TARGET_DIR="${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target}"
 BIN="$TARGET_DIR/release/kvbench"
 CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local-1.98.1.sh" build --release --features kv-all --bin kvbench
 
-ENGINES=(redb fjall surrealkv heed sled lkv manifold turbokv rocksdb mdbx persy roughdb jammdb lsmdb)
+ENGINES=(redb fjall surrealkv heed sled lkv manifold turbokv paritydb-hash paritydb-btree rocksdb mdbx persy roughdb jammdb lsmdb)
 JOBS=()
+
+primary_durability() {
+  case "$1" in
+    paritydb-hash|paritydb-btree) echo relaxed ;;
+    *) echo sync ;;
+  esac
+}
 
 valid() {
   local engine=$1 dur=$2 workload=$3 key_shape=$4
@@ -54,7 +61,9 @@ valid() {
   [[ "$engine" == manifold && "$dur" == relaxed ]] && return 1
   [[ "$engine" == jammdb && "$dur" == relaxed ]] && return 1
   [[ "$engine" == lsmdb && "$dur" == relaxed ]] && return 1
+  [[ "$dur" == sync && ( "$engine" == paritydb-hash || "$engine" == paritydb-btree ) ]] && return 1
   [[ "$engine" == lkv && "$workload" == range-scan ]] && return 1
+  [[ "$engine" == paritydb-hash && "$workload" == range-scan ]] && return 1
   [[ "$key_shape" == hashed && "$workload" == range-scan ]] && return 1
   return 0
 }
@@ -72,7 +81,7 @@ for trial in $(seq 1 "$TRIALS"); do
   for access in uniform hot80 hot95; do
     for workload in point-read read-heavy; do
       for engine in "${ENGINES[@]}"; do
-        add_job "access-$access" "$engine" sync "$workload" "$RECORDS" "$OPS" 256 pseudo-random 8 sequential "$access" 0 append 100 100 0 "$trial"
+        add_job "access-$access" "$engine" "$(primary_durability "$engine")" "$workload" "$RECORDS" "$OPS" 256 pseudo-random 8 sequential "$access" 0 append 100 100 0 "$trial"
       done
     done
   done
@@ -80,7 +89,7 @@ for trial in $(seq 1 "$TRIALS"); do
   # Negative lookup dependence.
   for miss in "${MISS_RATIOS[@]}"; do
     for engine in "${ENGINES[@]}"; do
-      add_job "miss-p$miss" "$engine" sync point-read "$RECORDS" "$OPS" 256 pseudo-random 8 sequential uniform "$miss" append 100 100 0 "$trial"
+      add_job "miss-p$miss" "$engine" "$(primary_durability "$engine")" point-read "$RECORDS" "$OPS" 256 pseudo-random 8 sequential uniform "$miss" append 100 100 0 "$trial"
     done
   done
 
@@ -88,12 +97,12 @@ for trial in $(seq 1 "$TRIALS"); do
   for key_bytes in "${KEY_SIZES[@]}"; do
     for key_shape in sequential shared-prefix hashed; do
       for engine in "${ENGINES[@]}"; do
-        add_job "key-k${key_bytes}-${key_shape}" "$engine" sync point-read "$RECORDS" "$OPS" 256 pseudo-random "$key_bytes" "$key_shape" uniform 0 append 100 100 0 "$trial"
+        add_job "key-k${key_bytes}-${key_shape}" "$engine" "$(primary_durability "$engine")" point-read "$RECORDS" "$OPS" 256 pseudo-random "$key_bytes" "$key_shape" uniform 0 append 100 100 0 "$trial"
       done
     done
     for key_shape in sequential shared-prefix; do
       for engine in "${ENGINES[@]}"; do
-        add_job "keyscan-k${key_bytes}-${key_shape}" "$engine" sync range-scan "$RECORDS" "$((OPS / 10 + 1))" 256 pseudo-random "$key_bytes" "$key_shape" uniform 0 append 100 100 0 "$trial"
+        add_job "keyscan-k${key_bytes}-${key_shape}" "$engine" "$(primary_durability "$engine")" range-scan "$RECORDS" "$((OPS / 10 + 1))" 256 pseudo-random "$key_bytes" "$key_shape" uniform 0 append 100 100 0 "$trial"
       done
     done
   done
@@ -103,7 +112,7 @@ for trial in $(seq 1 "$TRIALS"); do
     for value_pattern in pseudo-random zeros repeated; do
       for workload in point-read write-burst; do
         for engine in "${ENGINES[@]}"; do
-          add_job "value-${value}-${value_pattern}" "$engine" sync "$workload" "$RECORDS" "$OPS" "$value" "$value_pattern" 8 sequential uniform 0 append 100 100 0 "$trial"
+          add_job "value-${value}-${value_pattern}" "$engine" "$(primary_durability "$engine")" "$workload" "$RECORDS" "$OPS" "$value" "$value_pattern" 8 sequential uniform 0 append 100 100 0 "$trial"
         done
       done
     done
@@ -112,7 +121,7 @@ for trial in $(seq 1 "$TRIALS"); do
   # Append vs in-place updates.
   for write_pattern in append update-uniform update-hot; do
     for engine in "${ENGINES[@]}"; do
-      add_job "write-${write_pattern}" "$engine" sync write-burst "$RECORDS" "$OPS" 256 pseudo-random 8 sequential hot80 0 "$write_pattern" 100 100 0 "$trial"
+      add_job "write-${write_pattern}" "$engine" "$(primary_durability "$engine")" write-burst "$RECORDS" "$OPS" 256 pseudo-random 8 sequential hot80 0 "$write_pattern" 100 100 0 "$trial"
     done
   done
 
@@ -120,8 +129,8 @@ for trial in $(seq 1 "$TRIALS"); do
   delete_ops=$(( OPS < RECORDS ? OPS : RECORDS ))
   for settle in "${SETTLE_WINDOWS[@]}"; do
     for engine in "${ENGINES[@]}"; do
-      add_job "delete-settle-${settle}ms" "$engine" sync delete-burst "$RECORDS" "$delete_ops" 256 pseudo-random 8 sequential uniform 0 append 100 100 "$settle" "$trial"
-      add_job "write-settle-${settle}ms" "$engine" sync write-burst "$RECORDS" "$OPS" 256 pseudo-random 8 sequential uniform 0 append 100 100 "$settle" "$trial"
+      add_job "delete-settle-${settle}ms" "$engine" "$(primary_durability "$engine")" delete-burst "$RECORDS" "$delete_ops" 256 pseudo-random 8 sequential uniform 0 append 100 100 "$settle" "$trial"
+      add_job "write-settle-${settle}ms" "$engine" "$(primary_durability "$engine")" write-burst "$RECORDS" "$OPS" 256 pseudo-random 8 sequential uniform 0 append 100 100 "$settle" "$trial"
     done
   done
 done

@@ -1,4 +1,4 @@
-# Engine survey — 2026-09-27
+# Engine survey — 2026-10-04
 
 ## In the benchmark
 
@@ -30,8 +30,16 @@ Not a pure-Rust storage engine, but still a valuable mmap/B+tree reference with 
 
 Crate: manifold-db 3.1.0, published 2026-08-28.
 
-Manifold is explicitly a fork of redb with column families and a WAL/group-commit design. The benchmark uses the column-family API rather than its inherited redb-compatible single-database surface: the interesting path writes a WAL entry, waits for group-commit fsync, then makes the prepared changes visible. It participates in the sync lane only because that is the novel path worth comparing on the current one-CPU host; its WAL implementation performs the sync step even when the underlying transaction durability enum is None.
+Manifold is explicitly a fork of redb with column families and a WAL/group-commit design. The benchmark uses the column-family API rather than its inherited redb-compatible single-database surface: the interesting path writes a WAL entry, waits for group-commit fsync, then makes the prepared changes visible. It participates in the sync lane because that is the novel durability path worth comparing; its WAL implementation performs the sync step even when the underlying transaction durability enum is None.
 
+
+### ParityDB 0.5.6
+Production-oriented pure-Rust store from the Parity/Substrate ecosystem. The benchmark exposes two configurations rather than hiding an important storage-mode choice:
+
+- **paritydb-hash** uses the normal hash-indexed column for point/mixed/write workloads. It has no ordered range API and is omitted from range-scan.
+- **paritydb-btree** enables ParityDB's ordered B-tree column and therefore participates in range-scan as well as point/mixed/write workloads.
+
+Compression remains disabled by ParityDB's column default. ParityDB's public commit() deliberately publishes into an in-memory overlay and returns before its background commit/WAL/data-sync pipeline finishes. The database can recover to a consistent older state, but acknowledged commits may be lost if the process dies before background persistence catches up. There is no public durable-before-return commit primitive in 0.5.6, so both configurations participate in the **relaxed/background-durability lane only**. A fake sync result would be materially misleading.
 
 ### RocksDB 0.25.0
 Mature C++ LSM reference exposed through the current Rust rocksdb crate. Included despite not being Rust-native because it is the most useful production LSM baseline. The neutral raw-KV lane explicitly disables compression while retaining WAL; relaxed/sync differ only in the RocksDB write sync flag.
@@ -61,9 +69,6 @@ Current stable 2026 Rust LSM. The benchmark enables its durability and bloom fea
 This is now the latest published sanakirja line. It remains a lower-level persistent data-structure library: the benchmark would need to define and persist its own root/database mapping rather than merely adapt a byte-KV API. That would make benchmark-specific storage design part of the measured engine. Keep it out until a clean common-denominator adapter can be justified.
 
 ## Useful older baselines, not first-wave additions
-
-### jammdb 0.11.0
-Rust BoltDB-style mmap single-file B+tree with serializable transactions and lock-free readers. Mature and relevant, but 0.11.0 is roughly three years old; lower priority than current engines above.
 
 ### sanakirja 1.4.3 stable / newer beta line
 Transactional on-disk data structures and a useful historical pure-Rust reference. API and storage model are lower-level than the byte-KV common denominator, so adding it needs more adapter work and less directly answers the current-engine question.

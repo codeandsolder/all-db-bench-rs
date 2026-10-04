@@ -1,5 +1,9 @@
 # rust-db-realistic-bench
 
+Canonical repository: https://github.com/codeandsolder/all-db-bench-rs
+
+The current primary validation/benchmark host is the 8-logical-CPU laptop checkout at /srv/scratch/db-bench-2026-09-27. Results remain host-scoped; do not combine laptop and older cold-storage measurements.
+
 A replacement for the earlier redb/Turso/Fjall growth-loop benchmark, designed around fixed workloads, fresh databases, explicit durability and repeated randomized trials.
 
 ## Build
@@ -92,7 +96,7 @@ Do not merge warm reopen, root cold-cache, SIGKILL recovery, raw fio, calibrated
 
 ## Latest engine set
 
-All engine versions are pinned to the latest published usable release verified on 2026-10-04. Raw KV includes redb 4.3.0, Fjall 3.1.12, SurrealKV 0.21.4, heed/LMDB 0.22.1, sled 1.0.0-alpha.124, lkv 0.2.1, Manifold 3.1.0, TurboKV 0.6.0, RocksDB 0.25.0, libmdbx 0.9.0, Persy 1.8.1, RoughDB 0.10.1, jammdb 0.11.0 and lsm-db 1.0.0.
+All engine versions are pinned to the latest published usable release verified on 2026-10-04. Raw KV includes redb 4.3.0, Fjall 3.1.12, SurrealKV 0.21.4, heed/LMDB 0.22.1, sled 1.0.0-alpha.124, lkv 0.2.1, Manifold 3.1.0, TurboKV 0.6.0, ParityDB 0.5.6 in hash and ordered-B-tree configurations, RocksDB 0.25.0, libmdbx 0.9.0, Persy 1.8.1, RoughDB 0.10.1, jammdb 0.11.0 and lsm-db 1.0.0.
 
 The record lane includes SurrealDB 3.3.0/SurrealKV, Turso 0.8.2-pre.2, SQLite 3.53.4 via rusqlite 0.40.2, and an isolated SurrealDB 3.3.0/RocksDB package. SQLite is built project-locally under .deps/sqlite-3.53.4 because rusqlite's bundled copy is older than current SQLite.
 

@@ -28,7 +28,7 @@ TARGET_DIR="${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target}"
 BIN="$TARGET_DIR/release/kvbench"
 "$ROOT/scripts/cargo-local-1.98.1.sh" build --release --features kv-all --bin kvbench || exit $?
 
-ENGINES=(redb fjall surrealkv heed sled lkv manifold turbokv rocksdb mdbx persy roughdb jammdb lsmdb)
+ENGINES=(redb fjall surrealkv heed sled lkv manifold turbokv paritydb-hash paritydb-btree rocksdb mdbx persy roughdb jammdb lsmdb)
 DURS=(relaxed sync)
 WORKLOADS=(point-read range-scan)
 FAILURES=0
@@ -39,8 +39,10 @@ for trial in $(seq 1 "$TRIALS"); do
       [[ "$engine" == manifold && "$dur" == relaxed ]] && continue
       [[ "$engine" == jammdb && "$dur" == relaxed ]] && continue
       [[ "$engine" == lsmdb && "$dur" == relaxed ]] && continue
+      [[ "$dur" == sync && ( "$engine" == paritydb-hash || "$engine" == paritydb-btree ) ]] && continue
       for workload in "${WORKLOADS[@]}"; do
         [[ "$engine" == lkv && "$workload" == range-scan ]] && continue
+        [[ "$engine" == paritydb-hash && "$workload" == range-scan ]] && continue
         db_name="reopen-${trial}-${engine}-${dur}-${workload}"
         case_id="t${trial}-reopen-${CACHE}-${engine}-${dur}-${workload}-n${RECORDS}"
         out="$RUN_DIR/cases/$case_id.json"; [[ -s "$out" ]] && continue

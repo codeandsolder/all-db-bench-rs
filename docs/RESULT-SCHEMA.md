@@ -36,9 +36,9 @@ Write latency is per committed transaction, not divided by keys in the batch. Ke
 
 `scripts/summarize.py` groups exact-compatible configurations and reports median throughput, IQR, median p99 latency, database size, peak RSS and prefill time across independent trials. It does not average unlike workload shapes or create uncertainty bands from adjacent database sizes.
 
-## Schema v2 additions — 2026-10-04
+## Historical schema v2 additions — 2026-10-04
 
-All new results use format_version 2.
+At that stage, new results used format_version 2.
 
 Identity now includes scenario, allowing the core matrix, size sweeps, reopen lanes and recovery lanes to coexist without accidental aggregation. The summarizer also keys on ops_requested; unlike operation counts are never silently grouped.
 
@@ -73,7 +73,7 @@ Crash-recovery verification runs may include verification:
 Wide KV campaigns also write one sidecar per case under device/ with raw whole-device block-stat counters before and after that case. Whole-device deltas must not be reported as process I/O on a shared host.
 
 
-## Schema v3 KV additions — 2026-10-04
+## Historical schema v3 KV additions — 2026-10-04
 
 Raw-KV results now use `format_version: 3`. The record/database lane remains schema v2 because these new byte-KV shape controls do not apply there.
 
@@ -114,3 +114,24 @@ When `settle_ms > 0`, `post_workload_settle` measures background/deferred work *
 This lane is intended to expose deferred compaction/checkpoint/writeback cost without charging it to foreground throughput. A fast foreground result followed by substantial settle CPU/write traffic is therefore visible rather than hidden.
 
 The summarizer groups on all schema-v3 identity fields and reports median settle CPU time, process-attributed settle write bytes and settle-window DB-size change where present.
+
+
+## Crash-result interpretation
+
+verification.verification_ok is a measured property, not universally an assertion that every durability mode promises the same acknowledgement boundary.
+
+- In the **sync** lane, verification_ok=false is a hard campaign failure.
+- In **relaxed/background** lanes, missing externally acknowledged records can be an expected consequence of the documented durability contract. The crash runner retains the JSON result and additionally writes such cases to relaxed-ack-losses.ndjson.
+- Reopen/process errors are still hard failures in all lanes.
+- Transaction holes or partial recovered batches remain consistency failures; durability mode does not excuse structural corruption.
+
+
+## Schema v4 process-accounting correction — 2026-10-04
+
+All newly generated raw-KV and record/database results use format_version 4. The lane-specific configuration fields introduced by v2/v3 remain unchanged; v4 exists because process CPU accounting changed materially.
+
+Process snapshots now sum /proc/self/task/*/{schedstat,stat,status} across every live thread at each measurement boundary instead of reading only the thread-group leader. This captures persistent database background workers and multi-thread runtime work in CPU runtime, runqueue wait, page faults, context switches and thread counts.
+
+A thread created and destroyed entirely between the two snapshots cannot be reconstructed from procfs, so these counters remain a lower bound for extremely short-lived worker threads. Process /proc/self/io remains process-wide.
+
+The summarizer includes format_version in its exact-match aggregation key and prints it in Markdown output. Results from old schemas therefore cannot be silently combined with v4 even when every workload field matches.

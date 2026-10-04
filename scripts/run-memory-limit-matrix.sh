@@ -37,14 +37,22 @@ DATA_DIR="$ROOT/data/runs/$RUN_ID"
 mkdir -p "$RUN_DIR"/{cases,stderr,cgroup} "$DATA_DIR"
 "$ROOT/scripts/capture-host-metadata.sh" "$RUN_DIR/host-start.txt" "$ROOT"
 
-ENGINES=(redb fjall surrealkv heed sled lkv manifold turbokv rocksdb mdbx persy roughdb jammdb lsmdb)
+ENGINES=(redb fjall surrealkv heed sled lkv manifold turbokv paritydb-hash paritydb-btree rocksdb mdbx persy roughdb jammdb lsmdb)
 WORKLOADS=(point-read read-heavy churn)
+primary_durability() {
+  case "$1" in
+    paritydb-hash|paritydb-btree) echo relaxed ;;
+    *) echo sync ;;
+  esac
+}
+
 JOBS=()
 for trial in $(seq 1 "$TRIALS"); do
   for pct in "${LIMIT_PCTS[@]}"; do
     for workload in "${WORKLOADS[@]}"; do
       for engine in "${ENGINES[@]}"; do
-        JOBS+=("$trial|$pct|$workload|$engine")
+        dur=$(primary_durability "$engine")
+        JOBS+=("$trial|$pct|$workload|$engine|$dur")
       done
     done
   done
@@ -56,9 +64,9 @@ INDEX=0
 TOTAL=${#ORDERED[@]}
 for job in "${ORDERED[@]}"; do
   INDEX=$((INDEX + 1))
-  IFS='|' read -r trial pct workload engine <<< "$job"
+  IFS='|' read -r trial pct workload engine dur <<< "$job"
   limit_bytes=$(( MEM_KIB * 1024 * pct / 100 ))
-  case_id="t${trial}-mem${pct}pct-noswap-${engine}-sync-${workload}"
+  case_id="t${trial}-mem${pct}pct-noswap-${engine}-${dur}-${workload}"
   out="$RUN_DIR/cases/$case_id.json"
   [[ -s "$out" ]] && continue
   echo "[$INDEX/$TOTAL] $case_id MemoryMax=$limit_bytes" >&2
@@ -67,7 +75,7 @@ for job in "${ORDERED[@]}"; do
   err="$RUN_DIR/stderr/$case_id.log"
   systemd-run --quiet --wait --unit="$unit" \
     -p "MemoryMax=$limit_bytes" -p MemorySwapMax=0 -p OOMPolicy=stop \
-    "$BIN" --engine "$engine" --durability sync --workload "$workload" \
+    "$BIN" --engine "$engine" --durability "$dur" --workload "$workload" \
       --records "$RECORDS" --ops "$OPS" --value-bytes 1024 --value-pattern pseudo-random \
       --key-bytes 16 --key-shape sequential --access-pattern hot80 --txn-size 100 \
       --trial "$trial" --seed 1592606758 --scenario "memory-${pct}pct-noswap" \

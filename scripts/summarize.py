@@ -60,6 +60,7 @@ def main() -> None:
     grouped: dict[tuple, list[dict]] = defaultdict(list)
     for r in rows:
         key = (
+            r.get("format_version", 1),
             r.get("lane", "kv"),
             r.get("scenario", "legacy"),
             r["engine"],
@@ -85,6 +86,7 @@ def main() -> None:
     problems = []
     for key, rs in sorted(grouped.items()):
         (
+            format_version,
             lane,
             scenario,
             engine,
@@ -128,6 +130,7 @@ def main() -> None:
             )
         summary.append(
             {
+                "format_version": format_version,
                 "lane": lane,
                 "scenario": scenario,
                 "engine": engine,
@@ -220,8 +223,8 @@ def main() -> None:
         for durability in sorted({s["durability"] for s in summary if s["lane"] == lane}):
             md += [f"## {durability}", ""]
             md += [
-                "| scenario | workload | config | engine | trials | median ops/s | IQR ops/s | median p99 read/op us | median p99 write-txn us | DB MiB | peak RSS MiB | prefill s | CPU ns/op | rq wait %wall | read B/op | write B/op | IO PSI full %wall | swap pages |",
-                "|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+                "| schema | scenario | workload | config | engine | trials | median ops/s | IQR ops/s | median p99 read/op us | median p99 write-txn us | DB MiB | peak RSS MiB | prefill s | CPU ns/op | rq wait %wall | read B/op | write B/op | IO PSI full %wall | swap pages |",
+                "|---:|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
             ]
             block = [
                 s for s in summary
@@ -233,7 +236,8 @@ def main() -> None:
                 if p99 is None:
                     p99 = s["p99_operation_us_median"]
                 md.append(
-                    "| {scenario} | {workload} | {config} | {engine} {version} | {trials} | {median} | {q1}–{q3} | {p99} | {tx} | {mib} | {rss} | {prefill} | {cpu} | {rq} | {readb} | {writeb} | {iopsi} | {swap} |".format(
+                    "| {schema} | {scenario} | {workload} | {config} | {engine} {version} | {trials} | {median} | {q1}–{q3} | {p99} | {tx} | {mib} | {rss} | {prefill} | {cpu} | {rq} | {readb} | {writeb} | {iopsi} | {swap} |".format(
+                        schema=s["format_version"],
                         scenario=s["scenario"],
                         workload=s["workload"],
                         config=s["configuration"],

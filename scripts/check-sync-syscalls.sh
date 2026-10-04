@@ -32,14 +32,14 @@ trace_one() {
   count_syncs "$prefix"
 }
 
-printf '%-12s %10s %10s %s\n' engine relaxed sync verdict
+printf '%-16s %10s %10s %s\n' engine relaxed sync verdict
 # Hard assertion where the durable mode should add explicit barriers.
 for engine in redb fjall surrealkv heed sled turbokv rocksdb mdbx roughdb; do
   relaxed=$(trace_one "$engine" relaxed)
   sync=$(trace_one "$engine" sync)
   verdict=ok
   if (( sync <= relaxed )); then verdict='CHECK'; fi
-  printf '%-12s %10d %10d %s\n' "$engine" "$relaxed" "$sync" "$verdict"
+  printf '%-16s %10d %10d %s\n' "$engine" "$relaxed" "$sync" "$verdict"
   [[ "$verdict" == ok ]] || exit 1
 done
 
@@ -47,11 +47,16 @@ done
 # syscall count cannot distinguish its relaxed and foreground-sync semantics.
 relaxed=$(trace_one persy relaxed)
 sync=$(trace_one persy sync)
-printf '%-12s %10d %10d %s\n' persy "$relaxed" "$sync" informational
+printf '%-16s %10d %10d %s\n' persy "$relaxed" "$sync" informational
+
+# ParityDB commit() acknowledges before its background WAL/data fsync pipeline.
+# It therefore has no sync lane to compare against; the trace is informational.
+relaxed=$(trace_one paritydb-hash relaxed)
+printf '%-16s %10d %10s %s\n' paritydb-hash "$relaxed" n/a background-durability
 
 for engine in lkv manifold jammdb lsmdb; do
   sync=$(trace_one "$engine" sync)
   verdict=$([[ $sync -gt 0 ]] && echo ok || echo CHECK)
-  printf '%-12s %10s %10d %s\n' "$engine" n/a "$sync" "$verdict"
+  printf '%-16s %10s %10d %s\n' "$engine" n/a "$sync" "$verdict"
   (( sync > 0 ))
 done

@@ -13,6 +13,7 @@ use std::{
 use surrealdb::{
     Surreal,
     engine::local::{Db as SurrealLocalDb, RocksDb},
+    types::SurrealValue,
 };
 
 const HIST_MAX_NS: u64 = 60_000_000_000;
@@ -77,7 +78,7 @@ struct Args {
     warmup_reads: u64,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, SurrealValue)]
 struct RecordData {
     bucket: u32,
     payload: String,
@@ -244,7 +245,7 @@ impl Engine {
     async fn get(&self, id: u64) -> Result<bool> {
         match self {
             Self::SurrealRocksdb(db) => {
-                let row: Option<RecordData> = db.select(("item", id.to_string())).await?;
+                let row: Option<RecordData> = db.select(("item", id as i64)).await?;
                 Ok(row.is_some())
             }
         }
@@ -266,10 +267,8 @@ impl Engine {
     async fn upsert_one(&self, id: u64, data: &RecordData) -> Result<()> {
         match self {
             Self::SurrealRocksdb(db) => {
-                let _: Option<RecordData> = db
-                    .upsert(("item", id.to_string()))
-                    .content(data.clone())
-                    .await?;
+                let _: Option<RecordData> =
+                    db.upsert(("item", id as i64)).content(data.clone()).await?;
             }
         }
         Ok(())
@@ -470,7 +469,7 @@ async fn main() -> Result<()> {
     let db_bytes = dir_size(&path);
 
     let result = Measurement {
-        format_version: 2,
+        format_version: 4,
         lane: "record",
         engine: args.engine,
         engine_version: args.engine.version(),

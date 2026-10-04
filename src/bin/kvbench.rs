@@ -18,6 +18,7 @@ use manifold::{
     Durability as ManifoldDurability, TableDefinition as ManifoldTableDefinition,
     column_family::{ColumnFamily as ManifoldCf, ColumnFamilyDatabase as ManifoldDb},
 };
+use parity_db::{Db as ParityDb, Options as ParityOptions};
 use redb::{Database as RedbDb, Durability as RedbDurability, ReadableDatabase, TableDefinition};
 use surrealkv::{
     Durability as SurrealDurability, LSMIterator, Mode as SurrealMode, Tree as SurrealTree,
@@ -68,6 +69,8 @@ enum EngineKind {
     Lkv,
     Manifold,
     Turbokv,
+    ParitydbHash,
+    ParitydbBtree,
     #[cfg(feature = "kv-external")]
     Rocksdb,
     #[cfg(feature = "kv-external")]
@@ -309,6 +312,8 @@ enum Engine {
         cf: ManifoldCf,
     },
     Turbokv(Option<TurboDb>),
+    ParitydbHash(ParityDb),
+    ParitydbBtree(ParityDb),
     #[cfg(feature = "kv-external")]
     Rocksdb(RocksDb),
     #[cfg(feature = "kv-external")]
@@ -324,8 +329,8 @@ enum Engine {
 }
 
 impl Args {
-    fn engine_matches_lkv(&self) -> bool {
-        matches!(self.engine, EngineKind::Lkv)
+    fn range_scan_supported(&self) -> bool {
+        !matches!(self.engine, EngineKind::Lkv | EngineKind::ParitydbHash)
     }
 }
 
@@ -340,6 +345,7 @@ impl EngineKind {
             Self::Lkv => "0.2.1",
             Self::Manifold => "3.1.0",
             Self::Turbokv => "0.6.0",
+            Self::ParitydbHash | Self::ParitydbBtree => "0.5.6",
             #[cfg(feature = "kv-external")]
             Self::Rocksdb => "0.25.0",
             #[cfg(feature = "kv-external")]
@@ -380,6 +386,12 @@ impl EngineKind {
             }
             (Self::Turbokv, Durability::Sync) => {
                 "TurboKV DbOptions::paranoid; sync WAL before acknowledgement"
+            }
+            (Self::ParitydbHash | Self::ParitydbBtree, Durability::Relaxed) => {
+                "ParityDB default background durability pipeline; commit publishes to the in-memory overlay before WAL/data fsync completes"
+            }
+            (Self::ParitydbHash | Self::ParitydbBtree, Durability::Sync) => {
+                bail!("ParityDB 0.5.6 has no public durable-before-return commit API")
             }
             #[cfg(feature = "kv-external")]
             (Self::Rocksdb, Durability::Relaxed) => {
@@ -503,6 +515,26 @@ impl Engine {
                     TurboDb::open_with_options(path.join("turbokv"), opts).await?,
                 )))
             }
+            EngineKind::ParitydbHash | EngineKind::ParitydbBtree => {
+                if durability == Durability::Sync {
+                    bail!("ParityDB 0.5.6 has no public durable-before-return commit API");
+                }
+                let dir = match kind {
+                    EngineKind::ParitydbHash => path.join("paritydb-hash"),
+                    EngineKind::ParitydbBtree => path.join("paritydb-btree"),
+                    _ => unreachable!(),
+                };
+                let mut opts = ParityOptions::with_columns(&dir, 1);
+                if matches!(kind, EngineKind::ParitydbBtree) {
+                    opts.columns[0].btree_index = true;
+                }
+                let db = ParityDb::open_or_create(&opts)?;
+                Ok(match kind {
+                    EngineKind::ParitydbHash => Self::ParitydbHash(db),
+                    EngineKind::ParitydbBtree => Self::ParitydbBtree(db),
+                    _ => unreachable!(),
+                })
+            }
             #[cfg(feature = "kv-external")]
             EngineKind::Rocksdb => {
                 let mut opts = RocksOptions::default();
@@ -607,6 +639,7 @@ impl Engine {
                     .get(key)
                     .await?
             }
+            Self::ParitydbHash(db) | Self::ParitydbBtree(db) => db.get(0, key)?,
             #[cfg(feature = "kv-external")]
             Self::Rocksdb(db) => db.get(key)?.map(|v| v.to_vec()),
             #[cfg(feature = "kv-external")]
@@ -753,6 +786,16 @@ impl Engine {
                     .context("TurboKV already closed")?
                     .write_batch(&batch)
                     .await?;
+            }
+            Self::ParitydbHash(db) | Self::ParitydbBtree(db) => {
+                let mut changes = Vec::with_capacity(puts.len() + deletes.len());
+                for (k, v) in puts {
+                    changes.push((0u8, k.clone(), Some(v.clone())));
+                }
+                for k in deletes {
+                    changes.push((0u8, k.clone(), None));
+                }
+                db.commit(changes)?;
             }
             #[cfg(feature = "kv-external")]
             Self::Rocksdb(db) => {
@@ -926,6 +969,21 @@ impl Engine {
                 .range(start, end)
                 .await?
                 .len(),
+            Self::ParitydbHash(_) => {
+                bail!("ParityDB hash-column mode has no ordered range iterator")
+            }
+            Self::ParitydbBtree(db) => {
+                let mut iter = db.iter(0)?;
+                iter.seek(start)?;
+                let mut n = 0usize;
+                while let Some((k, _v)) = iter.next()? {
+                    if k.as_slice() >= end {
+                        break;
+                    }
+                    n += 1;
+                }
+                n
+            }
             #[cfg(feature = "kv-external")]
             Self::Rocksdb(db) => {
                 let mut n = 0usize;
@@ -1248,8 +1306,8 @@ async fn run_workload(
             }
         }
         Workload::RangeScan => {
-            if args.engine_matches_lkv() {
-                bail!("lkv range-scan unsupported: no keyed seek/range API");
+            if !args.range_scan_supported() {
+                bail!("selected engine/configuration has no ordered keyed range-scan API");
             }
             if args.key_shape == KeyShape::Hashed {
                 bail!("hashed keys intentionally have no ID-ordered range semantics");
@@ -1681,7 +1739,7 @@ async fn main() -> Result<()> {
     let db_bytes = dir_size(&path);
 
     let result = Measurement {
-        format_version: 3,
+        format_version: 4,
         engine: args.engine,
         engine_version: args.engine.version(),
         durability: args.durability,

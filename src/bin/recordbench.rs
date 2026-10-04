@@ -16,6 +16,7 @@ use std::{
 use surrealdb::{
     Surreal,
     engine::local::{Db as SurrealLocalDb, SurrealKv},
+    types::SurrealValue,
 };
 
 use rusqlite::{Connection as SqliteConnection, OptionalExtension, params};
@@ -84,7 +85,7 @@ struct Args {
     warmup_reads: u64,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, SurrealValue)]
 struct RecordData {
     bucket: u32,
     payload: String,
@@ -257,9 +258,11 @@ impl Engine {
                 Ok(Self::Surreal(db))
             }
             EngineKind::Turso => {
-                let db = turso::Builder::new_local(path.join("turso.db"))
-                    .build()
-                    .await?;
+                let turso_path = path.join("turso.db");
+                let turso_path = turso_path
+                    .to_str()
+                    .context("Turso database path is not valid UTF-8")?;
+                let db = turso::Builder::new_local(turso_path).build().await?;
                 let conn = db.connect()?;
                 let sync = match durability {
                     Durability::Relaxed => "NORMAL",
@@ -302,7 +305,7 @@ impl Engine {
     async fn get(&self, id: u64) -> Result<bool> {
         match self {
             Self::Surreal(db) => {
-                let row: Option<RecordData> = db.select(("item", id.to_string())).await?;
+                let row: Option<RecordData> = db.select(("item", id as i64)).await?;
                 Ok(row.is_some())
             }
             Self::Turso(conn) => {
@@ -357,10 +360,8 @@ impl Engine {
     async fn upsert_one(&self, id: u64, data: &RecordData) -> Result<()> {
         match self {
             Self::Surreal(db) => {
-                let _: Option<RecordData> = db
-                    .upsert(("item", id.to_string()))
-                    .content(data.clone())
-                    .await?;
+                let _: Option<RecordData> =
+                    db.upsert(("item", id as i64)).content(data.clone()).await?;
             }
             Self::Turso(conn) => {
                 let mut stmt = conn.prepare(
@@ -616,7 +617,7 @@ async fn main() -> Result<()> {
     let db_bytes = dir_size(&path);
 
     let result = Measurement {
-        format_version: 2,
+        format_version: 4,
         lane: "record",
         engine: args.engine,
         engine_version: args.engine.version(),

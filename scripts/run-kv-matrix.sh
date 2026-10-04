@@ -25,7 +25,7 @@ OUT="$RUN_DIR/results.ndjson"
 META="$RUN_DIR/host.txt"
 "$ROOT/scripts/capture-host-metadata.sh" "$META" "$ROOT"
 
-ENGINES=(redb fjall surrealkv heed sled lkv manifold turbokv rocksdb mdbx persy roughdb jammdb lsmdb)
+ENGINES=(redb fjall surrealkv heed sled lkv manifold turbokv paritydb-hash paritydb-btree rocksdb mdbx persy roughdb jammdb lsmdb)
 WORKLOADS=(point-read range-scan read-heavy balanced tiny-txn write-burst churn)
 DURABILITIES=(relaxed sync)
 
@@ -42,7 +42,9 @@ for ((trial=1; trial<=TRIALS; trial++)); do
         [[ "$engine" == manifold && "$durability" == relaxed ]] && continue
         [[ "$engine" == jammdb && "$durability" == relaxed ]] && continue
         [[ "$engine" == lsmdb && "$durability" == relaxed ]] && continue
+        [[ "$durability" == sync && ( "$engine" == paritydb-hash || "$engine" == paritydb-btree ) ]] && continue
         [[ "$engine" == lkv && "$workload" == range-scan ]] && continue
+        [[ "$engine" == paritydb-hash && "$workload" == range-scan ]] && continue
         JOBS+=("$engine|$durability|$workload")
       done
     done

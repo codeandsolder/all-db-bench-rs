@@ -31,8 +31,15 @@ TARGET_DIR="${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target}"
 BIN="$TARGET_DIR/release/kvbench"
 CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local-1.98.1.sh" build --release --features kv-all --bin kvbench
 
-ENGINES=(redb fjall surrealkv heed sled lkv manifold turbokv rocksdb mdbx persy roughdb jammdb lsmdb)
+ENGINES=(redb fjall surrealkv heed sled lkv manifold turbokv paritydb-hash paritydb-btree rocksdb mdbx persy roughdb jammdb lsmdb)
 WORKLOADS=(point-read read-heavy churn)
+primary_durability() {
+  case "$1" in
+    paritydb-hash|paritydb-btree) echo relaxed ;;
+    *) echo sync ;;
+  esac
+}
+
 JOBS=()
 
 for ratio in "${RATIOS[@]}"; do
@@ -51,7 +58,8 @@ for ratio in "${RATIOS[@]}"; do
   for trial in $(seq 1 "$TRIALS"); do
     for workload in "${WORKLOADS[@]}"; do
       for engine in "${ENGINES[@]}"; do
-        JOBS+=("$ratio|$records|$trial|$workload|$engine")
+        dur=$(primary_durability "$engine")
+        JOBS+=("$ratio|$records|$trial|$workload|$engine|$dur")
       done
     done
   done
@@ -63,14 +71,14 @@ INDEX=0
 TOTAL=${#ORDERED[@]}
 for job in "${ORDERED[@]}"; do
   INDEX=$((INDEX + 1))
-  IFS='|' read -r ratio records trial workload engine <<< "$job"
-  case_id="t${trial}-logical-footprint-${ratio}pct-ram-${engine}-sync-${workload}-n${records}"
+  IFS='|' read -r ratio records trial workload engine dur <<< "$job"
+  case_id="t${trial}-logical-footprint-${ratio}pct-ram-${engine}-${dur}-${workload}-n${records}"
   out="$RUN_DIR/cases/$case_id.json"
   [[ -s "$out" ]] && continue
   echo "[$INDEX/$TOTAL] $case_id" >&2
   err="$RUN_DIR/stderr/$case_id.log"
 
-  "$BIN" --engine "$engine" --durability sync --workload "$workload" \
+  "$BIN" --engine "$engine" --durability "$dur" --workload "$workload" \
     --records "$records" --ops "$OPS" --key-bytes "$KEY_BYTES" --key-shape sequential \
     --value-bytes "$VALUE_BYTES" --value-pattern pseudo-random --txn-size 100 \
     --access-pattern uniform --trial "$trial" --seed 1592606758 \

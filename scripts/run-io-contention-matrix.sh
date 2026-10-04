@@ -54,14 +54,22 @@ fio --name=prepare-pressure --filename="$PRESSURE_FILE" --size="$PRESSURE_SIZE" 
   --rw=write --bs=1M --ioengine=psync --direct=1 --fsync_on_close=1 \
   --output-format=json > "$RUN_DIR/pressure-prepare.json"
 
-ENGINES=(redb fjall surrealkv heed sled lkv manifold turbokv rocksdb mdbx persy roughdb jammdb lsmdb)
+ENGINES=(redb fjall surrealkv heed sled lkv manifold turbokv paritydb-hash paritydb-btree rocksdb mdbx persy roughdb jammdb lsmdb)
 WORKLOADS=(point-read write-burst churn)
+primary_durability() {
+  case "$1" in
+    paritydb-hash|paritydb-btree) echo relaxed ;;
+    *) echo sync ;;
+  esac
+}
+
 JOBS=()
 for trial in $(seq 1 "$TRIALS"); do
   for pct in "${LEVELS[@]}"; do
     for workload in "${WORKLOADS[@]}"; do
       for engine in "${ENGINES[@]}"; do
-        JOBS+=("$trial|$pct|$workload|$engine")
+        dur=$(primary_durability "$engine")
+        JOBS+=("$trial|$pct|$workload|$engine|$dur")
       done
     done
   done
@@ -83,8 +91,8 @@ INDEX=0
 TOTAL=${#ORDERED[@]}
 for job in "${ORDERED[@]}"; do
   INDEX=$((INDEX + 1))
-  IFS='|' read -r trial pct workload engine <<< "$job"
-  case_id="t${trial}-io${pct}pct-${engine}-sync-${workload}"
+  IFS='|' read -r trial pct workload engine dur <<< "$job"
+  case_id="t${trial}-io${pct}pct-${engine}-${dur}-${workload}"
   out="$RUN_DIR/cases/$case_id.json"
   [[ -s "$out" ]] && continue
   echo "[$INDEX/$TOTAL] $case_id" >&2
@@ -116,7 +124,7 @@ for job in "${ORDERED[@]}"; do
   fi
 
   err="$RUN_DIR/stderr/$case_id.log"
-  "$BIN" --engine "$engine" --durability sync --workload "$workload" \
+  "$BIN" --engine "$engine" --durability "$dur" --workload "$workload" \
     --records "$RECORDS" --ops "$OPS" --value-bytes 256 --txn-size 100 \
     --trial "$trial" --seed 1592606758 --scenario "io-pressure-${pct}pct" \
     --root "$DATA_DIR" --output "$out" 2>"$err"

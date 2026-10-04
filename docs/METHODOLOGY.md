@@ -50,6 +50,7 @@ Mappings in the raw KV lane:
 | lkv | unsupported | commit (sync_data before publication) |
 | TurboKV | DbOptions::durable | DbOptions::paranoid |
 | Manifold | omitted | column-family WAL + Durability::Immediate |
+| ParityDB hash / B-tree | default background commit/WAL/data-sync pipeline; commit acknowledges before persistence completes | unsupported: no public durable-before-return commit API |
 | RocksDB | WAL, sync=false | WAL, sync=true |
 | MDBX | NoWriteMap + SafeNoSync | NoWriteMap + Durable |
 | Persy | background-sync transaction | foreground-sync transaction |
@@ -58,6 +59,8 @@ Mappings in the raw KV lane:
 | lsm-db | unsupported in durable build | durability feature / wal-db |
 
 These labels are not claims that all relaxed modes have identical crash semantics. The mapping string is part of every JSON result so incompatible guarantees cannot be silently conflated.
+
+For matrix classes that are otherwise sync-only (dimensional, out-of-core, memory-limit and I/O-contention), engines without a durable-before-return API are not silently dropped. Those runners use a strongest-supported durability identity: sync for engines that provide it, and relaxed/background for ParityDB. Durability remains explicit in every result and case ID, so these rows are coverage data rather than claims of identical durability semantics.
 
 ## Isolation and ordering
 
@@ -71,12 +74,12 @@ The matrix driver launches one engine/workload/durability trial per process and 
 - quick: 100k records, 50k operations, 3 trials
 - full: 1M records, 250k operations, 7 trials
 
-The defaults fit the current cold-storage allocation (1 visible logical CPU, 3.8 GiB RAM) without intentionally forcing swap.
+The compact defaults are intentionally small enough for modest hosts and do not assume one specific machine. Every campaign captures CPU, memory, filesystem, block-device and pressure metadata; cross-host results must remain separate. The current primary execution host is the 8-logical-CPU, ~14 GiB RAM laptop clone, while cold-storage results are retained only for historical methodology work because that host was heavily I/O-contended.
 
 ## KV workloads
 
 - **point-read**: uniformly random primary-key point reads from the prefilled working set.
-- **range-scan**: ordered 100-row range reads over big-endian integer keys; this exercises B-tree/LSM ordered iteration and resembles short pagination/index walks. lkv 0.2.1 is omitted because it exposes full iteration but no keyed seek/range API; emulating range seek with an O(N) scan would be a fake comparison.
+- **range-scan**: ordered 100-row range reads over big-endian integer keys; this exercises B-tree/LSM ordered iteration and resembles short pagination/index walks. lkv 0.2.1 is omitted because it exposes full iteration but no keyed seek/range API. ParityDB's hash-column configuration is also omitted because hash columns are intentionally unordered; its separate B-tree configuration participates using the native seekable ordered iterator. Emulating range seek with an O(N) scan would be a fake comparison.
 - **read-heavy**: 95% reads, 5% updates. Existing-key accesses use an 80/20 hot-set distribution.
 - **balanced**: 50% reads, 30% updates, 10% inserts, 10% deletes, also using an 80/20 hot set for existing-key access.
 - **tiny-txn**: one new record per committed transaction; exposes commit and sync overhead.
@@ -132,7 +135,9 @@ Result NDJSON, summaries and provenance metadata are durable. Per-run database d
 
 ## Concurrency
 
-The current cold-storage container exposes one logical CPU. This suite therefore treats the primary matrix as a single-client/single-worker comparison. A multi-client concurrency lane is intentionally omitted on this host: with one CPU it would mostly measure scheduling and contention artifacts, and it would fail to exercise designs such as Manifold's parallel column-family writes for their intended purpose. Add a separate concurrency matrix when the benchmark runs on a genuinely multi-core allocation; do not merge those results with this single-worker baseline.
+The primary throughput matrices remain single-client so their historical semantics do not change. The current laptop execution host exposes 8 logical CPUs, so a separate multi-client lane is now worthwhile, but it must be adapter-aware rather than forcing every database through an external lock.
+
+A compile-time probe showed that sled 1.0.0-alpha.124's current handle is Clone but not Sync, while lkv's write transaction API requires mutable database access. Hiding either behind one global mutex would make a graph that looks like engine scaling but actually measures benchmark-side serialization. The concurrency lane is therefore being implemented separately using only native share/clone/multi-handle mechanisms that preserve one logical database, and unsupported combinations will be reported explicitly. Concurrency results must never be merged with this single-client baseline.
 
 ## Comprehensive matrix expansion — 2026-10-04
 
@@ -198,9 +203,11 @@ For every selected engine/durability/batch-size/delay combination it:
 7. checks the unreported tail for holes and for a partially recovered multi-record transaction;
 8. records reopen time and verification time.
 
-One completely recovered extra batch is valid: the process may have committed a transaction and been killed before updating the external progress marker. A partial batch or a later key appearing after a gap is a recovery failure.
+One completely recovered extra batch is valid: the process may have committed a transaction and been killed before updating the external progress marker. A partial batch or a later key appearing after a gap is a recovery-consistency failure.
 
-This lane establishes process-death consistency and acknowledged-write preservation with the kernel still alive. It does not establish power-loss durability because Linux page cache and the virtual block device survive SIGKILL. A true power-cut lane requires VM/block-device fault injection or reboot/power interruption and must be reported separately.
+For **sync** configurations, losing any externally acknowledged prefix record is a benchmark failure because durable-before-return is the contract being tested. For **relaxed/background** configurations, acknowledged loss is a legitimate measured outcome: the result keeps verification_ok=false, and the runner records the case in relaxed-ack-losses.ndjson without failing the entire campaign. Reopen failure, corruption, holes, or partial multi-record transactions remain hard failures in either lane.
+
+This lane establishes process-death consistency and directly measures acknowledged-write preservation with the kernel still alive. It does not establish power-loss durability because Linux page cache and the virtual block device survive SIGKILL. A true power-cut lane requires VM/block-device fault injection or reboot/power interruption and must be reported separately.
 
 ## Raw storage calibration
 
@@ -258,6 +265,8 @@ This ratio is an input logical-footprint target, not a claim about exact databas
 
 Before each campaign the runner requires substantial free disk headroom for WAL/SSTable/compaction amplification and refuses the run instead of filling the volume.
 
-## Remaining host-specific lane
+## Current execution host and concurrency follow-up
 
-Multi-client/concurrent scaling is still intentionally not part of the cold-storage campaign because this allocation exposes one logical CPU. Running N clients here would mostly benchmark Linux scheduling and queueing. The correct next host for that lane is a genuinely multi-core machine; those results should carry a separate concurrency identity and never be merged with single-worker numbers.
+Code and canonical history now live at https://github.com/codeandsolder/all-db-bench-rs. Validation/execution moved from the I/O-contended cold-storage VPS to the laptop checkout under /srv/scratch/db-bench-2026-09-27. The laptop's ZFS-backed /srv/scratch has substantially more free space and 8 logical CPUs, making it suitable for out-of-core, compaction and future concurrency campaigns.
+
+Concurrency remains a separate result class. It will use native engine concurrency primitives and explicit support metadata rather than an external benchmark mutex.

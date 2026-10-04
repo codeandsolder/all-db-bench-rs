@@ -30,6 +30,7 @@ sled = "=1.0.0-alpha.124"
 lkv = "=0.2.1"
 manifold-db = "=3.1.0"
 turbokv = "=0.6.0"
+parity-db = "=0.5.6"
 
 surrealdb = { version = "=3.3.0", optional = true, default-features = false }
 turso = { version = "=0.8.2-pre.2", optional = true, default-features = false }

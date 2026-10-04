@@ -1,5 +1,5 @@
 use serde::Serialize;
-use std::{collections::BTreeMap, fs, time::Duration};
+use std::{collections::BTreeMap, fs, process::Command, sync::OnceLock, time::Duration};
 
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct ProcSnapshot {
@@ -19,6 +19,21 @@ pub struct ProcSnapshot {
     pub cancelled_write_bytes: u64,
     pub current_rss_kib: u64,
     pub threads: u64,
+    #[serde(skip)]
+    task_counters: BTreeMap<u32, TaskCounters>,
+    #[serde(skip)]
+    process_cpu_ticks: u64,
+    #[serde(skip)]
+    clock_ticks_per_second: u64,
+}
+
+#[derive(Clone, Debug, Default)]
+struct TaskCounters {
+    cpu_runtime_ns: u64,
+    runqueue_wait_ns: u64,
+    timeslices: u64,
+    voluntary_ctx_switches: u64,
+    involuntary_ctx_switches: u64,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -140,35 +155,117 @@ fn saturating_delta(after: u64, before: u64) -> u64 {
     after.saturating_sub(before)
 }
 
+fn clock_ticks_per_second() -> u64 {
+    static CLK_TCK: OnceLock<u64> = OnceLock::new();
+    *CLK_TCK.get_or_init(|| {
+        Command::new("getconf")
+            .arg("CLK_TCK")
+            .output()
+            .ok()
+            .filter(|out| out.status.success())
+            .and_then(|out| String::from_utf8(out.stdout).ok())
+            .and_then(|text| text.trim().parse::<u64>().ok())
+            .filter(|ticks| *ticks > 0)
+            .unwrap_or(100)
+    })
+}
+
+fn task_delta<F>(
+    before: &BTreeMap<u32, TaskCounters>,
+    after: &BTreeMap<u32, TaskCounters>,
+    field: F,
+) -> u64
+where
+    F: Fn(&TaskCounters) -> u64,
+{
+    after.iter().fold(0u64, |total, (tid, current)| {
+        let delta = before.get(tid).map_or_else(
+            || field(current),
+            |previous| field(current).saturating_sub(field(previous)),
+        );
+        total.saturating_add(delta)
+    })
+}
+
 impl ProcSnapshot {
     pub fn capture() -> Self {
         let status = parse_colon_numbers("/proc/self/status");
         let io = parse_colon_numbers("/proc/self/io");
+        let clock_ticks_per_second = clock_ticks_per_second();
 
-        let (cpu_runtime_ns, runqueue_wait_ns, timeslices) =
-            match fs::read_to_string("/proc/self/schedstat") {
-                Ok(text) => {
-                    let mut fields = text.split_whitespace();
-                    (
-                        fields.next().and_then(|v| v.parse().ok()).unwrap_or(0),
-                        fields.next().and_then(|v| v.parse().ok()).unwrap_or(0),
-                        fields.next().and_then(|v| v.parse().ok()).unwrap_or(0),
-                    )
-                }
-                Err(_) => (0, 0, 0),
-            };
-
-        let (minflt, majflt) = match fs::read_to_string("/proc/self/stat") {
+        // /proc/self/stat is process-wide for faults and utime/stime. The latter
+        // is coarse (USER_HZ), so keep it as a monotonic backstop for workers
+        // that may disappear between snapshots. Per-task schedstat supplies
+        // nanosecond-resolution CPU/runqueue counters for surviving/new tasks.
+        let (minflt, majflt, process_cpu_ticks) = match fs::read_to_string("/proc/self/stat") {
             Ok(text) => {
                 let tail = text.rsplit_once(") ").map(|(_, tail)| tail).unwrap_or("");
                 let fields: Vec<&str> = tail.split_whitespace().collect();
-                (
-                    fields.get(7).and_then(|v| v.parse().ok()).unwrap_or(0),
-                    fields.get(9).and_then(|v| v.parse().ok()).unwrap_or(0),
-                )
+                let minflt = fields.get(7).and_then(|v| v.parse().ok()).unwrap_or(0);
+                let majflt = fields.get(9).and_then(|v| v.parse().ok()).unwrap_or(0);
+                let utime: u64 = fields.get(11).and_then(|v| v.parse().ok()).unwrap_or(0);
+                let stime: u64 = fields.get(12).and_then(|v| v.parse().ok()).unwrap_or(0);
+                (minflt, majflt, utime.saturating_add(stime))
             }
-            Err(_) => (0, 0),
+            Err(_) => (0, 0, 0),
         };
+
+        let mut task_counters = BTreeMap::new();
+        if let Ok(tasks) = fs::read_dir("/proc/self/task") {
+            for task in tasks.flatten() {
+                let Some(tid) = task
+                    .file_name()
+                    .to_str()
+                    .and_then(|name| name.parse::<u32>().ok())
+                else {
+                    continue;
+                };
+                let base = task.path();
+                let (cpu_runtime_ns, runqueue_wait_ns, timeslices) =
+                    match fs::read_to_string(base.join("schedstat")) {
+                        Ok(text) => {
+                            let mut fields = text.split_whitespace();
+                            (
+                                fields.next().and_then(|v| v.parse().ok()).unwrap_or(0),
+                                fields.next().and_then(|v| v.parse().ok()).unwrap_or(0),
+                                fields.next().and_then(|v| v.parse().ok()).unwrap_or(0),
+                            )
+                        }
+                        Err(_) => (0, 0, 0),
+                    };
+                let task_status = parse_colon_numbers(&base.join("status").to_string_lossy());
+                task_counters.insert(
+                    tid,
+                    TaskCounters {
+                        cpu_runtime_ns,
+                        runqueue_wait_ns,
+                        timeslices,
+                        voluntary_ctx_switches: *task_status
+                            .get("voluntary_ctxt_switches")
+                            .unwrap_or(&0),
+                        involuntary_ctx_switches: *task_status
+                            .get("nonvoluntary_ctxt_switches")
+                            .unwrap_or(&0),
+                    },
+                );
+            }
+        }
+
+        let cpu_runtime_ns = task_counters
+            .values()
+            .fold(0u64, |sum, task| sum.saturating_add(task.cpu_runtime_ns));
+        let runqueue_wait_ns = task_counters
+            .values()
+            .fold(0u64, |sum, task| sum.saturating_add(task.runqueue_wait_ns));
+        let timeslices = task_counters
+            .values()
+            .fold(0u64, |sum, task| sum.saturating_add(task.timeslices));
+        let voluntary_ctx_switches = task_counters.values().fold(0u64, |sum, task| {
+            sum.saturating_add(task.voluntary_ctx_switches)
+        });
+        let involuntary_ctx_switches = task_counters.values().fold(0u64, |sum, task| {
+            sum.saturating_add(task.involuntary_ctx_switches)
+        });
 
         Self {
             cpu_runtime_ns,
@@ -176,8 +273,8 @@ impl ProcSnapshot {
             timeslices,
             minflt,
             majflt,
-            voluntary_ctx_switches: *status.get("voluntary_ctxt_switches").unwrap_or(&0),
-            involuntary_ctx_switches: *status.get("nonvoluntary_ctxt_switches").unwrap_or(&0),
+            voluntary_ctx_switches,
+            involuntary_ctx_switches,
             rchar: *io.get("rchar").unwrap_or(&0),
             wchar: *io.get("wchar").unwrap_or(&0),
             syscr: *io.get("syscr").unwrap_or(&0),
@@ -186,28 +283,51 @@ impl ProcSnapshot {
             write_bytes: *io.get("write_bytes").unwrap_or(&0),
             cancelled_write_bytes: *io.get("cancelled_write_bytes").unwrap_or(&0),
             current_rss_kib: *status.get("VmRSS").unwrap_or(&0),
-            threads: *status.get("Threads").unwrap_or(&0),
+            threads: (task_counters.len() as u64).max(*status.get("Threads").unwrap_or(&0)),
+            task_counters,
+            process_cpu_ticks,
+            clock_ticks_per_second,
         }
     }
 
     pub fn delta(&self, after: &Self, elapsed: Duration) -> ProcDelta {
         let wall_ns = elapsed.as_nanos().max(1) as f64;
-        let cpu_runtime_ns = saturating_delta(after.cpu_runtime_ns, self.cpu_runtime_ns);
-        let runqueue_wait_ns = saturating_delta(after.runqueue_wait_ns, self.runqueue_wait_ns);
+
+        let task_cpu_runtime_ns = task_delta(&self.task_counters, &after.task_counters, |task| {
+            task.cpu_runtime_ns
+        });
+        let tick_delta = saturating_delta(after.process_cpu_ticks, self.process_cpu_ticks);
+        let ticks_per_second = after
+            .clock_ticks_per_second
+            .max(self.clock_ticks_per_second)
+            .max(1);
+        let process_cpu_runtime_ns = ((tick_delta as u128) * 1_000_000_000u128
+            / ticks_per_second as u128)
+            .min(u64::MAX as u128) as u64;
+        let cpu_runtime_ns = task_cpu_runtime_ns.max(process_cpu_runtime_ns);
+        let runqueue_wait_ns = task_delta(&self.task_counters, &after.task_counters, |task| {
+            task.runqueue_wait_ns
+        });
+        let timeslices = task_delta(&self.task_counters, &after.task_counters, |task| {
+            task.timeslices
+        });
+        let voluntary_ctx_switches =
+            task_delta(&self.task_counters, &after.task_counters, |task| {
+                task.voluntary_ctx_switches
+            });
+        let involuntary_ctx_switches =
+            task_delta(&self.task_counters, &after.task_counters, |task| {
+                task.involuntary_ctx_switches
+            });
+
         ProcDelta {
             cpu_runtime_ns,
             runqueue_wait_ns,
-            timeslices: saturating_delta(after.timeslices, self.timeslices),
+            timeslices,
             minflt: saturating_delta(after.minflt, self.minflt),
             majflt: saturating_delta(after.majflt, self.majflt),
-            voluntary_ctx_switches: saturating_delta(
-                after.voluntary_ctx_switches,
-                self.voluntary_ctx_switches,
-            ),
-            involuntary_ctx_switches: saturating_delta(
-                after.involuntary_ctx_switches,
-                self.involuntary_ctx_switches,
-            ),
+            voluntary_ctx_switches,
+            involuntary_ctx_switches,
             rchar: saturating_delta(after.rchar, self.rchar),
             wchar: saturating_delta(after.wchar, self.wchar),
             syscr: saturating_delta(after.syscr, self.syscr),

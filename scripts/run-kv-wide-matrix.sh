@@ -48,7 +48,7 @@ TARGET_DIR="${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target}"
 BIN="$TARGET_DIR/release/kvbench"
 "$ROOT/scripts/cargo-local-1.98.1.sh" build --release --features kv-all --bin kvbench
 
-ENGINES=(redb fjall surrealkv heed sled lkv manifold turbokv rocksdb mdbx persy roughdb jammdb lsmdb)
+ENGINES=(redb fjall surrealkv heed sled lkv manifold turbokv paritydb-hash paritydb-btree rocksdb mdbx persy roughdb jammdb lsmdb)
 DURS=(relaxed sync)
 WORKLOADS=(point-read range-scan read-heavy balanced tiny-txn write-burst churn)
 JOBS=()
@@ -59,7 +59,9 @@ valid() {
   [[ "$engine" == manifold && "$dur" == relaxed ]] && return 1
   [[ "$engine" == jammdb && "$dur" == relaxed ]] && return 1
   [[ "$engine" == lsmdb && "$dur" == relaxed ]] && return 1
+  [[ "$dur" == sync && ( "$engine" == paritydb-hash || "$engine" == paritydb-btree ) ]] && return 1
   [[ "$engine" == lkv && "$workload" == range-scan ]] && return 1
+  [[ "$engine" == paritydb-hash && "$workload" == range-scan ]] && return 1
   return 0
 }
 
