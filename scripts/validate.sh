@@ -21,6 +21,8 @@ CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target} \
 CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target} \
   "$ROOT/scripts/cargo-local-1.98.1.sh" check --features kv-all --bin kvconcurrency
 CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target} \
+  "$ROOT/scripts/cargo-local-1.98.1.sh" check --features kv-all --bin kvsustained
+CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target} \
   "$ROOT/scripts/cargo-local-1.98.1.sh" check --features record --bin recordbench
 "$ROOT/scripts/cargo-local-1.98.1.sh" check \
   --manifest-path "$ROOT/engines/surrealdb-rocksdb/Cargo.toml" \

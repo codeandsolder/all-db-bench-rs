@@ -262,6 +262,25 @@ Hashed keys deliberately destroy ID order. They are valid for point/update tests
 
 Foreground workload timing ends before the settle window begins. During settling, the engine remains open and the harness samples process CPU/I/O, shared-host pressure context and database size at fixed intervals. This makes "fast foreground because work was deferred" visible without charging that work to the foreground latency distribution.
 
+## Sustained-write / compaction-cliff campaign
+
+`scripts/run-kv-sustained-matrix.sh` is a separate raw-KV result class for behavior that a single aggregate throughput number hides: write stalls, compaction/checkpoint cliffs, write amplification spikes and recovery after a stall.
+
+Each case prefills one fresh database, performs optional deterministic warmup, then executes a fixed number of logical mutations split into fixed-op windows. `kvsustained` emits one HDR transaction-latency histogram and process/system resource delta per window. Append, uniform in-place update, 95/5 hot-set update and exact 40/30/30 update/insert/delete churn patterns are supported. Churn uses the same 1,000-operation epoch construction as the ordinary raw-KV workload, then shuffles mutations and groups them into the configured transaction size.
+
+Window boundaries deliberately avoid recursive database-size scans. Such scans can create artificial idle gaps in which an LSM/background worker catches up, weakening the very stall behavior being measured. Database size is recorded before the foreground workload, after all foreground windows and after the optional settle period instead. Window evidence focuses on throughput, p99 transaction latency, CPU, process-attributed write bytes, scheduler delay and PSI.
+
+Two foreground clocks are retained:
+
+- `elapsed_s` is total wall time from the start of the first sustained window through completion of the last, including the small snapshot/histogram bookkeeping between windows;
+- `active_elapsed_s` is the sum of only the mutation-loop intervals;
+- `instrumentation_s` and `instrumentation_fraction_of_wall` expose their difference;
+- `ops_per_s` uses total wall time, while `active_ops_per_s` is emitted only as a diagnostic.
+
+The summarizer uses the median of the first `min(3, window_count)` windows as each trial's local opening baseline. It reports minimum throughput ratio, counts and longest runs below 75/50/25% of that baseline, first 50% cliff position, later recovery to 90%, worst p99 inflation, per-window CPU and process-write/logical-mutated-byte ratios, runqueue/CPU-PSI/I/O-PSI maxima, and post-workload settle debt. These thresholds are **descriptive diagnostics, not correctness gates**; raw window records remain authoritative.
+
+The campaign remains core + targeted sweeps rather than a Cartesian product. Primary cases use the strongest supported durability identity (sync where durable-before-return exists; ParityDB's documented background path otherwise). Targeted slices add 4 KiB values for LSM-style engines, meaningful relaxed/background modes, and deliberately awkward transaction-size extremes (`1` and `1000`). Smoke/quick/full differ in work and trial count, not result semantics.
+
 ## Controlled CPU/scheduler-contention campaign
 
 scripts/run-cpu-contention-matrix.sh measures sensitivity to external CPU scheduler pressure separately from the ordinary no-pressure leaderboard. It derives the actual CPU IDs from the process affinity mask rather than assuming CPUs are numbered 0..N-1.

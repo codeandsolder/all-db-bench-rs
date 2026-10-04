@@ -210,3 +210,30 @@ The verification object adds two prefix-structure fields:
 The simulated power-loss campaign also writes one `powerloss/<case_id>.json` sidecar per completed cut. It contains the benchmark kind, engine/trial/transaction/delay identity, externally acknowledged operation count, expected prefix size, number of durable log entries, the post-suspend logger-mark entry, raw device-mapper status, writer-stop and device-suspend timing, and replay/mount/verify/unmount/fsck return codes. `support.json` records the pinned replay-log provenance, dm-log-writes target version, benchmark binary hash, filesystem/image sizes, and the exact cut/replay model.
 
 Power-loss sidecars are campaign evidence, not ordinary throughput rows, and are not aggregated into the performance leaderboard.
+
+
+## KV sustained-write lane — schema v6
+
+`kvsustained` uses `format_version: 6` and `lane: "kv-sustained"`. It reuses the schema-v6 process/system accounting objects but is intentionally summarized separately from the ordinary raw-KV lane.
+
+Identity/configuration fields include `pattern`, `records`, `ops_requested`, `window_ops`, value/key shape, transaction size, durability mapping, scenario, trial and seed.
+
+Foreground timing fields:
+
+- `elapsed_s`: full sustained foreground wall time, including between-window measurement bookkeeping;
+- `active_elapsed_s`: sum of mutation-loop window durations;
+- `instrumentation_s` and `instrumentation_fraction_of_wall`: explicit wall-time cost of between-window snapshots/bookkeeping;
+- `ops_per_s`: logical operations / full foreground wall time;
+- `active_ops_per_s`: operations / active mutation-loop time, diagnostic only.
+
+`windows[]` contains:
+
+- index plus logical operation start/end/count;
+- window elapsed time and throughput;
+- put/delete/transaction counts and estimated logical mutated bytes;
+- HDR transaction-latency quantiles;
+- measured-process delta and shared-host system delta for the active window.
+
+Recursive on-disk-size measurement is deliberately absent from window boundaries so the harness does not create artificial compaction catch-up pauses. Aggregate `db_bytes_before`, `db_bytes_after_foreground` and `db_bytes_final` bracket the run instead. `post_workload_settle`, when requested, uses the existing sampled deferred-work object while the engine remains open.
+
+`scripts/summarize-sustained.py` preserves per-trial derived metrics and aggregates exact-compatible trials. Baseline-relative 75/50/25% throughput thresholds, p99 multipliers and recovery positions are diagnostics only; no threshold makes a benchmark case pass or fail. Process `write_bytes / logical_mutated_bytes` is a useful host-visible write-amplification proxy but is not a physical-device write-amplification measurement.

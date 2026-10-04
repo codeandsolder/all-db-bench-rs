@@ -93,6 +93,12 @@ Dimensional KV sweeps (locality, misses, key shape/size, value entropy, write pl
 
     ./scripts/run-kv-dimensional-matrix.sh quick
 
+Windowed sustained-write / compaction-cliff campaigns:
+
+    ./scripts/run-kv-sustained-matrix.sh quick
+
+This lane records fixed-op windows, p99 transaction latency, process/resource deltas and post-foreground settle debt. Its 75/50/25% baseline-relative cliff thresholds are diagnostics, not pass/fail criteria.
+
 Shared-database concurrency scaling on a multi-core host (fixed total work at 1/2/4/8 clients in quick mode; full mode also includes 16-client oversubscription):
 
     ./scripts/run-kv-concurrency-matrix.sh quick
@@ -115,7 +121,7 @@ Explicit cgroup memory-budget dependence is root-only by design; build the KV bi
 
     sudo ./scripts/run-memory-limit-matrix.sh quick
 
-Do not merge warm reopen, root cold-cache, SIGKILL recovery, simulated power-loss recovery, raw fio, controlled CPU pressure, calibrated I/O pressure, memory-limit, out-of-core, relaxed durability, sync durability, raw-KV and record-layer results into one leaderboard. They answer different questions.
+Do not merge warm reopen, root cold-cache, SIGKILL recovery, simulated power-loss recovery, sustained-write/compaction-cliff, raw fio, controlled CPU pressure, calibrated I/O pressure, memory-limit, out-of-core, relaxed durability, sync durability, raw-KV and record-layer results into one leaderboard. They answer different questions.
 
 
 ## Latest engine set
