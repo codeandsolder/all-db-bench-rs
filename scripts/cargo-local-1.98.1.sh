@@ -2,9 +2,15 @@
 set -euo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "$0")" && pwd)
 ROOT=$(cd -- "$SCRIPT_DIR/.." && pwd)
-CARGO_REAL=${CARGO_REAL:-/opt/cargo-ephemeral/current/cargo}
-if [[ ! -x "$CARGO_REAL" ]]; then
-  echo "real Cargo binary not found at $CARGO_REAL" >&2
+if [[ -z "${CARGO_REAL:-}" ]]; then
+  if [[ -x /opt/cargo-ephemeral/current/cargo ]]; then
+    CARGO_REAL=/opt/cargo-ephemeral/current/cargo
+  else
+    CARGO_REAL=$(rustup which cargo --toolchain 1.98.1 2>/dev/null || command -v cargo || true)
+  fi
+fi
+if [[ -z "$CARGO_REAL" || ! -x "$CARGO_REAL" ]]; then
+  echo "Cargo binary not found (set CARGO_REAL explicitly)" >&2
   exit 127
 fi
 RUSTC_REAL=${RUSTC_REAL:-$(rustup which rustc --toolchain 1.98.1)}
