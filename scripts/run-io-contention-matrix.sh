@@ -199,6 +199,11 @@ if [[ -n "${BENCH_BIN:-}" ]]; then
   BIN="$BENCH_BIN"
   BUILD_PROFILE="external"
   [[ -x "$BIN" ]] || { echo "BENCH_BIN is not executable: $BIN" >&2; exit 2; }
+elif [[ "$PROFILE" == smoke ]]; then
+  BIN="$TARGET_DIR/debug/kvbench"
+  BUILD_PROFILE="debug"
+  CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" \
+    build --locked --features kv-all --bin kvbench || exit $?
 else
   BIN="$TARGET_DIR/release/kvbench"
   BUILD_PROFILE="release"
