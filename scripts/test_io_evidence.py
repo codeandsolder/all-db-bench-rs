@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from io_evidence import load_storage_delta
+from io_evidence import composite_mixed_iops, load_storage_delta
 
 
 class StorageDeltaTests(unittest.TestCase):
@@ -55,6 +55,20 @@ class StorageDeltaTests(unittest.TestCase):
         after = [99, 0, 210, 0, 302, 0, 420, 0, 0, 503, 605]
         with self.assertRaisesRegex(ValueError, "block counters moved backwards"):
             load_storage_delta(self._sidecar(before, after))
+
+
+class CompositeCapacityTests(unittest.TestCase):
+    def test_read_direction_limits_composite(self) -> None:
+        self.assertAlmostEqual(composite_mixed_iops(700.0, 600.0), 1000.0)
+
+    def test_write_direction_limits_composite(self) -> None:
+        self.assertAlmostEqual(composite_mixed_iops(1400.0, 150.0), 500.0)
+
+    def test_rejects_invalid_inputs(self) -> None:
+        with self.assertRaises(ValueError):
+            composite_mixed_iops(0.0, 1.0)
+        with self.assertRaises(ValueError):
+            composite_mixed_iops(1.0, 1.0, 1.0)
 
 
 if __name__ == "__main__":

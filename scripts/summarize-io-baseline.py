@@ -10,7 +10,7 @@ import math
 from pathlib import Path
 from typing import Any
 
-from io_evidence import fio_p99_us, load_storage_delta, ratio, validate_fio_job
+from io_evidence import composite_mixed_iops, fio_p99_us, load_storage_delta, ratio, validate_fio_job
 
 
 def fmt(v: Any, digits: int = 3) -> str:
@@ -31,10 +31,13 @@ def main() -> None:
     args = ap.parse_args()
     run = args.run_dir
     support = json.loads((run / "support.json").read_text())
-    if int(support.get("calibration_protocol_version", 0)) != 3:
-        raise SystemExit("storage baseline must use calibration protocol 3")
+    if int(support.get("calibration_protocol_version", 0)) != 4:
+        raise SystemExit("storage baseline must use calibration protocol 4")
     pressure = support["pressure_calibration"]
-    authoritative = str(pressure["file"])
+    authoritative = {
+        str(pressure["read"]["file"]): "read",
+        str(pressure["write"]["file"]): "write",
+    }
     rows: list[dict[str, Any]] = []
     problems: list[str] = []
     warnings: list[str] = []
@@ -60,9 +63,10 @@ def main() -> None:
             job = jobs[0]
             if int(job.get("error", 0)) != 0:
                 raise ValueError(f"fio error={job.get('error')}")
-            if fio_path.name == authoritative:
+            calibration_direction = authoritative.get(fio_path.name)
+            if calibration_direction is not None:
                 validate_fio_job(
-                    job, rw=str(pressure["rw"]), rwmixread=int(pressure["rwmixread"]),
+                    job, rw=str(pressure[calibration_direction]["rw"]),
                     bs_bytes=int(pressure["bs_bytes"]),
                     blockalign_bytes=int(pressure["blockalign_bytes"]),
                     ioengine=str(pressure["ioengine"]), direct=int(pressure["direct"]),
@@ -80,18 +84,18 @@ def main() -> None:
                 float(storage["zfs_direct_write_bytes"]) if storage["zfs_direct_write_bytes"] is not None else None,
                 submitted_write,
             )
-            if fio_path.name == authoritative and str(support.get("filesystem")) == "zfs":
-                if direct_read_ratio is None or direct_read_ratio < 0.90:
+            if calibration_direction is not None and str(support.get("filesystem")) == "zfs":
+                if calibration_direction == "read" and (direct_read_ratio is None or direct_read_ratio < 0.90):
                     problems.append(
                         f"{fio_path.name}: ZFS direct-read bytes cover only {direct_read_ratio!r} of fio submitted reads"
                     )
-                if direct_write_ratio is None or direct_write_ratio < 0.90:
+                if calibration_direction == "write" and (direct_write_ratio is None or direct_write_ratio < 0.90):
                     problems.append(
                         f"{fio_path.name}: ZFS direct-write bytes cover only {direct_write_ratio!r} of fio submitted writes"
                     )
             rows.append({
                 "name": fio_path.stem,
-                "authoritative_pressure_calibration": fio_path.name == authoritative,
+                "authoritative_pressure_calibration": calibration_direction,
                 "fio_read_iops": float(read.get("iops", 0.0)),
                 "fio_write_iops": float(write.get("iops", 0.0)),
                 "fio_read_mbps": float(read.get("bw_bytes", 0.0)) / 1_000_000.0,
@@ -109,11 +113,34 @@ def main() -> None:
             })
         except (ValueError, KeyError, json.JSONDecodeError) as exc:
             problems.append(f"{fio_path.name}: {exc}")
+    by_name = {row["name"]: row for row in rows}
+    read_name = Path(str(pressure["read"]["file"])).stem
+    write_name = Path(str(pressure["write"]["file"])).stem
+    read_row = by_name.get(read_name)
+    write_row = by_name.get(write_name)
+    composite = None
+    if read_row is None or write_row is None:
+        problems.append("missing one or both protocol-v4 directional calibration rows")
+    else:
+        try:
+            composite = composite_mixed_iops(
+                float(read_row["fio_read_iops"]), float(write_row["fio_write_iops"]),
+                float(pressure["read_fraction"]),
+            )
+        except ValueError as exc:
+            problems.append(f"invalid directional calibration capacity: {exc}")
     result = {
         "support": support,
         "test_count": len(rows),
         "problems": problems,
         "warnings": warnings,
+        "pressure_calibration": {
+            "read_iops": float(read_row["fio_read_iops"]) if read_row else None,
+            "write_iops": float(write_row["fio_write_iops"]) if write_row else None,
+            "composite_iops": composite,
+            "read_fraction": float(pressure["read_fraction"]),
+            "write_fraction": float(pressure["write_fraction"]),
+        },
         "tests": rows,
     }
     text = json.dumps(result, indent=2, sort_keys=True) + "\n"
@@ -132,7 +159,7 @@ def main() -> None:
         for r in rows:
             lines.append(
                 "| {name} | {ref} | {ri} | {wi} | {rbw} | {wbw} | {rp99} | {wp99} | {srbw} | {swbw} | {rr} | {wr} | {zdr} | {zdw} | {arc} |".format(
-                    name=r["name"], ref="yes" if r["authoritative_pressure_calibration"] else "",
+                    name=r["name"], ref=r["authoritative_pressure_calibration"] or "",
                     ri=fmt(r["fio_read_iops"]), wi=fmt(r["fio_write_iops"]),
                     rbw=fmt(r["fio_read_mbps"]), wbw=fmt(r["fio_write_mbps"]),
                     rp99=fmt(r["fio_read_p99_us"]), wp99=fmt(r["fio_write_p99_us"]),

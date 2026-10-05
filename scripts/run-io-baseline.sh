@@ -49,7 +49,7 @@ ZFS_RECORDSIZE_BYTES=null
 ZFS_DIRECT_MODE=""
 ZFS_DIO_ENABLED=""
 SMALL_WRITE_DIRECT_STATUS="direct-requested"
-PRESSURE_REASON="4 KiB direct mixed I/O is used on non-ZFS filesystems"
+PRESSURE_REASON="separate direct random-read and random-write calibration files avoid read/write coherence aliasing"
 
 if [[ "$FSTYPE" == zfs ]]; then
   ZFS_RECORDSIZE_BYTES=$(zfs get -Hp -o value recordsize "$SOURCE" 2>/dev/null || true)
@@ -65,7 +65,7 @@ if [[ "$FSTYPE" == zfs ]]; then
   fi
   PRESSURE_BS_BYTES=$ZFS_RECORDSIZE_BYTES
   if (( PRESSURE_BS_BYTES > PREP_BS_BYTES )); then PREP_BS_BYTES=$PRESSURE_BS_BYTES; fi
-  PRESSURE_REASON="ZFS direct writes require recordsize-aligned offset and length; pressure calibration therefore uses the dataset recordsize"
+  PRESSURE_REASON="ZFS direct writes require recordsize-aligned offset and length; protocol v4 calibrates aligned random reads and writes on separate files"
   if (( ZFS_RECORDSIZE_BYTES > 4096 )); then
     SMALL_WRITE_DIRECT_STATUS="requested O_DIRECT; 4 KiB writes are not recordsize-aligned and ZFS redirects them through ARC"
   else
@@ -79,7 +79,9 @@ MACHINE_ID_SHA256=$(sha256sum /etc/machine-id | awk '{print $1}')
 FIO_VERSION=$(fio --version)
 GIT_COMMIT=$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || printf unknown)
 FILE="$DATA_DIR/fio-baseline.bin"
-cleanup() { rm -f -- "$FILE"; }
+CAL_READ_FILE="$DATA_DIR/fio-pressure-calibration-read.bin"
+CAL_WRITE_FILE="$DATA_DIR/fio-pressure-calibration-write.bin"
+cleanup() { rm -f -- "$FILE" "$CAL_READ_FILE" "$CAL_WRITE_FILE"; }
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
@@ -97,11 +99,12 @@ jq -n \
   --arg zfs_dio_enabled "$ZFS_DIO_ENABLED" \
   --arg small_write_direct_status "$SMALL_WRITE_DIRECT_STATUS" \
   --arg pressure_reason "$PRESSURE_REASON" \
-  --arg pressure_file "pressure-calibration-randrw70-q1.json" \
+  --arg pressure_read_file "pressure-calibration-randread-q1.json" \
+  --arg pressure_write_file "pressure-calibration-randwrite-q1.json" \
   --argjson pressure_bs_bytes "$PRESSURE_BS_BYTES" \
   --argjson zfs_recordsize_bytes "$ZFS_RECORDSIZE_BYTES" \
   '{
-    calibration_protocol_version:3,
+    calibration_protocol_version:4,
     lane:$lane,
     profile:$profile,
     host_name:$host_name,
@@ -120,7 +123,8 @@ jq -n \
       "direct-randread-4k-q1.json",
       "direct-randwrite-4k-q1.json",
       "direct-randrw70-4k-q1.json",
-      "pressure-calibration-randrw70-q1.json",
+      "pressure-calibration-randread-q1.json",
+      "pressure-calibration-randwrite-q1.json",
       "direct-randread-4k-q16.json",
       "direct-randwrite-4k-q16.json",
       "buffered-randread-4k-q1.json",
@@ -128,29 +132,35 @@ jq -n \
       "fdatasync-write-4k-q1.json"
     ],
     pressure_calibration:{
-      file:$pressure_file,
       bs_bytes:$pressure_bs_bytes,
-      rw:"randrw",
-      rwmixread:70,
       ioengine:"psync",
       iodepth:1,
       direct:1,
       blockalign_bytes:$pressure_bs_bytes,
+      read_fraction:0.7,
+      write_fraction:0.3,
+      composite_formula:"min(read_iops / 0.7, write_iops / 0.3)",
+      read:{file:$pressure_read_file,rw:"randread"},
+      write:{file:$pressure_write_file,rw:"randwrite"},
       reason:$pressure_reason
     },
-    interpretation:"Tests named direct record fio O_DIRECT requests. On ZFS, unaligned direct writes may be redirected through ARC; support metadata records that distinction. The pressure-calibration workload is chosen so writes are direct-eligible."
+    interpretation:"Tests named direct record fio O_DIRECT requests. Protocol v4 proves aligned read and write Direct-I/O paths independently on disjoint files, then derives a transparent 70/30 composite capacity."
   }' > "$RUN_DIR/support.json"
 
 fio --name=prepare --filename="$FILE" --size="$SIZE" --rw=write --bs="$PREP_BS_BYTES" \
   --ioengine=psync --direct=1 --fsync_on_close=1 --output-format=json > "$RUN_DIR/prepare.json" || exit $?
+fio --name=prepare-pressure-read --filename="$CAL_READ_FILE" --size="$SIZE" --rw=write --bs="$PREP_BS_BYTES" \
+  --ioengine=psync --direct=1 --fsync_on_close=1 --output-format=json > "$RUN_DIR/prepare-pressure-read.json" || exit $?
+fio --name=prepare-pressure-write --filename="$CAL_WRITE_FILE" --size="$SIZE" --rw=write --bs="$PREP_BS_BYTES" \
+  --ioengine=psync --direct=1 --fsync_on_close=1 --output-format=json > "$RUN_DIR/prepare-pressure-write.json" || exit $?
 
 run() {
-  local name=$1; shift
+  local name=$1 file=$2; shift 2
   echo "fio $name" >&2
   local storage_before storage_after
   storage_before=$("$ROOT/scripts/capture-storage-counters.sh" "$DATA_DIR")
   set +e
-  fio --name="$name" --filename="$FILE" --size="$SIZE" --time_based=1 --runtime="$RUNTIME" \
+  fio --name="$name" --filename="$file" --size="$SIZE" --time_based=1 --runtime="$RUNTIME" \
     --randrepeat=1 --group_reporting=1 --output-format=json "$@" > "$RUN_DIR/$name.json"
   local rc=$?
   set -e
@@ -160,40 +170,50 @@ run() {
   return "$rc"
 }
 
-run direct-seqread-1m-q1 --rw=read --bs=1M --ioengine=psync --direct=1 || exit $?
-run direct-seqwrite-1m-q1 --rw=write --bs=1M --ioengine=psync --direct=1 || exit $?
-run direct-randread-4k-q1 --rw=randread --bs=4k --ioengine=psync --direct=1 || exit $?
-run direct-randwrite-4k-q1 --rw=randwrite --bs=4k --ioengine=psync --direct=1 || exit $?
-run direct-randrw70-4k-q1 --rw=randrw --rwmixread=70 --bs=4k --ioengine=psync --direct=1 || exit $?
-run pressure-calibration-randrw70-q1 --rw=randrw --rwmixread=70 --bs="$PRESSURE_BS_BYTES" --blockalign="$PRESSURE_BS_BYTES" --ioengine=psync --direct=1 || exit $?
-CALIBRATION_JSON="$RUN_DIR/pressure-calibration-randrw70-q1.json"
+run direct-seqread-1m-q1 "$FILE" --rw=read --bs=1M --ioengine=psync --direct=1 || exit $?
+run direct-seqwrite-1m-q1 "$FILE" --rw=write --bs=1M --ioengine=psync --direct=1 || exit $?
+run direct-randread-4k-q1 "$FILE" --rw=randread --bs=4k --ioengine=psync --direct=1 || exit $?
+run direct-randwrite-4k-q1 "$FILE" --rw=randwrite --bs=4k --ioengine=psync --direct=1 || exit $?
+run direct-randrw70-4k-q1 "$FILE" --rw=randrw --rwmixread=70 --bs=4k --ioengine=psync --direct=1 || exit $?
+run pressure-calibration-randread-q1 "$CAL_READ_FILE" --rw=randread --bs="$PRESSURE_BS_BYTES" --blockalign="$PRESSURE_BS_BYTES" --ioengine=psync --direct=1 || exit $?
+run pressure-calibration-randwrite-q1 "$CAL_WRITE_FILE" --rw=randwrite --bs="$PRESSURE_BS_BYTES" --blockalign="$PRESSURE_BS_BYTES" --ioengine=psync --direct=1 || exit $?
+CAL_READ_JSON="$RUN_DIR/pressure-calibration-randread-q1.json"
+CAL_WRITE_JSON="$RUN_DIR/pressure-calibration-randwrite-q1.json"
 if ! jq -e --arg bs "$PRESSURE_BS_BYTES" '
-  (.jobs | length) == 1 and
-  (.jobs[0].error // 0) == 0 and
-  .jobs[0]["job options"].rw == "randrw" and
-  .jobs[0]["job options"].rwmixread == "70" and
-  .jobs[0]["job options"].bs == $bs and
-  .jobs[0]["job options"].ba == $bs and
-  .jobs[0]["job options"].ioengine == "psync" and
+  (.jobs | length) == 1 and (.jobs[0].error // 0) == 0 and
+  .jobs[0]["job options"].rw == "randread" and .jobs[0]["job options"].bs == $bs and
+  .jobs[0]["job options"].ba == $bs and .jobs[0]["job options"].ioengine == "psync" and
   .jobs[0]["job options"].direct == "1"
-' "$CALIBRATION_JSON" >/dev/null; then
-  echo "pressure calibration fio JSON does not match the protocol-v3 aligned direct-I/O contract" >&2
+' "$CAL_READ_JSON" >/dev/null; then
+  echo "read calibration fio JSON does not match the protocol-v4 direct-I/O contract" >&2
   exit 1
 fi
-run direct-randread-4k-q16 --rw=randread --bs=4k --ioengine=libaio --iodepth=16 --direct=1 || exit $?
-run direct-randwrite-4k-q16 --rw=randwrite --bs=4k --ioengine=libaio --iodepth=16 --direct=1 || exit $?
-run buffered-randread-4k-q1 --rw=randread --bs=4k --ioengine=psync --direct=0 || exit $?
-run buffered-seqread-1m-q1 --rw=read --bs=1M --ioengine=psync --direct=0 || exit $?
-run fdatasync-write-4k-q1 --rw=write --bs=4k --ioengine=psync --direct=0 --fdatasync=1 || exit $?
+if ! jq -e --arg bs "$PRESSURE_BS_BYTES" '
+  (.jobs | length) == 1 and (.jobs[0].error // 0) == 0 and
+  .jobs[0]["job options"].rw == "randwrite" and .jobs[0]["job options"].bs == $bs and
+  .jobs[0]["job options"].ba == $bs and .jobs[0]["job options"].ioengine == "psync" and
+  .jobs[0]["job options"].direct == "1"
+' "$CAL_WRITE_JSON" >/dev/null; then
+  echo "write calibration fio JSON does not match the protocol-v4 direct-I/O contract" >&2
+  exit 1
+fi
+run direct-randread-4k-q16 "$FILE" --rw=randread --bs=4k --ioengine=libaio --iodepth=16 --direct=1 || exit $?
+run direct-randwrite-4k-q16 "$FILE" --rw=randwrite --bs=4k --ioengine=libaio --iodepth=16 --direct=1 || exit $?
+run buffered-randread-4k-q1 "$FILE" --rw=randread --bs=4k --ioengine=psync --direct=0 || exit $?
+run buffered-seqread-1m-q1 "$FILE" --rw=read --bs=1M --ioengine=psync --direct=0 || exit $?
+run fdatasync-write-4k-q1 "$FILE" --rw=write --bs=4k --ioengine=psync --direct=0 --fdatasync=1 || exit $?
 
 "$ROOT/scripts/capture-host-metadata.sh" "$RUN_DIR/host-end.txt" "$ROOT" || exit $?
 uv run --script "$ROOT/scripts/summarize-io-baseline.py" "$RUN_DIR" \
   --json-out "$RUN_DIR/summary.json" --markdown-out "$RUN_DIR/summary.md" || exit $?
 
-BASELINE_SHA=$(sha256sum "$CALIBRATION_JSON" | awk '{print $1}')
+READ_SHA=$(sha256sum "$CAL_READ_JSON" | awk '{print $1}')
+WRITE_SHA=$(sha256sum "$CAL_WRITE_JSON" | awk '{print $1}')
 SUPPORT_SHA=$(sha256sum "$RUN_DIR/support.json" | awk '{print $1}')
 SUMMARY_SHA=$(sha256sum "$RUN_DIR/summary.json" | awk '{print $1}')
-BASE_IOPS=$(jq -r '(.jobs[0].read.iops // 0) + (.jobs[0].write.iops // 0)' "$CALIBRATION_JSON")
+READ_IOPS=$(jq -r '.jobs[0].read.iops // 0' "$CAL_READ_JSON")
+WRITE_IOPS=$(jq -r '.jobs[0].write.iops // 0' "$CAL_WRITE_JSON")
+BASE_IOPS=$(awk -v r="$READ_IOPS" -v w="$WRITE_IOPS" 'BEGIN { a=r/0.7; b=w/0.3; printf "%.12g", (a < b ? a : b) }')
 jq -n \
   --arg run_id "$RUN_ID" \
   --arg profile "$PROFILE" \
@@ -203,16 +223,24 @@ jq -n \
   --arg source "$SOURCE" \
   --arg fio_version "$FIO_VERSION" \
   --arg git_commit "$GIT_COMMIT" \
-  --arg pressure_file "$(basename "$CALIBRATION_JSON")" \
-  --arg pressure_sha256 "$BASELINE_SHA" \
+  --arg pressure_read_file "$(basename "$CAL_READ_JSON")" \
+  --arg pressure_write_file "$(basename "$CAL_WRITE_JSON")" \
+  --arg pressure_read_sha256 "$READ_SHA" \
+  --arg pressure_write_sha256 "$WRITE_SHA" \
   --arg support_sha256 "$SUPPORT_SHA" \
   --arg summary_sha256 "$SUMMARY_SHA" \
   --argjson pressure_bs_bytes "$PRESSURE_BS_BYTES" \
+  --argjson read_iops "$READ_IOPS" \
+  --argjson write_iops "$WRITE_IOPS" \
   --argjson baseline_iops "$BASE_IOPS" \
-  '{format_version:1,lane:"io-calibration",complete:true,calibration_protocol_version:3,
+  '{format_version:1,lane:"io-calibration",complete:true,calibration_protocol_version:4,
     run_id:$run_id,profile:$profile,hostname:$hostname,machine_id_sha256:$machine_id_sha256,
     storage:{filesystem:$filesystem,source:$source},fio_version:$fio_version,git_commit:$git_commit,
-    pressure_calibration:{file:$pressure_file,sha256:$pressure_sha256,bs_bytes:$pressure_bs_bytes,iops:$baseline_iops},
+    pressure_calibration:{
+      bs_bytes:$pressure_bs_bytes,read_fraction:0.7,write_fraction:0.3,iops:$baseline_iops,
+      read:{file:$pressure_read_file,sha256:$pressure_read_sha256,iops:$read_iops},
+      write:{file:$pressure_write_file,sha256:$pressure_write_sha256,iops:$write_iops}
+    },
     support_sha256:$support_sha256,summary_sha256:$summary_sha256}' > "$RUN_DIR/calibration.json"
 
 echo "$RUN_DIR"

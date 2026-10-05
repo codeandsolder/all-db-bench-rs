@@ -12,6 +12,15 @@ def ratio(num: float | None, den: float | None) -> float | None:
     return num / den
 
 
+def composite_mixed_iops(read_iops: float, write_iops: float, read_fraction: float = 0.7) -> float:
+    if read_iops <= 0 or write_iops <= 0:
+        raise ValueError('directional IOPS must be positive')
+    if not 0.0 < read_fraction < 1.0:
+        raise ValueError('read_fraction must be between 0 and 1')
+    write_fraction = 1.0 - read_fraction
+    return min(read_iops / read_fraction, write_iops / write_fraction)
+
+
 def fio_p99_us(direction: dict[str, Any]) -> float | None:
     p = direction.get("clat_ns", {}).get("percentile", {})
     value = p.get("99.000000")
