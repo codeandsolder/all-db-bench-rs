@@ -24,7 +24,11 @@ def median(values: Iterable[float]) -> float | None:
 
 
 
-def load_case(case_path: Path, pressure_path: Path, baseline_iops: float, expected_bs: int) -> dict[str, Any]:
+def load_case(
+    case_path: Path, pressure_path: Path, baseline_iops: float, expected_bs: int,
+    baseline_read_iops: float, baseline_write_iops: float,
+    read_fraction: float, write_fraction: float,
+) -> dict[str, Any]:
     db = json.loads(case_path.read_text())
     pressure = json.loads(pressure_path.read_text())
     match = SCENARIO_RE.match(str(db.get("scenario", "")))
@@ -37,29 +41,45 @@ def load_case(case_path: Path, pressure_path: Path, baseline_iops: float, expect
         raise ValueError(f"pressure sidecar percent {sidecar_pct} != scenario {pct}")
     if sidecar_bs != expected_bs:
         raise ValueError(f"pressure sidecar block size {sidecar_bs} != run support {expected_bs}")
-    sidecar_baseline = float(pressure.get("baseline_iops", 0.0))
-    if not math.isclose(sidecar_baseline, baseline_iops, rel_tol=1e-9, abs_tol=1e-6):
-        raise ValueError(
-            f"pressure sidecar baseline_iops {sidecar_baseline} != run support {baseline_iops}"
-        )
+    for field, expected in (
+        ("baseline_iops", baseline_iops),
+        ("baseline_read_iops", baseline_read_iops),
+        ("baseline_write_iops", baseline_write_iops),
+        ("read_fraction", read_fraction),
+        ("write_fraction", write_fraction),
+    ):
+        actual = float(pressure.get(field, 0.0))
+        if not math.isclose(actual, expected, rel_tol=1e-9, abs_tol=1e-6):
+            raise ValueError(f"pressure sidecar {field} {actual} != run support {expected}")
 
     target_iops = float(pressure.get("target_iops", 0.0))
+    target_read_iops = float(pressure.get("target_read_iops", 0.0))
+    target_write_iops = float(pressure.get("target_write_iops", 0.0))
     pressure_read_iops = pressure_write_iops = pressure_bw_bytes = 0.0
     pressure_read_bytes = pressure_write_bytes = 0.0
     pressure_read_p99_us = pressure_write_p99_us = None
     fio_error = 0
     jobs = pressure.get("jobs") or []
     if pct > 0:
-        if len(jobs) != 1:
-            raise ValueError(f"nonzero pressure case has {len(jobs)} fio jobs, expected 1")
-        job = jobs[0]
-        fio_error = int(job.get("error", 0))
+        if len(jobs) != 2:
+            raise ValueError(f"nonzero pressure case has {len(jobs)} fio jobs, expected 2")
+        read_jobs = [j for j in jobs if (j.get("job options") or {}).get("rw") == "randread"]
+        write_jobs = [j for j in jobs if (j.get("job options") or {}).get("rw") == "randwrite"]
+        if len(read_jobs) != 1 or len(write_jobs) != 1:
+            raise ValueError("pressure sidecar must contain exactly one randread and one randwrite job")
+        read_job = read_jobs[0]
+        write_job = write_jobs[0]
         validate_fio_job(
-            job, rw="randrw", rwmixread=70, bs_bytes=expected_bs,
-            blockalign_bytes=expected_bs, ioengine="psync", direct=1,
+            read_job, rw="randread", bs_bytes=expected_bs, blockalign_bytes=expected_bs,
+            ioengine="psync", direct=1,
         )
-        read = job.get("read", {})
-        write = job.get("write", {})
+        validate_fio_job(
+            write_job, rw="randwrite", bs_bytes=expected_bs, blockalign_bytes=expected_bs,
+            ioengine="psync", direct=1,
+        )
+        fio_error = max(int(read_job.get("error", 0)), int(write_job.get("error", 0)))
+        read = read_job.get("read", {})
+        write = write_job.get("write", {})
         pressure_read_iops = float(read.get("iops", 0.0))
         pressure_write_iops = float(write.get("iops", 0.0))
         pressure_bw_bytes = float(read.get("bw_bytes", 0.0)) + float(write.get("bw_bytes", 0.0))
@@ -68,10 +88,12 @@ def load_case(case_path: Path, pressure_path: Path, baseline_iops: float, expect
         pressure_read_p99_us = fio_p99_us(read)
         pressure_write_p99_us = fio_p99_us(write)
 
-    if pct == 0 and target_iops != 0:
-        raise ValueError(f"zero-pressure case has target_iops={target_iops}")
-    if pct > 0 and target_iops <= 0:
-        raise ValueError(f"nonzero pressure case has target_iops={target_iops}")
+    if pct == 0 and (target_iops != 0 or target_read_iops != 0 or target_write_iops != 0):
+        raise ValueError("zero-pressure case has nonzero target IOPS")
+    if pct > 0 and (target_iops <= 0 or target_read_iops <= 0 or target_write_iops <= 0):
+        raise ValueError("nonzero pressure case has nonpositive target IOPS")
+    if pct > 0 and not math.isclose(target_iops, target_read_iops + target_write_iops, rel_tol=0, abs_tol=1e-6):
+        raise ValueError("pressure target_iops does not equal directional target sum")
 
     delivered_iops = pressure_read_iops + pressure_write_iops
     ops_completed = max(int(db.get("ops_completed", 0)), 1)
@@ -94,14 +116,18 @@ def load_case(case_path: Path, pressure_path: Path, baseline_iops: float, expect
         "pressure_percent": pct,
         "pressure_bs_bytes": int(pressure.get("bs_bytes", 0)),
         "pressure_target_iops": target_iops,
+        "pressure_target_read_iops": target_read_iops,
+        "pressure_target_write_iops": target_write_iops,
         "pressure_delivered_iops": delivered_iops,
         "pressure_delivered_read_iops": pressure_read_iops,
         "pressure_delivered_write_iops": pressure_write_iops,
+        "pressure_delivered_vs_target": ratio(delivered_iops, target_iops) if pct > 0 else None,
+        "pressure_delivered_read_vs_target": ratio(pressure_read_iops, target_read_iops) if pct > 0 else None,
+        "pressure_delivered_write_vs_target": ratio(pressure_write_iops, target_write_iops) if pct > 0 else None,
+        "pressure_delivered_vs_baseline": ratio(delivered_iops, baseline_iops) if pct > 0 else 0.0,
         "pressure_delivered_bw_mbps": pressure_bw_bytes / 1_000_000.0,
         "pressure_read_bytes": pressure_read_bytes,
         "pressure_write_bytes": pressure_write_bytes,
-        "pressure_delivered_vs_target": ratio(delivered_iops, target_iops) if pct > 0 else None,
-        "pressure_delivered_vs_baseline": ratio(delivered_iops, baseline_iops) if pct > 0 else 0.0,
         "pressure_read_p99_us": pressure_read_p99_us,
         "pressure_write_p99_us": pressure_write_p99_us,
         "pressure_fio_error": fio_error,
@@ -112,7 +138,6 @@ def load_case(case_path: Path, pressure_path: Path, baseline_iops: float, expect
         "db_runqueue_wait_fraction": float(proc.get("runqueue_wait_fraction_of_wall", 0.0)),
         "db_io_psi_full_fraction": float(system.get("psi_io_full_us", 0)) * 1000.0 / system_wall_ns,
     }
-
 
 
 
@@ -154,9 +179,11 @@ def aggregate(cases: list[dict[str, Any]]) -> list[dict[str, Any]]:
         groups[identity(c) + (c["pressure_percent"], c["pressure_bs_bytes"])].append(c)
 
     fields = [
-        "pressure_target_iops", "pressure_delivered_iops", "pressure_delivered_read_iops",
-        "pressure_delivered_write_iops", "pressure_delivered_bw_mbps",
-        "pressure_delivered_vs_target", "pressure_delivered_vs_baseline",
+        "pressure_target_iops", "pressure_target_read_iops", "pressure_target_write_iops",
+        "pressure_delivered_iops", "pressure_delivered_read_iops", "pressure_delivered_write_iops",
+        "pressure_delivered_bw_mbps", "pressure_delivered_vs_target",
+        "pressure_delivered_read_vs_target", "pressure_delivered_write_vs_target",
+        "pressure_delivered_vs_baseline",
         "pressure_read_p99_us", "pressure_write_p99_us",
         "db_ops_per_s", "db_throughput_ratio_vs_zero", "db_read_p99_us",
         "db_read_p99_ratio_vs_zero", "db_write_p99_us", "db_write_p99_ratio_vs_zero",
@@ -208,9 +235,13 @@ def main() -> None:
     run_dir = args.run_dir
     support = json.loads((run_dir / "support.json").read_text())
     protocol = int(support.get("calibration_protocol_version", 0))
-    if protocol != 3:
-        raise SystemExit(f"unsupported I/O calibration protocol {protocol}; expected 3")
+    if protocol != 4:
+        raise SystemExit(f"unsupported I/O calibration protocol {protocol}; expected 4")
     baseline_iops = float(support["baseline_iops"])
+    baseline_read_iops = float(support["baseline_read_iops"])
+    baseline_write_iops = float(support["baseline_write_iops"])
+    read_fraction = float(support["read_fraction"])
+    write_fraction = float(support["write_fraction"])
     expected_bs = int(support["pressure_bs_bytes"])
     problems: list[str] = []
     warnings: list[str] = []
@@ -229,7 +260,10 @@ def main() -> None:
             problems.append(f"missing storage sidecar for {case_path.stem}")
             continue
         try:
-            c = load_case(case_path, pressure_path, baseline_iops, expected_bs)
+            c = load_case(
+                case_path, pressure_path, baseline_iops, expected_bs,
+                baseline_read_iops, baseline_write_iops, read_fraction, write_fraction,
+            )
             c.update(load_storage_delta(storage_path))
             c["zfs_direct_read_bytes_per_pressure_read_byte"] = ratio(
                 float(c["zfs_direct_read_bytes"]) if c["zfs_direct_read_bytes"] is not None else None,
@@ -288,6 +322,10 @@ def main() -> None:
 
     result = {
         "baseline_iops": baseline_iops,
+        "baseline_read_iops": baseline_read_iops,
+        "baseline_write_iops": baseline_write_iops,
+        "read_fraction": read_fraction,
+        "write_fraction": write_fraction,
         "pressure_bs_bytes": expected_bs,
         "case_count": len(cases),
         "group_count": len(groups),
@@ -309,16 +347,18 @@ def main() -> None:
             "",
             "Delivered pressure is measured by fio. Falling below the requested cap under database contention is a measured outcome, not automatically a harness failure.",
             "",
-            "| engine | dur | workload | pressure | trials | delivered IOPS | delivered/target | delivered/baseline | fio MB/s | backing read MB/s | backing write MB/s | ARC hit % | DB ops/s | DB throughput/zero | DB read p99/zero | DB write p99/zero | DB IO PSI full % |",
-            "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+            "| engine | dur | workload | pressure | trials | delivered IOPS | delivered/target | read/target | write/target | delivered/baseline | fio MB/s | backing read MB/s | backing write MB/s | ARC hit % | DB ops/s | DB throughput/zero | DB read p99/zero | DB write p99/zero | DB IO PSI full % |",
+            "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
         ]
         for g in groups:
             lines.append(
-                "| {engine} {version} | {dur} | {workload} | {pct}% | {trials} | {piops} | {ptarget} | {pbase} | {pbw} | {sread} | {swrite} | {archit} | {dbops} | {dbratio} | {rratio} | {wratio} | {psi} |".format(
+                "| {engine} {version} | {dur} | {workload} | {pct}% | {trials} | {piops} | {ptarget} | {preadtarget} | {pwritetarget} | {pbase} | {pbw} | {sread} | {swrite} | {archit} | {dbops} | {dbratio} | {rratio} | {wratio} | {psi} |".format(
                     engine=g["engine"], version=g["engine_version"], dur=g["durability"], workload=g["workload"],
                     pct=g["pressure_percent"], trials=g["trials"],
                     piops=fmt(g["pressure_delivered_iops_median"]),
                     ptarget=fmt(g["pressure_delivered_vs_target_median"]),
+                    preadtarget=fmt(g["pressure_delivered_read_vs_target_median"]),
+                    pwritetarget=fmt(g["pressure_delivered_write_vs_target_median"]),
                     pbase=fmt(g["pressure_delivered_vs_baseline_median"]),
                     pbw=fmt(g["pressure_delivered_bw_mbps_median"]),
                     sread=fmt(g["storage_read_mbps_median"]),
