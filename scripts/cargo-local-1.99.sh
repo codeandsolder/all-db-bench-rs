@@ -6,16 +6,16 @@ if [[ -z "${CARGO_REAL:-}" ]]; then
   if [[ -x /opt/cargo-ephemeral/current/cargo ]]; then
     CARGO_REAL=/opt/cargo-ephemeral/current/cargo
   else
-    CARGO_REAL=$(rustup which cargo --toolchain 1.98.1 2>/dev/null || command -v cargo || true)
+    CARGO_REAL=$(rustup which cargo --toolchain 1.99.0 2>/dev/null || command -v cargo || true)
   fi
 fi
 if [[ -z "$CARGO_REAL" || ! -x "$CARGO_REAL" ]]; then
   echo "Cargo binary not found (set CARGO_REAL explicitly)" >&2
   exit 127
 fi
-RUSTC_REAL=${RUSTC_REAL:-$(rustup which rustc --toolchain 1.98.1)}
+RUSTC_REAL=${RUSTC_REAL:-$(rustup which rustc --toolchain 1.99.0)}
 if [[ ! -x "$RUSTC_REAL" ]]; then
-  echo "Rust 1.98.1 rustc not found: $RUSTC_REAL" >&2
+  echo "Rust 1.99.0 rustc not found: $RUSTC_REAL" >&2
   exit 127
 fi
 export RUSTC="$RUSTC_REAL"

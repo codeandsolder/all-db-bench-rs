@@ -8,9 +8,9 @@ A replacement for the earlier redb/Turso/Fjall growth-loop benchmark, designed a
 
 ## Build
 
-    CARGO_TARGET_DIR=/tmp/rust-db-realistic-bench-target ./scripts/cargo-local-1.98.1.sh build --release --features kv-all --bin kvbench
-    CARGO_TARGET_DIR=/tmp/rust-db-realistic-bench-target ./scripts/cargo-local-1.98.1.sh build --release --features record --bin recordbench
-    ./scripts/cargo-local-1.98.1.sh build --release --manifest-path engines/surrealdb-rocksdb/Cargo.toml --target-dir /tmp/rust-db-surreal-rocks-target
+    CARGO_TARGET_DIR=/tmp/rust-db-realistic-bench-target ./scripts/cargo-local-1.99.sh build --release --locked --features kv-all --bin kvbench
+    CARGO_TARGET_DIR=/tmp/rust-db-realistic-bench-target ./scripts/cargo-local-1.99.sh build --release --locked --features record --bin recordbench
+    ./scripts/cargo-local-1.99.sh build --release --locked --manifest-path engines/surrealdb-rocksdb/Cargo.toml --target-dir /tmp/rust-db-surreal-rocks-target
 
 ## Smoke matrices
 
@@ -50,7 +50,7 @@ The summarizer aggregates independent trials using the median and IQR. It does n
 
     ./scripts/validate.sh
 
-The static validation gate checks the pinned Rust 1.98.1 toolchain, formatting, shell syntax, all Python analysis scripts through `uv`, all in-tree benchmark binaries, and the isolated SurrealDB/RocksDB package. Run the smoke matrices after that to exercise every configured adapter against real database files.
+The static validation gate checks the pinned Rust 1.99.0 toolchain, formatting, shell syntax, all Python analysis scripts through `uv`, all in-tree benchmark binaries, and the isolated SurrealDB/RocksDB package. Run the smoke matrices after that to exercise every configured adapter against real database files.
 
 ## Wide/comprehensive campaigns
 
@@ -88,6 +88,8 @@ Summarize either SIGKILL or power-loss recovery campaigns without mixing them in
 Raw backing-volume calibration:
 
     ./scripts/run-io-baseline.sh quick
+
+A completed calibration writes `calibration.json` plus `io-summary.json` / `.md`. The manifest binds the mixed 4 KiB QD1 calibration point to the exact host/filesystem and raw fio result hash; calibrated I/O-pressure runs refuse mismatched calibration data.
 
 Dimensional KV sweeps (locality, misses, key shape/size, value entropy, write placement, tombstones and deferred-work settling):
 
@@ -131,4 +133,4 @@ All engine versions are pinned to the latest published usable release verified o
 
 The record lane includes SurrealDB 3.3.0/SurrealKV, Turso 0.8.2-pre.2, SQLite 3.53.4 via rusqlite 0.40.2, and an isolated SurrealDB 3.3.0/RocksDB package. SQLite is built project-locally under .deps/sqlite-3.53.4 because rusqlite's bundled copy is older than current SQLite.
 
-Final benchmark binaries are compiled locally with rustc 1.98.1 through scripts/cargo-local-1.98.1.sh; do not distribute target-cpu=native compilation across heterogeneous workers.
+Final benchmark binaries are compiled locally with rustc 1.99.0 through scripts/cargo-local-1.99.sh; do not distribute target-cpu=native compilation across heterogeneous workers.

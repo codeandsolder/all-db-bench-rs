@@ -65,7 +65,7 @@ JSON
 
 TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target}
 BIN="$TARGET_DIR/release/kvconcurrency"
-CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local-1.98.1.sh" \
+CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" \
   build --release --features kv-all --bin kvconcurrency || exit $?
 
 # lkv is deliberately absent: 0.2.1 has no native clone/shared writer handle.

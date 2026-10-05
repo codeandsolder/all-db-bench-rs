@@ -22,9 +22,9 @@ fi
   cat /proc/version
   echo
   echo "## toolchain"
-  RUSTC_REAL=$(rustup which rustc --toolchain 1.98.1 2>/dev/null || true)
+  RUSTC_REAL=$(rustup which rustc --toolchain 1.99.0 2>/dev/null || true)
   [[ -x "$RUSTC_REAL" ]] && "$RUSTC_REAL" --version --verbose || true
-  "$ROOT/scripts/cargo-local-1.98.1.sh" --version || true
+  "$ROOT/scripts/cargo-local-1.99.sh" --version || true
   echo "benchmark_cargo_home=${DB_BENCH_CARGO_HOME:-/tmp/db-bench-cargo-home}"
   cc --version 2>/dev/null | head -n1 || true
   c++ --version 2>/dev/null | head -n1 || true

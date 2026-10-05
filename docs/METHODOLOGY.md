@@ -111,7 +111,7 @@ Cold-start/reopen latency is a separate benchmark class and must not be simulate
 
 ## Reproducibility
 
-The suite pins a Rust 1.98.1 toolchain and exact database crate versions. Workload generation uses a fixed seed plus trial number. The matrix stores host/kernel/filesystem/toolchain metadata beside the result file.
+The suite pins a Rust 1.99.0 toolchain and exact database crate versions. Workload generation uses a fixed seed plus trial number. The matrix stores host/kernel/filesystem/toolchain metadata beside the result file.
 
 No benchmark stops because of one slow observation. Tail stalls remain samples in the latency distribution instead of censoring the rest of the series.
 
@@ -123,7 +123,7 @@ The relaxed lane is deliberately secondary. It answers "what does this engine co
 
 ## Build isolation on cold-storage
 
-Cargo build artifacts are directed to `/tmp/rust-db-realistic-bench-target`, and the benchmark-local Cargo registry/source cache defaults to `/tmp/db-bench-cargo-home`. This keeps both generated objects and crate-source/registry metadata off the measured `/srv/scratch` filesystem and avoids the shared Sentinel Cargo cache. `scripts/cargo-local-1.98.1.sh` pins rustc 1.98.1, disables `RUSTC_WRAPPER`, and forces native CC/CXX to `/usr/bin/cc` and `/usr/bin/c++`, because `target-cpu=native` makes heterogeneous distributed compilation invalid. The benchmark data itself remains under `/srv/scratch/db-bench-2026-09-27/data`.
+Cargo build artifacts are directed to `/tmp/rust-db-realistic-bench-target`, and the benchmark-local Cargo registry/source cache defaults to `/tmp/db-bench-cargo-home`. This keeps both generated objects and crate-source/registry metadata off the measured `/srv/scratch` filesystem and avoids the shared Sentinel Cargo cache. `scripts/cargo-local-1.99.sh` pins rustc 1.99.0, disables `RUSTC_WRAPPER`, and forces native CC/CXX to `/usr/bin/cc` and `/usr/bin/c++`, because `target-cpu=native` makes heterogeneous distributed compilation invalid. The benchmark data itself remains under `/srv/scratch/db-bench-2026-09-27/data`.
 
 ## Durability syscall sanity check
 
@@ -242,6 +242,8 @@ scripts/run-io-baseline.sh creates a disposable benchmark file under the same /s
 
 These are storage calibration numbers, not database scores. They let database CPU/op, process I/O bytes/op and commit latency be interpreted against the backing volume's current bandwidth/IOPS/fsync envelope.
 
+A calibration run is not reusable until all fio cases complete and the runner writes `calibration.json`. That manifest binds the calibrated 4 KiB QD1 70/30 mixed-I/O result to its SHA-256, host machine ID, mount source/filesystem/device identity, fio version and benchmark Git commit. `io-summary.json` / `io-summary.md` normalize bandwidth, IOPS and latency percentiles across the raw fio files; the raw fio JSON remains authoritative.
+
 
 ## Schema-v3 dimensional KV campaign — 2026-10-04
 
@@ -297,9 +299,9 @@ The summarizer reports CPU PSI some fraction in addition to the benchmark proces
 
 scripts/run-io-contention-matrix.sh takes a completed run-io-baseline.sh result and uses its measured 4 KiB QD1 70/30 random-I/O rate as the calibration point. It runs the same database cases with independent direct-I/O fio pressure capped at explicit fractions of that baseline (quick mode: 0/10/30/60%; full adds 90%).
 
-The pressure workload uses a separate disposable file on the same filesystem. Every case retains fio JSON so requested pressure can be compared with delivered pressure. Results are labeled io-pressure-Npct and must not be mixed with no-pressure leaderboard cases.
+The pressure workload uses a separate disposable file on the same filesystem. The runner requires the calibration manifest, verifies the calibrated fio JSON hash, and refuses a calibration produced on a different machine or filesystem/device identity. Each nonzero-pressure case also verifies that its fio worker stayed alive for the whole database invocation and records target versus actually delivered read/write/aggregate IOPS in `pressure-meta/`; an early/dead/invalid pressure worker invalidates the case instead of quietly producing a mislabeled row. `io-pressure-summary.json` / `.md` aggregate throughput and p99-latency ratios against each engine/workload's 0% control and retain delivered/target pressure ratios. Results are labeled io-pressure-Npct and must not be mixed with no-pressure leaderboard cases.
 
-The runner refuses to start on an already busy host unless explicitly overridden. A calibrated 30% pressure lane is meaningful only when there is not an uncontrolled second source of saturation already consuming the device.
+The runner refuses to start on an already busy host unless explicitly overridden. A calibrated 30% pressure lane is meaningful only when there is not an uncontrolled second source of saturation already consuming the device. Delivered pressure is evidence, not a pass/fail target: when the backing device saturates below a requested cap, that shortfall remains part of the result rather than being relabeled as if the cap had been achieved.
 
 ## Memory/cache-budget campaign
 

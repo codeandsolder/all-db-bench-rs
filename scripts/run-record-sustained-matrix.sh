@@ -72,12 +72,12 @@ if [[ -n "${BENCH_BIN:-}" ]]; then
 elif [[ "$PROFILE" == smoke ]]; then
   BIN="$TARGET_DIR/debug/recordsustained"
   BUILD_PROFILE="debug"
-  CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local-1.98.1.sh" \
+  CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" \
     build --features record --bin recordsustained || exit $?
 else
   BIN="$TARGET_DIR/release/recordsustained"
   BUILD_PROFILE="release"
-  CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local-1.98.1.sh" \
+  CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" \
     build --release --features record --bin recordsustained || exit $?
 fi
 BIN_SHA=$(sha256sum "$BIN" | awk '{print $1}')

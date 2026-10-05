@@ -14,7 +14,7 @@ TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target}
 BIN="$TARGET_DIR/release/kvbench"
 if [[ ! -x "$BIN" ]]; then
   echo "build $BIN as the normal benchmark user before invoking this root-only runner" >&2
-  echo "CARGO_TARGET_DIR=$TARGET_DIR $ROOT/scripts/cargo-local-1.98.1.sh build --release --features kv-all --bin kvbench" >&2
+  echo "CARGO_TARGET_DIR=$TARGET_DIR $ROOT/scripts/cargo-local-1.99.sh build --release --features kv-all --bin kvbench" >&2
   exit 66
 fi
 if (( EUID != 0 )); then

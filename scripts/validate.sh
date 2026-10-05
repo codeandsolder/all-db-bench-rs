@@ -3,29 +3,30 @@ set -euo pipefail
 ROOT=$(cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$ROOT"
 
-RUSTC_REAL=$(rustup which rustc --toolchain 1.98.1)
-"$RUSTC_REAL" --version | rg '^rustc 1\.98\.1 '
-"$ROOT/scripts/cargo-local-1.98.1.sh" --version
+RUSTC_REAL=$(rustup which rustc --toolchain 1.99.0)
+"$RUSTC_REAL" --version | rg '^rustc 1\.99\.0 '
+"$ROOT/scripts/cargo-local-1.99.sh" --version
 rg --version | head -1
 uv --version
 "$ROOT/scripts/ensure-sqlite-3.53.4.sh"
 
-"$ROOT/scripts/cargo-local-1.98.1.sh" fmt --all --check
-rustfmt +1.98.1 --edition 2024 engines/surrealdb-rocksdb/src/main.rs engines/surrealdb-rocksdb/src/metrics.rs --check
+"$ROOT/scripts/cargo-local-1.99.sh" metadata --locked --no-deps --format-version 1 >/dev/null
+"$ROOT/scripts/cargo-local-1.99.sh" fmt --all --check
+rustfmt +1.99.0 --edition 2024 engines/surrealdb-rocksdb/src/main.rs engines/surrealdb-rocksdb/src/metrics.rs --check
 bash -n scripts/*.sh
 uv run python -m py_compile scripts/*.py
 
 CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target} \
-  "$ROOT/scripts/cargo-local-1.98.1.sh" check --features kv-all --bin kvbench
+  "$ROOT/scripts/cargo-local-1.99.sh" check --locked --features kv-all --bin kvbench
 CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target} \
-  "$ROOT/scripts/cargo-local-1.98.1.sh" check --features kv-all --bin kvconcurrency
+  "$ROOT/scripts/cargo-local-1.99.sh" check --locked --features kv-all --bin kvconcurrency
 CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target} \
-  "$ROOT/scripts/cargo-local-1.98.1.sh" check --features kv-all --bin kvsustained
+  "$ROOT/scripts/cargo-local-1.99.sh" check --locked --features kv-all --bin kvsustained
 CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target} \
-  "$ROOT/scripts/cargo-local-1.98.1.sh" check --features record --bin recordbench
+  "$ROOT/scripts/cargo-local-1.99.sh" check --locked --features record --bin recordbench
 CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target} \
-  "$ROOT/scripts/cargo-local-1.98.1.sh" check --features record --bin recordsustained
-"$ROOT/scripts/cargo-local-1.98.1.sh" check \
+  "$ROOT/scripts/cargo-local-1.99.sh" check --locked --features record --bin recordsustained
+"$ROOT/scripts/cargo-local-1.99.sh" check --locked \
   --manifest-path "$ROOT/engines/surrealdb-rocksdb/Cargo.toml" \
   --target-dir "${SURREAL_ROCKS_TARGET_DIR:-/tmp/rust-db-surreal-rocks-target}"
 

@@ -4,7 +4,7 @@ ROOT=$(cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$ROOT"
 TARGET_DIR="${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target}"
 BIN="$TARGET_DIR/release/kvbench"
-"$ROOT/scripts/cargo-local-1.98.1.sh" build --release --features kv-all --bin kvbench
+"$ROOT/scripts/cargo-local-1.99.sh" build --release --features kv-all --bin kvbench
 PROBE_ROOT="$ROOT/data/sync-syscall-probe"
 rm -rf "$PROBE_ROOT"
 mkdir -p "$PROBE_ROOT"

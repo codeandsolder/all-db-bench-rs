@@ -46,7 +46,7 @@ mkdir -p "$RUN_DIR"/{cases,stderr,device} "$DATA_DIR"
 
 TARGET_DIR="${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target}"
 BIN="$TARGET_DIR/release/kvbench"
-"$ROOT/scripts/cargo-local-1.98.1.sh" build --release --features kv-all --bin kvbench
+"$ROOT/scripts/cargo-local-1.99.sh" build --release --features kv-all --bin kvbench
 
 ENGINES=(redb fjall surrealkv heed sled lkv manifold turbokv paritydb-hash paritydb-btree rocksdb mdbx persy roughdb jammdb lsmdb)
 DURS=(relaxed sync)
