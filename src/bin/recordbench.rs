@@ -6,7 +6,7 @@ use hdrhistogram::Histogram;
 use rand::{Rng, SeedableRng, rngs::SmallRng};
 use serde::{Deserialize, Serialize};
 #[path = "../metrics.rs"]
-mod metrics;
+pub(crate) mod metrics;
 use metrics::{ProcDelta, ProcSnapshot, SystemDelta, SystemSnapshot};
 use std::{
     fs,
@@ -25,7 +25,7 @@ const HIST_MAX_NS: u64 = 60_000_000_000;
 
 #[derive(Clone, Copy, Debug, Serialize, ValueEnum)]
 #[serde(rename_all = "kebab-case")]
-enum EngineKind {
+pub(crate) enum EngineKind {
     Surrealdb,
     Turso,
     Sqlite,
@@ -33,14 +33,14 @@ enum EngineKind {
 
 #[derive(Clone, Copy, Debug, Serialize, ValueEnum, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
-enum Durability {
+pub(crate) enum Durability {
     Relaxed,
     Sync,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, ValueEnum)]
 #[serde(rename_all = "kebab-case")]
-enum Workload {
+pub(crate) enum Workload {
     PointRead,
     IndexedRead,
     ReadHeavy,
@@ -94,13 +94,13 @@ struct Args {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, SurrealValue)]
-struct RecordData {
-    bucket: u32,
-    payload: String,
+pub(crate) struct RecordData {
+    pub(crate) bucket: u32,
+    pub(crate) payload: String,
 }
 
 #[derive(Debug, Serialize)]
-struct Quantiles {
+pub(crate) struct Quantiles {
     count: u64,
     p50_us: f64,
     p95_us: f64,
@@ -163,21 +163,21 @@ struct Measurement {
     verification: Option<Verification>,
 }
 
-enum Engine {
+pub(crate) enum Engine {
     Surreal(Surreal<SurrealLocalDb>),
     Turso(turso::Connection),
     Sqlite(SqliteConnection),
 }
 
 impl EngineKind {
-    fn version(self) -> &'static str {
+    pub(crate) fn version(self) -> &'static str {
         match self {
             Self::Surrealdb => "3.3.0 / SurrealKV 0.21.4",
             Self::Turso => "0.8.2-pre.2",
             Self::Sqlite => "rusqlite 0.40.2 / SQLite 3.53.4",
         }
     }
-    fn mapping(self, d: Durability) -> &'static str {
+    pub(crate) fn mapping(self, d: Durability) -> &'static str {
         match (self, d) {
             (Self::Surrealdb, Durability::Relaxed) => "SurrealDB embedded SurrealKV sync=never",
             (Self::Surrealdb, Durability::Sync) => "SurrealDB embedded SurrealKV sync=every",
@@ -191,7 +191,7 @@ impl EngineKind {
     }
 }
 
-fn payload(id: u64, len: usize, salt: u64) -> String {
+pub(crate) fn payload(id: u64, len: usize, salt: u64) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut x = id ^ salt ^ 0x9e37_79b9_7f4a_7c15;
     let mut out = String::with_capacity(len);
@@ -205,14 +205,14 @@ fn payload(id: u64, len: usize, salt: u64) -> String {
     out
 }
 
-fn hist() -> Histogram<u64> {
+pub(crate) fn hist() -> Histogram<u64> {
     Histogram::new_with_bounds(1, HIST_MAX_NS, 3).unwrap()
 }
-fn record(h: &mut Histogram<u64>, d: Duration) {
+pub(crate) fn record(h: &mut Histogram<u64>, d: Duration) {
     let ns = d.as_nanos().min(HIST_MAX_NS as u128) as u64;
     let _ = h.record(ns.max(1));
 }
-fn quantiles(h: &Histogram<u64>) -> Quantiles {
+pub(crate) fn quantiles(h: &Histogram<u64>) -> Quantiles {
     let us = |v: u64| v as f64 / 1000.0;
     if h.is_empty() {
         return Quantiles {
@@ -233,7 +233,7 @@ fn quantiles(h: &Histogram<u64>) -> Quantiles {
         max_us: us(h.max()),
     }
 }
-fn peak_rss_kib() -> u64 {
+pub(crate) fn peak_rss_kib() -> u64 {
     let Ok(status) = fs::read_to_string("/proc/self/status") else {
         return 0;
     };
@@ -246,7 +246,7 @@ fn peak_rss_kib() -> u64 {
         .unwrap_or(0)
 }
 
-fn dir_size(path: &Path) -> u64 {
+pub(crate) fn dir_size(path: &Path) -> u64 {
     fn walk(p: &Path, sum: &mut u64) {
         let Ok(md) = fs::symlink_metadata(p) else {
             return;
@@ -266,7 +266,11 @@ fn dir_size(path: &Path) -> u64 {
 }
 
 impl Engine {
-    async fn open(kind: EngineKind, durability: Durability, path: &Path) -> Result<Self> {
+    pub(crate) async fn open(
+        kind: EngineKind,
+        durability: Durability,
+        path: &Path,
+    ) -> Result<Self> {
         match kind {
             EngineKind::Surrealdb => {
                 let sync_mode = match durability {
@@ -327,7 +331,7 @@ impl Engine {
         }
     }
 
-    async fn get(&self, id: u64) -> Result<bool> {
+    pub(crate) async fn get(&self, id: u64) -> Result<bool> {
         match self {
             Self::Surreal(db) => {
                 let row: Option<RecordData> = db.select(("item", id as i64)).await?;
@@ -349,7 +353,7 @@ impl Engine {
         }
     }
 
-    async fn indexed_read(&self, group: u32) -> Result<usize> {
+    pub(crate) async fn indexed_read(&self, group: u32) -> Result<usize> {
         match self {
             Self::Surreal(db) => {
                 let mut resp = db
@@ -382,7 +386,7 @@ impl Engine {
         }
     }
 
-    async fn upsert_one(&self, id: u64, data: &RecordData) -> Result<()> {
+    pub(crate) async fn upsert_one(&self, id: u64, data: &RecordData) -> Result<()> {
         match self {
             Self::Surreal(db) => {
                 let _: Option<RecordData> =
@@ -410,7 +414,11 @@ impl Engine {
         Ok(())
     }
 
-    async fn upsert_batch(&self, rows: &[(u64, RecordData)]) -> Result<()> {
+    pub(crate) async fn write_batch(
+        &self,
+        rows: &[(u64, RecordData)],
+        deletes: &[u64],
+    ) -> Result<()> {
         match self {
             Self::Surreal(db) => {
                 let mut sql = String::from("BEGIN TRANSACTION;\n");
@@ -420,20 +428,39 @@ impl Engine {
                         id, data.bucket, data.payload
                     ));
                 }
+                for id in deletes {
+                    sql.push_str(&format!("DELETE item:{id};\n"));
+                }
                 sql.push_str("COMMIT TRANSACTION;");
                 db.query(sql).await?.check()?;
             }
             Self::Turso(conn) => {
                 conn.execute("BEGIN IMMEDIATE TRANSACTION", ()).await?;
                 let result: Result<()> = async {
-                    let mut stmt = conn.prepare(
-                        "INSERT INTO item(id, grp, payload) VALUES(?1, ?2, ?3) ON CONFLICT(id) DO UPDATE SET grp=excluded.grp, payload=excluded.payload"
-                    ).await?;
-                    for (id, data) in rows {
-                        stmt.execute([id.to_string(), data.bucket.to_string(), data.payload.clone()]).await?;
+                    if !rows.is_empty() {
+                        let mut stmt = conn
+                            .prepare(
+                                "INSERT INTO item(id, grp, payload) VALUES(?1, ?2, ?3) ON CONFLICT(id) DO UPDATE SET grp=excluded.grp, payload=excluded.payload",
+                            )
+                            .await?;
+                        for (id, data) in rows {
+                            stmt.execute([
+                                id.to_string(),
+                                data.bucket.to_string(),
+                                data.payload.clone(),
+                            ])
+                            .await?;
+                        }
+                    }
+                    if !deletes.is_empty() {
+                        let mut stmt = conn.prepare("DELETE FROM item WHERE id=?1").await?;
+                        for id in deletes {
+                            stmt.execute([id.to_string()]).await?;
+                        }
                     }
                     Ok(())
-                }.await;
+                }
+                .await;
                 if result.is_ok() {
                     conn.execute("COMMIT", ()).await?;
                 } else {
@@ -444,12 +471,20 @@ impl Engine {
             Self::Sqlite(conn) => {
                 conn.execute_batch("BEGIN IMMEDIATE TRANSACTION")?;
                 let result: Result<()> = (|| {
-                    let mut stmt = conn.prepare(
-                        "INSERT INTO item(id, grp, payload) VALUES(?1, ?2, ?3)
-                         ON CONFLICT(id) DO UPDATE SET grp=excluded.grp, payload=excluded.payload",
-                    )?;
-                    for (id, data) in rows {
-                        stmt.execute(params![*id as i64, data.bucket as i64, &data.payload])?;
+                    if !rows.is_empty() {
+                        let mut stmt = conn.prepare(
+                            "INSERT INTO item(id, grp, payload) VALUES(?1, ?2, ?3)
+                             ON CONFLICT(id) DO UPDATE SET grp=excluded.grp, payload=excluded.payload",
+                        )?;
+                        for (id, data) in rows {
+                            stmt.execute(params![*id as i64, data.bucket as i64, &data.payload])?;
+                        }
+                    }
+                    if !deletes.is_empty() {
+                        let mut stmt = conn.prepare("DELETE FROM item WHERE id=?1")?;
+                        for id in deletes {
+                            stmt.execute(params![*id as i64])?;
+                        }
                     }
                     Ok(())
                 })();
@@ -463,10 +498,14 @@ impl Engine {
         }
         Ok(())
     }
+
+    pub(crate) async fn upsert_batch(&self, rows: &[(u64, RecordData)]) -> Result<()> {
+        self.write_batch(rows, &[]).await
+    }
 }
 
 async fn prefill(engine: &Engine, args: &Args) -> Result<()> {
-    let batch = args.txn_size.max(100).min(1000);
+    let batch = args.txn_size.clamp(100, 1000);
     let mut rows = Vec::with_capacity(batch);
     for id in 0..args.records {
         rows.push((
@@ -635,7 +674,8 @@ async fn verify_recovery(
     }
 
     let txn = args.txn_size.max(1) as u64;
-    let transaction_atomic_tail = tail_prefix_present == 0 || tail_prefix_present % txn == 0;
+    let transaction_atomic_tail =
+        tail_prefix_present == 0 || tail_prefix_present.is_multiple_of(txn);
     let verification_ok = missing_prefix_records == 0
         && prefix_present_after_gap == 0
         && tail_present_after_gap == 0

@@ -237,3 +237,11 @@ Foreground timing fields:
 Recursive on-disk-size measurement is deliberately absent from window boundaries so the harness does not create artificial compaction catch-up pauses. Aggregate `db_bytes_before`, `db_bytes_after_foreground` and `db_bytes_final` bracket the run instead. `post_workload_settle`, when requested, uses the existing sampled deferred-work object while the engine remains open.
 
 `scripts/summarize-sustained.py` preserves per-trial derived metrics and aggregates exact-compatible trials. Baseline-relative 75/50/25% throughput thresholds, p99 multipliers and recovery positions are diagnostics only; no threshold makes a benchmark case pass or fail. Process `write_bytes / logical_mutated_bytes` is a useful host-visible write-amplification proxy but is not a physical-device write-amplification measurement.
+
+## Record sustained-write lane — schema v6
+
+`recordsustained` uses `format_version: 6` and `lane: "record-sustained"`. It intentionally remains distinct from `kv-sustained` because record/SQL/document/index overhead is part of the product-level measurement, while reusing the same fixed-window timing and process/system accounting model.
+
+Identity/configuration replaces raw-KV key/value-shape fields with `payload_bytes`; otherwise it carries the same `pattern`, record count, requested operations, window size, transaction size, durability mapping, scenario, trial and seed identities. The analyzer includes `lane` and `payload_bytes` in exact-match grouping so record and raw-KV trials cannot aggregate accidentally.
+
+`windows[]`, foreground timing, aggregate database-size bracketing and `post_workload_settle` have the same meanings as in `kv-sustained`. Record churn uses one mixed transaction per logical batch for the 40/30/30 update/insert/delete mix. `logical_mutated_bytes` is explicitly estimated as 8-byte ID + 4-byte bucket + configured payload for each upsert and 8-byte ID per delete; it exists only to normalize the process-visible write-byte proxy and is not a serialized-row-size or physical-media accounting claim.

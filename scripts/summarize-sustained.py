@@ -136,6 +136,7 @@ def summarize_case(r: dict[str, Any]) -> dict[str, Any]:
         "ops_completed": r.get("ops_completed"),
         "window_ops": r.get("window_ops"),
         "value_bytes": r.get("value_bytes"),
+        "payload_bytes": r.get("payload_bytes"),
         "value_pattern": r.get("value_pattern"),
         "key_bytes": r.get("key_bytes"),
         "key_shape": r.get("key_shape"),
@@ -195,10 +196,10 @@ def summarize_case(r: dict[str, Any]) -> dict[str, Any]:
 
 def group_key(c: dict[str, Any]) -> tuple[Any, ...]:
     return (
-        c["format_version"], c["scenario"], c["engine"], c["engine_version"],
+        c["format_version"], c["lane"], c["scenario"], c["engine"], c["engine_version"],
         c["durability"], c["durability_mapping"], c["pattern"], c["records"],
-        c["ops_requested"], c["window_ops"], c["value_bytes"], c["value_pattern"],
-        c["key_bytes"], c["key_shape"], c["txn_size"],
+        c["ops_requested"], c["window_ops"], c["value_bytes"], c["payload_bytes"],
+        c["value_pattern"], c["key_bytes"], c["key_shape"], c["txn_size"],
     )
 
 
@@ -228,9 +229,9 @@ def aggregate(cases: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for key, rs in sorted(groups.items(), key=lambda kv: tuple(str(x) for x in kv[0])):
         first = rs[0]
         g = {k: first[k] for k in [
-            "format_version", "scenario", "engine", "engine_version", "durability",
+            "format_version", "lane", "scenario", "engine", "engine_version", "durability",
             "durability_mapping", "pattern", "records", "ops_requested", "window_ops",
-            "value_bytes", "value_pattern", "key_bytes", "key_shape", "txn_size",
+            "value_bytes", "payload_bytes", "value_pattern", "key_bytes", "key_shape", "txn_size",
         ]}
         g["trials"] = len(rs)
         for field in numeric:
@@ -283,7 +284,7 @@ def main() -> None:
     else:
         raw = [json.loads(inp.read_text())]
 
-    raw = [r for r in raw if r.get("lane") == "kv-sustained"]
+    raw = [r for r in raw if r.get("lane") in {"kv-sustained", "record-sustained"}]
     cases = [summarize_case(r) for r in raw]
     groups = aggregate(cases)
     problems: list[str] = []
@@ -323,14 +324,14 @@ def main() -> None:
             "# Sustained-write / compaction summary", "",
             "Threshold columns are diagnostics relative to each trial's first three windows; they are not pass/fail criteria.",
             "Cases with >10% between-window instrumentation overhead are warned in summary.json and need larger windows before performance/cliff magnitude is interpreted.", "",
-            "| scenario | engine | dur | pattern | trials | wall ops/s | tail/base | slope/window | CV | min/base | 50% cliff trials | longest <50% | worst p99/base | write B/logical B agg | write B/logical B max-win | rq max % | IO PSI full max % | instr % | settle write MiB |",
-            "|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+            "| lane | scenario | engine | dur | pattern | trials | wall ops/s | tail/base | slope/window | CV | min/base | 50% cliff trials | longest <50% | worst p99/base | write B/logical B agg | write B/logical B max-win | rq max % | IO PSI full max % | instr % | settle write MiB |",
+            "|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
         ]
         for g in groups:
             settle_mib = None if g["settle_write_bytes_median"] is None else g["settle_write_bytes_median"] / 1024 / 1024
             lines.append(
-                "| {scenario} | {engine} {version} | {dur} | {pattern} | {trials} | {ops} | {tailr} | {slope} | {cv} | {minr} | {cliffs} | {longest} | {p99} | {waagg} | {wa} | {rq} | {io} | {instr} | {settle} |".format(
-                    scenario=g["scenario"], engine=g["engine"], version=g["engine_version"],
+                "| {lane} | {scenario} | {engine} {version} | {dur} | {pattern} | {trials} | {ops} | {tailr} | {slope} | {cv} | {minr} | {cliffs} | {longest} | {p99} | {waagg} | {wa} | {rq} | {io} | {instr} | {settle} |".format(
+                    lane=g["lane"], scenario=g["scenario"], engine=g["engine"], version=g["engine_version"],
                     dur=g["durability"], pattern=g["pattern"], trials=g["trials"],
                     ops=fmt(g["wall_ops_per_s_median"]),
                     tailr=fmt(g["tail_throughput_ratio_vs_baseline_median"]),

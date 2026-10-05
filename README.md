@@ -50,7 +50,7 @@ The summarizer aggregates independent trials using the median and IQR. It does n
 
     ./scripts/validate.sh
 
-The static validation gate checks the pinned Rust 1.98.1 toolchain, formatting, shell syntax, the uv Python summarizer, and both benchmark binaries. Run the smoke matrices after that to exercise every configured adapter against real database files.
+The static validation gate checks the pinned Rust 1.98.1 toolchain, formatting, shell syntax, all Python analysis scripts through `uv`, all in-tree benchmark binaries, and the isolated SurrealDB/RocksDB package. Run the smoke matrices after that to exercise every configured adapter against real database files.
 
 ## Wide/comprehensive campaigns
 
@@ -96,8 +96,9 @@ Dimensional KV sweeps (locality, misses, key shape/size, value entropy, write pl
 Windowed sustained-write / compaction-cliff campaigns:
 
     ./scripts/run-kv-sustained-matrix.sh quick
+    ./scripts/run-record-sustained-matrix.sh quick
 
-This lane records fixed-op windows, p99 transaction latency, process/resource deltas and post-foreground settle debt. Its 75/50/25% baseline-relative cliff thresholds are diagnostics, not pass/fail criteria.
+The raw-KV and record-product sustained lanes remain separate result classes, but share the same fixed-op window analysis: p99 transaction latency, process/resource deltas, write-amplification proxies and post-foreground settle debt. Their 75/50/25% baseline-relative cliff thresholds are diagnostics, not pass/fail criteria. Record `smoke` uses a debug build for functional coverage; `quick` and `full` use release builds and are the only record-sustained profiles intended for performance interpretation.
 
 Shared-database concurrency scaling on a multi-core host (fixed total work at 1/2/4/8 clients in quick mode; full mode also includes 16-client oversubscription):
 
