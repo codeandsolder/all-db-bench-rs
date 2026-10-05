@@ -3,7 +3,7 @@ use clap::{Parser, ValueEnum};
 use hdrhistogram::Histogram;
 use rand::{Rng, SeedableRng, rngs::SmallRng};
 use serde::{Deserialize, Serialize};
-mod metrics;
+pub(crate) mod metrics;
 use metrics::{ProcDelta, ProcSnapshot, SystemDelta, SystemSnapshot};
 use std::{
     fs,
@@ -20,20 +20,20 @@ const HIST_MAX_NS: u64 = 60_000_000_000;
 
 #[derive(Clone, Copy, Debug, Serialize, ValueEnum)]
 #[serde(rename_all = "kebab-case")]
-enum EngineKind {
+pub(crate) enum EngineKind {
     SurrealdbRocksdb,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, ValueEnum, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
-enum Durability {
+pub(crate) enum Durability {
     Relaxed,
     Sync,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, ValueEnum)]
 #[serde(rename_all = "kebab-case")]
-enum Workload {
+pub(crate) enum Workload {
     PointRead,
     IndexedRead,
     ReadHeavy,
@@ -79,13 +79,13 @@ struct Args {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, SurrealValue)]
-struct RecordData {
-    bucket: u32,
-    payload: String,
+pub(crate) struct RecordData {
+    pub(crate) bucket: u32,
+    pub(crate) payload: String,
 }
 
 #[derive(Debug, Serialize)]
-struct Quantiles {
+pub(crate) struct Quantiles {
     count: u64,
     p50_us: f64,
     p95_us: f64,
@@ -131,16 +131,16 @@ struct Measurement {
     warmup_reads: u64,
 }
 
-enum Engine {
+pub(crate) enum Engine {
     SurrealRocksdb(Surreal<SurrealLocalDb>),
 }
 
 impl EngineKind {
-    fn version(self) -> &'static str {
+    pub(crate) fn version(self) -> &'static str {
         "SurrealDB 3.3.0 / surrealdb-rocksdb 0.24.0-surreal.5"
     }
 
-    fn mapping(self, d: Durability) -> &'static str {
+    pub(crate) fn mapping(self, d: Durability) -> &'static str {
         match d {
             Durability::Relaxed => "SurrealDB embedded RocksDB sync=never",
             Durability::Sync => "SurrealDB embedded RocksDB sync=every",
@@ -148,7 +148,7 @@ impl EngineKind {
     }
 }
 
-fn payload(id: u64, len: usize, salt: u64) -> String {
+pub(crate) fn payload(id: u64, len: usize, salt: u64) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut x = id ^ salt ^ 0x9e37_79b9_7f4a_7c15;
     let mut out = String::with_capacity(len);
@@ -162,14 +162,14 @@ fn payload(id: u64, len: usize, salt: u64) -> String {
     out
 }
 
-fn hist() -> Histogram<u64> {
+pub(crate) fn hist() -> Histogram<u64> {
     Histogram::new_with_bounds(1, HIST_MAX_NS, 3).unwrap()
 }
-fn record(h: &mut Histogram<u64>, d: Duration) {
+pub(crate) fn record(h: &mut Histogram<u64>, d: Duration) {
     let ns = d.as_nanos().min(HIST_MAX_NS as u128) as u64;
     let _ = h.record(ns.max(1));
 }
-fn quantiles(h: &Histogram<u64>) -> Quantiles {
+pub(crate) fn quantiles(h: &Histogram<u64>) -> Quantiles {
     let us = |v: u64| v as f64 / 1000.0;
     if h.is_empty() {
         return Quantiles {
@@ -190,7 +190,7 @@ fn quantiles(h: &Histogram<u64>) -> Quantiles {
         max_us: us(h.max()),
     }
 }
-fn peak_rss_kib() -> u64 {
+pub(crate) fn peak_rss_kib() -> u64 {
     let Ok(status) = fs::read_to_string("/proc/self/status") else {
         return 0;
     };
@@ -203,7 +203,7 @@ fn peak_rss_kib() -> u64 {
         .unwrap_or(0)
 }
 
-fn dir_size(path: &Path) -> u64 {
+pub(crate) fn dir_size(path: &Path) -> u64 {
     fn walk(p: &Path, sum: &mut u64) {
         let Ok(md) = fs::symlink_metadata(p) else {
             return;
@@ -223,7 +223,11 @@ fn dir_size(path: &Path) -> u64 {
 }
 
 impl Engine {
-    async fn open(kind: EngineKind, durability: Durability, path: &Path) -> Result<Self> {
+    pub(crate) async fn open(
+        kind: EngineKind,
+        durability: Durability,
+        path: &Path,
+    ) -> Result<Self> {
         match kind {
             EngineKind::SurrealdbRocksdb => {
                 let sync_mode = match durability {
@@ -242,7 +246,7 @@ impl Engine {
         }
     }
 
-    async fn get(&self, id: u64) -> Result<bool> {
+    pub(crate) async fn get(&self, id: u64) -> Result<bool> {
         match self {
             Self::SurrealRocksdb(db) => {
                 let row: Option<RecordData> = db.select(("item", id as i64)).await?;
@@ -251,7 +255,7 @@ impl Engine {
         }
     }
 
-    async fn indexed_read(&self, group: u32) -> Result<usize> {
+    pub(crate) async fn indexed_read(&self, group: u32) -> Result<usize> {
         match self {
             Self::SurrealRocksdb(db) => {
                 let mut resp = db
@@ -264,7 +268,7 @@ impl Engine {
         }
     }
 
-    async fn upsert_one(&self, id: u64, data: &RecordData) -> Result<()> {
+    pub(crate) async fn upsert_one(&self, id: u64, data: &RecordData) -> Result<()> {
         match self {
             Self::SurrealRocksdb(db) => {
                 let _: Option<RecordData> =
@@ -274,7 +278,7 @@ impl Engine {
         Ok(())
     }
 
-    async fn upsert_batch(&self, rows: &[(u64, RecordData)]) -> Result<()> {
+    pub(crate) async fn upsert_batch(&self, rows: &[(u64, RecordData)]) -> Result<()> {
         match self {
             Self::SurrealRocksdb(db) => {
                 let mut sql = String::from("BEGIN TRANSACTION;\n");
@@ -293,7 +297,7 @@ impl Engine {
 }
 
 async fn prefill(engine: &Engine, args: &Args) -> Result<()> {
-    let batch = args.txn_size.max(100).min(1000);
+    let batch = args.txn_size.clamp(100, 1000);
     let mut rows = Vec::with_capacity(batch);
     for id in 0..args.records {
         rows.push((

@@ -85,11 +85,13 @@ Summarize either SIGKILL or power-loss recovery campaigns without mixing them in
       --json-out results/runs/RUN_ID/recovery-summary.json \
       --markdown-out results/runs/RUN_ID/recovery-summary.md
 
-Raw backing-volume calibration:
+Storage/filesystem calibration (including an aligned pressure-calibration record):
 
     ./scripts/run-io-baseline.sh quick
 
-A completed calibration writes `calibration.json` plus `io-summary.json` / `.md`. The manifest binds the mixed 4 KiB QD1 calibration point to the exact host/filesystem and raw fio result hash; calibrated I/O-pressure runs refuse mismatched calibration data.
+On ZFS, `direct=1` is only a request: writes smaller than `recordsize` may be redirected through ARC. The runner records those 4 KiB cases as diagnostics but uses a recordsize-aligned mixed-I/O result as the authoritative external-pressure calibration.
+
+A completed calibration additionally writes `calibration.json`, binding hashes of the exact aligned fio result, `support.json`, and the parsed calibration summary to the host/filesystem provenance. Calibrated I/O-pressure runs refuse incomplete or modified calibration state.
 
 Dimensional KV sweeps (locality, misses, key shape/size, value entropy, write placement, tombstones and deferred-work settling):
 
@@ -105,8 +107,9 @@ The raw-KV and record-product sustained lanes remain separate result classes, bu
 Shared-database concurrency scaling on a multi-core host (fixed total work at 1/2/4/8 clients in quick mode; full mode also includes 16-client oversubscription):
 
     ./scripts/run-kv-concurrency-matrix.sh quick
+    ./scripts/run-record-concurrency-matrix.sh quick
 
-The concurrency lane uses native engine sharing/cloning, not one database per client and not a benchmark-side global mutex. lkv 0.2.1 is explicitly unsupported because its current writer API cannot be shared/cloned without external serialization.
+The raw-KV and record-product concurrency lanes remain separate result classes but use the same fixed-total-work scaling interpretation. Raw KV uses native engine sharing/cloning rather than one database per client or a benchmark-side global mutex; lkv 0.2.1 is explicitly unsupported because its current writer API cannot be shared/cloned without external serialization. Record concurrency uses cloned SurrealDB client handles over embedded SurrealKV or isolated RocksDB and independent native Turso/SQLite connections to one shared database; writer lock waiting remains inside the product and is charged to transaction latency.
 
 Controlled CPU/scheduler contention (uniform duty-cycle pressure on every allowed logical CPU):
 

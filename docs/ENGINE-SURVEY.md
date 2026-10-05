@@ -12,7 +12,7 @@ Pure-Rust LSM engine. Its durability API is explicit: Buffer, SyncData, SyncAll.
 SurrealDB's low-level Rust storage engine, tested directly in the raw KV lane. This is distinct from SurrealDB itself.
 
 ### SurrealDB 3.3.0
-Tested in the record/document lane through the embedded SurrealKV backend. SurrealDB 3.3 exposes storage sync modes, so sync=every and sync=never can be selected explicitly.
+Tested in the record/document lane through the embedded SurrealKV backend. SurrealDB 3.3 exposes storage sync modes, so sync=every and sync=never can be selected explicitly. The record-concurrency lane gives each client a native cloned Surreal handle; only typed QueryError::TransactionConflict failures are retried, with retry count and time retained in the result.
 
 ### TurboKV 0.6.0
 Recent async Rust LSM-style embedded store. It explicitly distinguishes fast(), durable() (WAL without per-write sync), and paranoid() (sync before acknowledgement). The benchmark maps the primary power-loss-durable comparison to paranoid(), not to the misleadingly named durable() preset.
@@ -50,11 +50,14 @@ Mature mmap/B+tree-family reference beside LMDB/heed. Uses NoWriteMap. Sync maps
 ### Persy 1.8.1
 Pure-Rust transactional single-file copy-on-write/journal engine. The adapter uses a ByteVec -> ByteVec Replace index to provide true KV semantics. Sync uses foreground transaction fsync; relaxed uses Persy's background-sync transaction mode.
 
+### Turso 0.8.2-pre.2
+Record/SQL product lane. The concurrency benchmark opens one independent `Database::connect()` connection per client rather than cloning a `Connection`, because Turso connection clones share a connection-operation gate. Its native 60 s busy timeout keeps writer lock wait inside measured transaction latency.
+
 ### SQLite 3.53.4 / rusqlite 0.40.2
-Record/SQL lane baseline. rusqlite 0.40.2 normally bundles SQLite 3.53.2, so the benchmark links it against a project-local build of the actual current SQLite 3.53.4. WAL mode is fixed; synchronous=NORMAL/FULL provides relaxed/sync comparison.
+Record/SQL lane baseline. rusqlite 0.40.2 normally bundles SQLite 3.53.2, so the benchmark links it against a project-local build of the actual current SQLite 3.53.4. WAL mode is fixed; synchronous=NORMAL/FULL provides relaxed/sync comparison. Concurrency uses one independent WAL connection per client with SQLite's native 60 s busy timeout, so lock serialization is measured rather than hidden by benchmark retries.
 
 ### SurrealDB 3.3.0 / RocksDB backend
-Same SurrealDB record workload with RocksDB underneath, isolating backend contribution from query/document-layer cost. Kept in a separate Cargo package because SurrealDB's forked RocksDB native sys crate and standalone rocksdb 0.25.0 both declare links="rocksdb" and Cargo correctly refuses to link both into one package graph.
+Same SurrealDB record workload with RocksDB underneath, isolating backend contribution from query/document-layer cost. Kept in a separate Cargo package because SurrealDB's forked RocksDB native sys crate and standalone rocksdb 0.25.0 both declare links="rocksdb" and Cargo correctly refuses to link both into one package graph. Its concurrency binary stays in that isolated package and uses native cloned Surreal handles with the same typed conflict-retry accounting as the SurrealKV-backed product.
 
 ### RoughDB 0.10.1 — implemented experimental lane
 Current 2026 pure-Rust LevelDB port with WAL, MANIFEST, SSTables, background compaction and a runtime per-write sync flag. It maps cleanly to both durability lanes. Compression is explicitly disabled in the neutral comparison so it matches the standalone RocksDB baseline policy.

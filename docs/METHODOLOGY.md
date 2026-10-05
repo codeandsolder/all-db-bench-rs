@@ -160,6 +160,14 @@ The core concurrency matrix includes point reads, read-heavy, balanced, tiny one
 
 Range-scan concurrency uses only engines/configurations with a native ordered seek/range API. paritydb-hash is omitted while paritydb-btree participates. Full mode includes 16 clients on the 8-CPU laptop intentionally; those rows measure oversubscription/queueing behavior rather than pretending 16 hardware threads exist.
 
+### Record-product concurrency
+
+The record-product concurrency lane (`lane = "record-concurrency"`) uses the same fixed-total-work and c1 scaling interpretation as raw KV, but intentionally keeps document/SQL/index overhead in scope. SurrealDB/SurrealKV and the isolated SurrealDB/RocksDB package each receive one native cloned Surreal client handle per worker. Turso receives one independent `Database::connect()` connection per worker; cloning one Turso `Connection` is deliberately avoided because its clones share a connection-operation gate. SQLite receives one independent WAL connection per worker.
+
+Turso and SQLite use their native 60 s busy-timeout mechanisms, so writer lock wait is charged to measured transaction latency and client fairness rather than hidden behind benchmark-side retry loops. SurrealDB errors are retried only when the public typed API reports `QueryError::TransactionConflict`; no message/string matching is used. Retries are bounded at 10,000, counted per client and in aggregate, and the operation/transaction latency includes every failed attempt. All record client OS threads enter the same multi-thread Tokio runtime through a shared `Handle`; the coordinator waits inside `block_in_place`, preserving runtime capacity for engine background tasks. Native client fan-out time is measured separately as `client_setup_s` and excluded from synchronized foreground throughput.
+
+Write-burst work is partitioned only at transaction boundaries: total `ops` is interpreted as whole transactions and no client receives a benchmark-manufactured partial final commit. Tiny/write-burst append IDs use disjoint global ranges; point/index/read-heavy clients intentionally share the populated record/index sets. In addition to the five core record workloads, targeted slices cover relaxed durability, large payloads, transaction sizes 1/1000, and a 64-record high-contention read-heavy working set. Full mode adds 16 clients on the 8-logical-CPU laptop as a deliberate oversubscription case.
+
 ## Comprehensive matrix expansion — 2026-10-04
 
 The wide campaign is deliberately a core matrix plus targeted sweeps, not a full Cartesian product. A full product of engine × durability × workload × dataset size × value size × transaction size × scan width would spend most of its runtime repeating uninformative combinations.
@@ -232,17 +240,20 @@ This lane establishes process-death consistency and directly measures acknowledg
 
 ## Raw storage calibration
 
-scripts/run-io-baseline.sh creates a disposable benchmark file under the same /srv/scratch filesystem and records fio JSON for:
+`scripts/run-io-baseline.sh` creates a disposable benchmark file under the same filesystem as the database data and records fio JSON for:
 
-- direct sequential 1 MiB QD1 read/write;
-- direct random 4 KiB QD1 read/write and 70/30 mixed I/O;
-- direct random 4 KiB QD16 read/write;
+- requested-direct sequential 1 MiB QD1 read/write;
+- requested-direct random 4 KiB QD1 read/write and 70/30 mixed I/O;
+- a dedicated QD1 70/30 **pressure calibration** whose block size is guaranteed eligible for direct writes;
+- requested-direct random 4 KiB QD16 read/write;
 - buffered random/sequential reads;
-- 4 KiB buffered writes with fdatasync after each write.
+- 4 KiB buffered writes with `fdatasync` after each write.
 
-These are storage calibration numbers, not database scores. They let database CPU/op, process I/O bytes/op and commit latency be interpreted against the backing volume's current bandwidth/IOPS/fsync envelope.
+`direct=1` describes the fio/O_DIRECT request, not by itself a proof that every filesystem performed uncached I/O. This distinction matters on OpenZFS: direct reads need page alignment, but direct writes also require the request offset and length to be `recordsize`-aligned. With the laptop dataset's 128 KiB recordsize, a 4 KiB write requested with O_DIRECT is redirected through ARC, and mixed 4 KiB read/write tests can therefore include cache-coherency effects. Those 4 KiB results remain useful filesystem-behavior diagnostics but are not used to calibrate external storage pressure.
 
-A calibration run is not reusable until all fio cases complete and the runner writes `calibration.json`. That manifest binds the calibrated 4 KiB QD1 70/30 mixed-I/O result to its SHA-256, host machine ID, mount source/filesystem/device identity, fio version and benchmark Git commit. `io-summary.json` / `io-summary.md` normalize bandwidth, IOPS and latency percentiles across the raw fio files; the raw fio JSON remains authoritative.
+The runner writes `support.json` with calibration protocol version, filesystem/source, ZFS recordsize/direct-mode information where applicable, and the authoritative pressure-calibration filename/block size. Each fio case also brackets OpenZFS pool `direct_*`/`arc_*` kstats and Linux block-device counters. On ZFS, the authoritative pressure calibration is accepted only when ZFS `direct_read_bytes` and `direct_write_bytes` confirm the submitted fio traffic actually used the Direct-I/O path; `direct=1` and alignment alone are not treated as proof. On ZFS with Direct I/O enabled, the pressure block size is the dataset recordsize and fio also receives an explicit matching `blockalign`; on other filesystems it defaults to 4 KiB. If ZFS Direct I/O is disabled, the raw pressure calibration is refused rather than silently measuring ARC throughput.
+
+These are storage calibration numbers, not database scores. They let database CPU/op, process I/O bytes/op and commit latency be interpreted against the backing volume's current bandwidth/IOPS/fsync envelope, while keeping cached/filesystem-small-write behavior distinct from the aligned pressure reference.
 
 
 ## Schema-v3 dimensional KV campaign — 2026-10-04
@@ -297,11 +308,19 @@ The summarizer reports CPU PSI some fraction in addition to the benchmark proces
 
 ## Controlled I/O-dependence campaign
 
-scripts/run-io-contention-matrix.sh takes a completed run-io-baseline.sh result and uses its measured 4 KiB QD1 70/30 random-I/O rate as the calibration point. It runs the same database cases with independent direct-I/O fio pressure capped at explicit fractions of that baseline (quick mode: 0/10/30/60%; full adds 90%).
+`scripts/run-io-contention-matrix.sh` consumes only the dedicated pressure-calibration record named by the storage baseline's protocol-v3 `support.json`; it no longer assumes that a 4 KiB `direct=1` mixed workload is physically direct. Quick mode applies 0/10/30/60% of that measured QD1 70/30 calibration rate; full adds 90%. Smoke uses 0/30/60% for functional coverage.
 
-The pressure workload uses a separate disposable file on the same filesystem. The runner requires the calibration manifest, verifies the calibrated fio JSON hash, and refuses a calibration produced on a different machine or filesystem/device identity. Each nonzero-pressure case also verifies that its fio worker stayed alive for the whole database invocation and records target versus actually delivered read/write/aggregate IOPS in `pressure-meta/`; an early/dead/invalid pressure worker invalidates the case instead of quietly producing a mislabeled row. `io-pressure-summary.json` / `.md` aggregate throughput and p99-latency ratios against each engine/workload's 0% control and retain delivered/target pressure ratios. Results are labeled io-pressure-Npct and must not be mixed with no-pressure leaderboard cases.
+The pressure fio process uses the **same block size, block alignment, 70/30 mix, QD1 synchronous engine and O_DIRECT request** as the calibration. On the laptop's 128 KiB-recordsize ZFS dataset this means aligned 128 KiB mixed I/O, avoiding the ARC fallback that applies to 4 KiB writes. The exact baseline fio JSON and support metadata are copied into every contention run with SHA-256 identities. Quick contention requires a quick/full baseline; full contention requires a full baseline.
 
-The runner refuses to start on an already busy host unless explicitly overridden. A calibrated 30% pressure lane is meaningful only when there is not an uncontrolled second source of saturation already consuming the device. Delivered pressure is evidence, not a pass/fail target: when the backing device saturates below a requested cap, that shortfall remains part of the result rather than being relabeled as if the cap had been achieved.
+Pressure uses a separate disposable file on the same filesystem and runs for the entire database process invocation, including open, prefill, warmup and the measured phase. The pressure worker is preconditioned for 2 seconds and fio uses the same 2-second `ramp_time`, so that preconditioning is excluded from delivered-IOPS statistics rather than biasing short cases upward. Every nonzero-pressure case retains fio JSON augmented with requested pressure percentage, total/read/write target IOPS, baseline IOPS and block size, so delivered pressure remains inspectable rather than inferred from the requested cap. After each nonzero-pressure case, fio is stopped, `sync` is completed and the runner waits briefly before launching the next randomized case so deferred writeback from one pressure level is not silently charged to another.
+
+The storage baseline writes `calibration.json` only after every declared fio case and the storage summary have completed successfully. That completion manifest hashes `support.json`, the authoritative aligned pressure-calibration fio result, and the parsed calibration summary; the contention runner refuses modified, partial, cross-host, or cross-filesystem calibration state.
+
+A resumed case is considered complete only when both its database result and pressure evidence are present and parseable. Stale failure records are cleared after a successful rerun, setup/build failures cannot fall through to an old binary, and a failed trial-count summary makes the campaign fail rather than merely producing a warning file.
+
+`scripts/summarize-io-pressure.py` joins each database result to its fio sidecar. It reports requested versus delivered pressure, delivered/baseline IOPS, pressure bandwidth and p99 latency, database throughput and p99 ratios versus the same trial's 0%-pressure case, and the database process/PSI context. Delivered pressure below the requested cap is retained as a measured outcome under device contention rather than rewritten as though the cap were achieved.
+
+Results are labeled `io-pressure-Npct` and must not be mixed with no-pressure leaderboard cases. The runner refuses to start on an already busy host unless explicitly overridden; a calibrated pressure lane is meaningful only when there is not an uncontrolled second source of saturation already consuming the device.
 
 ## Memory/cache-budget campaign
 

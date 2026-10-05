@@ -155,10 +155,10 @@ fn pressure_total(path: &str, class: &str) -> u64 {
             continue;
         }
         for field in fields {
-            if let Some(raw) = field.strip_prefix("total=") {
-                if let Ok(value) = raw.parse() {
-                    return value;
-                }
+            if let Some(raw) = field.strip_prefix("total=")
+                && let Ok(value) = raw.parse()
+            {
+                return value;
             }
         }
     }

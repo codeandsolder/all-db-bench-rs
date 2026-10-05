@@ -2,200 +2,340 @@
 # /// script
 # requires-python = ">=3.12"
 # ///
-
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import statistics
 from collections import defaultdict
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
+
+from io_evidence import fio_p99_us, load_storage_delta, ratio, validate_fio_job
 
 SCENARIO_RE = re.compile(r"^io-pressure-(\d+)pct$")
 
 
-def number(value: Any) -> float:
-    try:
-        return float(value or 0)
-    except (TypeError, ValueError):
-        return 0.0
+def median(values: Iterable[float]) -> float | None:
+    xs = list(values)
+    return statistics.median(xs) if xs else None
 
 
-def median(values: list[float]) -> float | None:
-    return statistics.median(values) if values else None
 
-
-def ratio(value: float | None, baseline: float | None) -> float | None:
-    if value is None or baseline is None or baseline <= 0:
-        return None
-    return value / baseline
-
-
-def p99_us(row: dict[str, Any], field: str) -> float | None:
-    q = row.get(field) or {}
-    value = q.get("p99_us")
-    return number(value) if value is not None else None
-
-
-def cpu_ns_per_op(row: dict[str, Any]) -> float | None:
-    ops = int(number(row.get("ops_completed")))
-    if ops <= 0:
-        return None
-    proc = row.get("measured_process") or {}
-    return number(proc.get("cpu_runtime_ns")) / ops
-
-
-def process_io_bytes_per_op(row: dict[str, Any]) -> float | None:
-    ops = int(number(row.get("ops_completed")))
-    if ops <= 0:
-        return None
-    proc = row.get("measured_process") or {}
-    return (number(proc.get("read_bytes")) + number(proc.get("write_bytes"))) / ops
-
-
-def load_rows(run_dir: Path) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    for path in sorted((run_dir / "cases").glob("*.json")):
-        row = json.loads(path.read_text())
-        match = SCENARIO_RE.match(str(row.get("scenario", "")))
-        if not match:
-            continue
-        pct = int(match.group(1))
-        meta_path = run_dir / "pressure-meta" / path.name
-        if not meta_path.is_file():
-            raise FileNotFoundError(f"missing pressure metadata for {path.name}: {meta_path}")
-        pressure = json.loads(meta_path.read_text())
-        rows.append(
-            {
-                "case_id": path.stem,
-                "engine": row.get("engine"),
-                "engine_version": row.get("engine_version"),
-                "durability": row.get("durability"),
-                "durability_mapping": row.get("durability_mapping"),
-                "workload": row.get("workload"),
-                "trial": row.get("trial"),
-                "pressure_percent": pct,
-                "ops_per_s": number(row.get("ops_per_s")),
-                "read_p99_us": p99_us(row, "read_latency"),
-                "write_p99_us": p99_us(row, "write_txn_latency"),
-                "cpu_ns_per_op": cpu_ns_per_op(row),
-                "process_io_bytes_per_op": process_io_bytes_per_op(row),
-                "target_pressure_iops": number(pressure.get("target_iops")),
-                "delivered_pressure_iops": number(pressure.get("delivered_iops")),
-                "delivered_vs_target": (
-                    number(pressure.get("delivered_iops")) / number(pressure.get("target_iops"))
-                    if number(pressure.get("target_iops")) > 0
-                    else None
-                ),
-            }
-        )
-    return rows
-
-
-def aggregate(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    grouped: dict[tuple[str, str, str, int], list[dict[str, Any]]] = defaultdict(list)
-    for row in rows:
-        key = (
-            str(row["engine"]),
-            str(row["durability"]),
-            str(row["workload"]),
-            int(row["pressure_percent"]),
-        )
-        grouped[key].append(row)
-
-    raw: list[dict[str, Any]] = []
-    for (engine, durability, workload, pct), items in grouped.items():
-        def vals(name: str) -> list[float]:
-            return [float(x[name]) for x in items if x.get(name) is not None]
-
-        raw.append(
-            {
-                "engine": engine,
-                "durability": durability,
-                "workload": workload,
-                "pressure_percent": pct,
-                "trials": len(items),
-                "ops_per_s_median": median(vals("ops_per_s")),
-                "read_p99_us_median": median(vals("read_p99_us")),
-                "write_p99_us_median": median(vals("write_p99_us")),
-                "cpu_ns_per_op_median": median(vals("cpu_ns_per_op")),
-                "process_io_bytes_per_op_median": median(vals("process_io_bytes_per_op")),
-                "target_pressure_iops_median": median(vals("target_pressure_iops")),
-                "delivered_pressure_iops_median": median(vals("delivered_pressure_iops")),
-                "delivered_vs_target_median": median(vals("delivered_vs_target")),
-            }
+def load_case(case_path: Path, pressure_path: Path, baseline_iops: float, expected_bs: int) -> dict[str, Any]:
+    db = json.loads(case_path.read_text())
+    pressure = json.loads(pressure_path.read_text())
+    match = SCENARIO_RE.match(str(db.get("scenario", "")))
+    if not match:
+        raise ValueError(f"unexpected scenario {db.get('scenario')!r}")
+    pct = int(match.group(1))
+    sidecar_pct = int(pressure.get("pressure_percent", -1))
+    sidecar_bs = int(pressure.get("bs_bytes", 0))
+    if sidecar_pct != pct:
+        raise ValueError(f"pressure sidecar percent {sidecar_pct} != scenario {pct}")
+    if sidecar_bs != expected_bs:
+        raise ValueError(f"pressure sidecar block size {sidecar_bs} != run support {expected_bs}")
+    sidecar_baseline = float(pressure.get("baseline_iops", 0.0))
+    if not math.isclose(sidecar_baseline, baseline_iops, rel_tol=1e-9, abs_tol=1e-6):
+        raise ValueError(
+            f"pressure sidecar baseline_iops {sidecar_baseline} != run support {baseline_iops}"
         )
 
-    baseline = {
-        (x["engine"], x["durability"], x["workload"]): x
-        for x in raw
-        if x["pressure_percent"] == 0
+    target_iops = float(pressure.get("target_iops", 0.0))
+    pressure_read_iops = pressure_write_iops = pressure_bw_bytes = 0.0
+    pressure_read_bytes = pressure_write_bytes = 0.0
+    pressure_read_p99_us = pressure_write_p99_us = None
+    fio_error = 0
+    jobs = pressure.get("jobs") or []
+    if pct > 0:
+        if len(jobs) != 1:
+            raise ValueError(f"nonzero pressure case has {len(jobs)} fio jobs, expected 1")
+        job = jobs[0]
+        fio_error = int(job.get("error", 0))
+        validate_fio_job(
+            job, rw="randrw", rwmixread=70, bs_bytes=expected_bs,
+            blockalign_bytes=expected_bs, ioengine="psync", direct=1,
+        )
+        read = job.get("read", {})
+        write = job.get("write", {})
+        pressure_read_iops = float(read.get("iops", 0.0))
+        pressure_write_iops = float(write.get("iops", 0.0))
+        pressure_bw_bytes = float(read.get("bw_bytes", 0.0)) + float(write.get("bw_bytes", 0.0))
+        pressure_read_bytes = float(read.get("io_bytes", 0.0))
+        pressure_write_bytes = float(write.get("io_bytes", 0.0))
+        pressure_read_p99_us = fio_p99_us(read)
+        pressure_write_p99_us = fio_p99_us(write)
+
+    if pct == 0 and target_iops != 0:
+        raise ValueError(f"zero-pressure case has target_iops={target_iops}")
+    if pct > 0 and target_iops <= 0:
+        raise ValueError(f"nonzero pressure case has target_iops={target_iops}")
+
+    delivered_iops = pressure_read_iops + pressure_write_iops
+    ops_completed = max(int(db.get("ops_completed", 0)), 1)
+    proc = db.get("measured_process", {})
+    system = db.get("measured_system_delta", {})
+    system_wall_ns = max(float(system.get("accounting_wall_ns", 0)), 1.0)
+
+    return {
+        "case_id": case_path.stem,
+        "format_version": db.get("format_version"),
+        "engine": db.get("engine"),
+        "engine_version": db.get("engine_version"),
+        "durability": db.get("durability"),
+        "workload": db.get("workload"),
+        "records": db.get("records"),
+        "ops_requested": db.get("ops_requested"),
+        "value_bytes": db.get("value_bytes"),
+        "txn_size": db.get("txn_size"),
+        "trial": db.get("trial"),
+        "pressure_percent": pct,
+        "pressure_bs_bytes": int(pressure.get("bs_bytes", 0)),
+        "pressure_target_iops": target_iops,
+        "pressure_delivered_iops": delivered_iops,
+        "pressure_delivered_read_iops": pressure_read_iops,
+        "pressure_delivered_write_iops": pressure_write_iops,
+        "pressure_delivered_bw_mbps": pressure_bw_bytes / 1_000_000.0,
+        "pressure_read_bytes": pressure_read_bytes,
+        "pressure_write_bytes": pressure_write_bytes,
+        "pressure_delivered_vs_target": ratio(delivered_iops, target_iops) if pct > 0 else None,
+        "pressure_delivered_vs_baseline": ratio(delivered_iops, baseline_iops) if pct > 0 else 0.0,
+        "pressure_read_p99_us": pressure_read_p99_us,
+        "pressure_write_p99_us": pressure_write_p99_us,
+        "pressure_fio_error": fio_error,
+        "db_ops_per_s": float(db.get("ops_per_s", 0.0)),
+        "db_read_p99_us": float(db.get("read_latency", {}).get("p99_us", 0.0)),
+        "db_write_p99_us": float(db.get("write_txn_latency", {}).get("p99_us", 0.0)),
+        "db_cpu_ns_per_op": float(proc.get("cpu_runtime_ns", 0)) / ops_completed,
+        "db_runqueue_wait_fraction": float(proc.get("runqueue_wait_fraction_of_wall", 0.0)),
+        "db_io_psi_full_fraction": float(system.get("psi_io_full_us", 0)) * 1000.0 / system_wall_ns,
     }
-    for row in raw:
-        base = baseline.get((row["engine"], row["durability"], row["workload"]))
-        row["throughput_ratio_vs_0pct"] = ratio(
-            row["ops_per_s_median"], None if base is None else base["ops_per_s_median"]
-        )
-        row["read_p99_ratio_vs_0pct"] = ratio(
-            row["read_p99_us_median"], None if base is None else base["read_p99_us_median"]
-        )
-        row["write_p99_ratio_vs_0pct"] = ratio(
-            row["write_p99_us_median"], None if base is None else base["write_p99_us_median"]
-        )
-    return sorted(raw, key=lambda x: (x["engine"], x["workload"], x["pressure_percent"]))
 
 
-def fmt(value: float | None, digits: int = 2) -> str:
-    return "-" if value is None else f"{value:.{digits}f}"
 
 
-def markdown(rows: list[dict[str, Any]]) -> str:
-    out = [
-        "# Calibrated I/O-pressure dependence",
-        "",
-        "Throughput and latency ratios are relative to the same engine/workload at 0% external pressure.",
-        "",
-        "| engine | workload | pressure | delivered/target | ops/s | throughput vs 0% | read p99 vs 0% | write p99 vs 0% |",
-        "|---|---|---:|---:|---:|---:|---:|---:|",
+def identity(c: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        c["format_version"], c["engine"], c["engine_version"], c["durability"],
+        c["workload"], c["records"], c["ops_requested"], c["value_bytes"], c["txn_size"],
+    )
+
+
+def enrich_ratios(cases: list[dict[str, Any]], problems: list[str]) -> None:
+    baselines: dict[tuple[Any, ...], dict[str, Any]] = {}
+    for c in cases:
+        if c["pressure_percent"] == 0:
+            key = identity(c) + (c["trial"],)
+            if key in baselines:
+                problems.append(f"duplicate zero-pressure baseline for {key}")
+            baselines[key] = c
+
+    for c in cases:
+        key = identity(c) + (c["trial"],)
+        base = baselines.get(key)
+        if base is None:
+            problems.append(
+                f"missing zero-pressure baseline for {c['engine']} {c['durability']} {c['workload']} trial={c['trial']}"
+            )
+            c["db_throughput_ratio_vs_zero"] = None
+            c["db_read_p99_ratio_vs_zero"] = None
+            c["db_write_p99_ratio_vs_zero"] = None
+            continue
+        c["db_throughput_ratio_vs_zero"] = ratio(c["db_ops_per_s"], base["db_ops_per_s"])
+        c["db_read_p99_ratio_vs_zero"] = ratio(c["db_read_p99_us"], base["db_read_p99_us"])
+        c["db_write_p99_ratio_vs_zero"] = ratio(c["db_write_p99_us"], base["db_write_p99_us"])
+
+
+def aggregate(cases: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    groups: dict[tuple[Any, ...], list[dict[str, Any]]] = defaultdict(list)
+    for c in cases:
+        groups[identity(c) + (c["pressure_percent"], c["pressure_bs_bytes"])].append(c)
+
+    fields = [
+        "pressure_target_iops", "pressure_delivered_iops", "pressure_delivered_read_iops",
+        "pressure_delivered_write_iops", "pressure_delivered_bw_mbps",
+        "pressure_delivered_vs_target", "pressure_delivered_vs_baseline",
+        "pressure_read_p99_us", "pressure_write_p99_us",
+        "db_ops_per_s", "db_throughput_ratio_vs_zero", "db_read_p99_us",
+        "db_read_p99_ratio_vs_zero", "db_write_p99_us", "db_write_p99_ratio_vs_zero",
+        "db_cpu_ns_per_op", "db_runqueue_wait_fraction", "db_io_psi_full_fraction",
+        "storage_accounting_s", "storage_read_ios", "storage_write_ios",
+        "storage_read_bytes", "storage_write_bytes", "storage_discard_bytes",
+        "storage_flushes", "storage_io_ms", "storage_weighted_io_ms",
+        "zfs_arc_hits", "zfs_arc_misses", "storage_read_mbps", "storage_write_mbps",
+        "zfs_arc_hit_fraction", "zfs_direct_read_ios", "zfs_direct_read_bytes",
+        "zfs_direct_write_ios", "zfs_direct_write_bytes",
+        "zfs_direct_read_bytes_per_pressure_read_byte",
+        "zfs_direct_write_bytes_per_pressure_write_byte",
     ]
-    for row in rows:
-        out.append(
-            f"| {row['engine']} | {row['workload']} | {row['pressure_percent']}% | "
-            f"{fmt(row['delivered_vs_target_median'])} | {fmt(row['ops_per_s_median'], 1)} | "
-            f"{fmt(row['throughput_ratio_vs_0pct'])} | {fmt(row['read_p99_ratio_vs_0pct'])} | "
-            f"{fmt(row['write_p99_ratio_vs_0pct'])} |"
-        )
-    out.append("")
-    return "\n".join(out)
+    out = []
+    for key, rows in sorted(groups.items(), key=lambda item: tuple(str(x) for x in item[0])):
+        first = rows[0]
+        g = {name: first[name] for name in [
+            "format_version", "engine", "engine_version", "durability", "workload",
+            "records", "ops_requested", "value_bytes", "txn_size", "pressure_percent", "pressure_bs_bytes",
+        ]}
+        g["trials"] = len(rows)
+        for field in fields:
+            vals = [float(r[field]) for r in rows if r.get(field) is not None and math.isfinite(float(r[field]))]
+            g[field + "_median"] = median(vals)
+            g[field + "_min"] = min(vals) if vals else None
+            g[field + "_max"] = max(vals) if vals else None
+        out.append(g)
+    return out
+
+
+def fmt(value: Any, digits: int = 3) -> str:
+    if value is None:
+        return "—"
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            return str(value)
+        return f"{value:.{digits}f}"
+    return str(value)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("run_dir", type=Path)
-    parser.add_argument("--json-out", type=Path)
-    parser.add_argument("--markdown-out", type=Path)
-    args = parser.parse_args()
+    ap = argparse.ArgumentParser(description="Join I/O-pressure sidecars to database results and summarize delivered pressure")
+    ap.add_argument("run_dir", type=Path)
+    ap.add_argument("--expect-trials", type=int)
+    ap.add_argument("--json-out", type=Path)
+    ap.add_argument("--markdown-out", type=Path)
+    args = ap.parse_args()
 
-    cases = load_rows(args.run_dir)
-    if not cases:
-        raise ValueError(f"no io-pressure cases found under {args.run_dir / 'cases'}")
-    rows = aggregate(cases)
-    summary = {
-        "format_version": 1,
-        "lane": "io-pressure",
-        "successful_cases": len(cases),
-        "rows": rows,
+    run_dir = args.run_dir
+    support = json.loads((run_dir / "support.json").read_text())
+    protocol = int(support.get("calibration_protocol_version", 0))
+    if protocol != 3:
+        raise SystemExit(f"unsupported I/O calibration protocol {protocol}; expected 3")
+    baseline_iops = float(support["baseline_iops"])
+    expected_bs = int(support["pressure_bs_bytes"])
+    problems: list[str] = []
+    warnings: list[str] = []
+    cases: list[dict[str, Any]] = []
+
+    case_paths = sorted((run_dir / "cases").glob("*.json"))
+    pressure_paths = {p.stem: p for p in (run_dir / "pressure").glob("*.json")}
+    storage_paths = {p.stem: p for p in (run_dir / "storage").glob("*.json")}
+    for case_path in case_paths:
+        pressure_path = pressure_paths.get(case_path.stem)
+        storage_path = storage_paths.get(case_path.stem)
+        if pressure_path is None:
+            problems.append(f"missing pressure sidecar for {case_path.stem}")
+            continue
+        if storage_path is None:
+            problems.append(f"missing storage sidecar for {case_path.stem}")
+            continue
+        try:
+            c = load_case(case_path, pressure_path, baseline_iops, expected_bs)
+            c.update(load_storage_delta(storage_path))
+            c["zfs_direct_read_bytes_per_pressure_read_byte"] = ratio(
+                float(c["zfs_direct_read_bytes"]) if c["zfs_direct_read_bytes"] is not None else None,
+                float(c["pressure_read_bytes"]),
+            )
+            c["zfs_direct_write_bytes_per_pressure_write_byte"] = ratio(
+                float(c["zfs_direct_write_bytes"]) if c["zfs_direct_write_bytes"] is not None else None,
+                float(c["pressure_write_bytes"]),
+            )
+        except (ValueError, KeyError, json.JSONDecodeError) as exc:
+            problems.append(f"{case_path.stem}: {exc}")
+            continue
+        if c["pressure_bs_bytes"] != expected_bs:
+            problems.append(
+                f"{case_path.stem}: pressure block size {c['pressure_bs_bytes']} != run support {expected_bs}"
+            )
+        if c["pressure_fio_error"] != 0:
+            problems.append(f"{case_path.stem}: fio error={c['pressure_fio_error']}")
+        if str(support.get("filesystem")) == "zfs" and c["pressure_percent"] > 0:
+            direct_read_ratio = c["zfs_direct_read_bytes_per_pressure_read_byte"]
+            direct_write_ratio = c["zfs_direct_write_bytes_per_pressure_write_byte"]
+            if direct_read_ratio is None or direct_read_ratio < 0.80:
+                problems.append(
+                    f"{case_path.stem}: ZFS direct-read evidence covers only {direct_read_ratio!r} of fio pressure reads"
+                )
+            if direct_write_ratio is None or direct_write_ratio < 0.80:
+                problems.append(
+                    f"{case_path.stem}: ZFS direct-write evidence covers only {direct_write_ratio!r} of fio pressure writes"
+                )
+        if c["pressure_percent"] > 0 and c["pressure_delivered_vs_target"] is not None:
+            delivery = c["pressure_delivered_vs_target"]
+            if delivery < 0.80:
+                warnings.append(
+                    f"{case_path.stem}: delivered pressure was {100.0 * delivery:.1f}% of target; "
+                    "this may be real device contention, but compare requested and delivered pressure when interpreting the DB result"
+                )
+        cases.append(c)
+
+    completed_stems = {p.stem for p in case_paths}
+    extra_pressure = sorted(set(pressure_paths) - completed_stems)
+    for stem in extra_pressure:
+        warnings.append(f"pressure sidecar has no completed database result: {stem}")
+    extra_storage = sorted(set(storage_paths) - completed_stems)
+    for stem in extra_storage:
+        warnings.append(f"storage sidecar has no completed database result: {stem}")
+
+    enrich_ratios(cases, problems)
+    groups = aggregate(cases)
+    if args.expect_trials is not None:
+        for g in groups:
+            if g["trials"] != args.expect_trials:
+                problems.append(
+                    f"{g['engine']} {g['durability']} {g['workload']} pressure={g['pressure_percent']}%: "
+                    f"{g['trials']} trials, expected {args.expect_trials}"
+                )
+
+    result = {
+        "baseline_iops": baseline_iops,
+        "pressure_bs_bytes": expected_bs,
+        "case_count": len(cases),
+        "group_count": len(groups),
+        "problems": problems,
+        "warnings": warnings,
+        "cases": cases,
+        "groups": groups,
     }
-    text = json.dumps(summary, indent=2, sort_keys=True) + "\n"
-    md = markdown(rows)
+    text = json.dumps(result, indent=2, sort_keys=True) + "\n"
     if args.json_out:
+        args.json_out.parent.mkdir(parents=True, exist_ok=True)
         args.json_out.write_text(text)
     else:
         print(text, end="")
+
     if args.markdown_out:
-        args.markdown_out.write_text(md)
+        lines = [
+            "# I/O-pressure summary",
+            "",
+            "Delivered pressure is measured by fio. Falling below the requested cap under database contention is a measured outcome, not automatically a harness failure.",
+            "",
+            "| engine | dur | workload | pressure | trials | delivered IOPS | delivered/target | delivered/baseline | fio MB/s | backing read MB/s | backing write MB/s | ARC hit % | DB ops/s | DB throughput/zero | DB read p99/zero | DB write p99/zero | DB IO PSI full % |",
+            "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        ]
+        for g in groups:
+            lines.append(
+                "| {engine} {version} | {dur} | {workload} | {pct}% | {trials} | {piops} | {ptarget} | {pbase} | {pbw} | {sread} | {swrite} | {archit} | {dbops} | {dbratio} | {rratio} | {wratio} | {psi} |".format(
+                    engine=g["engine"], version=g["engine_version"], dur=g["durability"], workload=g["workload"],
+                    pct=g["pressure_percent"], trials=g["trials"],
+                    piops=fmt(g["pressure_delivered_iops_median"]),
+                    ptarget=fmt(g["pressure_delivered_vs_target_median"]),
+                    pbase=fmt(g["pressure_delivered_vs_baseline_median"]),
+                    pbw=fmt(g["pressure_delivered_bw_mbps_median"]),
+                    sread=fmt(g["storage_read_mbps_median"]),
+                    swrite=fmt(g["storage_write_mbps_median"]),
+                    archit=fmt(100.0 * g["zfs_arc_hit_fraction_median"] if g["zfs_arc_hit_fraction_median"] is not None else None),
+                    dbops=fmt(g["db_ops_per_s_median"]),
+                    dbratio=fmt(g["db_throughput_ratio_vs_zero_median"]),
+                    rratio=fmt(g["db_read_p99_ratio_vs_zero_median"]),
+                    wratio=fmt(g["db_write_p99_ratio_vs_zero_median"]),
+                    psi=fmt(100.0 * g["db_io_psi_full_fraction_median"] if g["db_io_psi_full_fraction_median"] is not None else None),
+                )
+            )
+        args.markdown_out.parent.mkdir(parents=True, exist_ok=True)
+        args.markdown_out.write_text("\n".join(lines) + "\n")
+
+    if problems:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

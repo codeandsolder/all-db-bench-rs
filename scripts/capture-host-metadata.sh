@@ -61,7 +61,7 @@ fi
     echo
     echo "## zfs dataset"
     zfs get -H -o property,value \
-      recordsize,primarycache,secondarycache,sync,compression,atime,logbias,dnodesize,xattr \
+      recordsize,direct,primarycache,secondarycache,sync,compression,atime,logbias,dnodesize,xattr \
       "$SOURCE" 2>/dev/null || true
     zpool status -LP "${SOURCE%%/*}" 2>/dev/null || true
     if [[ -r /proc/spl/kstat/zfs/arcstats ]]; then
@@ -71,6 +71,10 @@ fi
     fi
     [[ -r /sys/module/zfs/parameters/zfs_arc_max ]] && \
       echo "zfs_arc_max=$(cat /sys/module/zfs/parameters/zfs_arc_max)"
+    [[ -r /sys/module/zfs/parameters/zfs_dio_enabled ]] && \
+      echo "zfs_dio_enabled=$(cat /sys/module/zfs/parameters/zfs_dio_enabled)"
+    [[ -r /sys/module/zfs/parameters/zfs_dio_strict ]] && \
+      echo "zfs_dio_strict=$(cat /sys/module/zfs/parameters/zfs_dio_strict)"
   fi
   echo
   echo "## block topology"

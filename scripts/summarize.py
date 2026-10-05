@@ -160,11 +160,15 @@ def main() -> None:
                     )
                     if lane == "kv-concurrency"
                     else (
-                        f"k={key_bytes}/{key_shape} v={value_bytes}/{value_pattern} "
-                        f"access={access_pattern} miss={miss_percent}% "
-                        f"write={write_pattern} settle={settle_ms}ms"
-                        if lane == "kv"
-                        else f"payload={value_bytes} txn={txn_size}"
+                        f"clients={clients} payload={value_bytes} txn={txn_size}"
+                        if lane == "record-concurrency"
+                        else (
+                            f"k={key_bytes}/{key_shape} v={value_bytes}/{value_pattern} "
+                            f"access={access_pattern} miss={miss_percent}% "
+                            f"write={write_pattern} settle={settle_ms}ms"
+                            if lane == "kv"
+                            else f"payload={value_bytes} txn={txn_size}"
+                        )
                     )
                 ),
                 "trials": trials,
@@ -179,6 +183,7 @@ def main() -> None:
                 "db_bytes_median": statistics.median([int(r["db_bytes"]) for r in rs]),
                 "peak_rss_kib_median": statistics.median([int(r["peak_rss_kib"]) for r in rs if "peak_rss_kib" in r]) if any("peak_rss_kib" in r for r in rs) else None,
                 "prefill_s_median": statistics.median([float(r["prefill_s"]) for r in rs if "prefill_s" in r]) if any("prefill_s" in r for r in rs) else None,
+                "client_setup_s_median": statistics.median([float(r["client_setup_s"]) for r in rs if "client_setup_s" in r]) if any("client_setup_s" in r for r in rs) else None,
                 "cpu_ns_per_op_median": statistics.median([
                     float(r.get("measured_process", {}).get("cpu_runtime_ns", 0)) / max(int(r["ops_completed"]), 1)
                     for r in rs
@@ -260,7 +265,7 @@ def main() -> None:
     # against the otherwise-identical 1-client row after all groups exist.
     concurrency_baselines = {}
     for item in summary:
-        if item["lane"] != "kv-concurrency" or item["clients"] != 1:
+        if item["lane"] not in {"kv-concurrency", "record-concurrency"} or item["clients"] != 1:
             continue
         identity = (
             item["format_version"], item["scenario"], item["engine"],
@@ -277,7 +282,7 @@ def main() -> None:
         item["parallel_efficiency_vs_c1"] = None
         item["p99_read_multiplier_vs_c1"] = None
         item["p99_write_txn_multiplier_vs_c1"] = None
-        if item["lane"] != "kv-concurrency":
+        if item["lane"] not in {"kv-concurrency", "record-concurrency"}:
             continue
         identity = (
             item["format_version"], item["scenario"], item["engine"],
@@ -296,8 +301,12 @@ def main() -> None:
             item["speedup_vs_c1"] = speedup
             item["parallel_efficiency_vs_c1"] = speedup / max(int(item["clients"]), 1)
         base_p99_read = base["p99_read_us_median"]
-        if base_p99_read not in (None, 0) and item["p99_read_us_median"] is not None:
-            item["p99_read_multiplier_vs_c1"] = float(item["p99_read_us_median"]) / float(base_p99_read)
+        item_p99_read = item["p99_read_us_median"]
+        if item["lane"] == "record-concurrency":
+            base_p99_read = base["p99_operation_us_median"]
+            item_p99_read = item["p99_operation_us_median"]
+        if base_p99_read not in (None, 0) and item_p99_read is not None:
+            item["p99_read_multiplier_vs_c1"] = float(item_p99_read) / float(base_p99_read)
         base_p99_write = base["p99_write_txn_us_median"]
         if base_p99_write not in (None, 0) and item["p99_write_txn_us_median"] is not None:
             item["p99_write_txn_multiplier_vs_c1"] = float(item["p99_write_txn_us_median"]) / float(base_p99_write)
@@ -313,8 +322,8 @@ def main() -> None:
         for durability in sorted({s["durability"] for s in summary if s["lane"] == lane}):
             md += [f"## {durability}", ""]
             md += [
-                "| schema | scenario | workload | config | engine | trials | median ops/s | IQR ops/s | speedup vs c1 | efficiency | CPU cores | client max/min | conflict retries/k write ops | median p99 read/op us | median p99 write-txn us | DB MiB | peak RSS MiB | prefill s | CPU ns/op | rq wait %wall | CPU PSI some %wall | read B/op | write B/op | IO PSI full %wall | swap pages |",
-                "|---:|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+                "| schema | scenario | workload | config | engine | trials | median ops/s | IQR ops/s | speedup vs c1 | efficiency | p99 read/op ×c1 | p99 write-txn ×c1 | CPU cores | client max/min | client setup ms | conflict retries/k write ops | median p99 read/op us | median p99 write-txn us | DB MiB | peak RSS MiB | prefill s | CPU ns/op | rq wait %wall | CPU PSI some %wall | read B/op | write B/op | IO PSI full %wall | swap pages |",
+                "|---:|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
             ]
             block = [
                 s for s in summary
@@ -326,7 +335,7 @@ def main() -> None:
                 if p99 is None:
                     p99 = s["p99_operation_us_median"]
                 md.append(
-                    "| {schema} | {scenario} | {workload} | {config} | {engine} {version} | {trials} | {median} | {q1}–{q3} | {speedup} | {efficiency} | {cpucores} | {fairness} | {conflicts} | {p99} | {tx} | {mib} | {rss} | {prefill} | {cpu} | {rq} | {cpupsi} | {readb} | {writeb} | {iopsi} | {swap} |".format(
+                    "| {schema} | {scenario} | {workload} | {config} | {engine} {version} | {trials} | {median} | {q1}–{q3} | {speedup} | {efficiency} | {p99mult} | {txmult} | {cpucores} | {fairness} | {setup} | {conflicts} | {p99} | {tx} | {mib} | {rss} | {prefill} | {cpu} | {rq} | {cpupsi} | {readb} | {writeb} | {iopsi} | {swap} |".format(
                         schema=s["format_version"],
                         scenario=s["scenario"],
                         workload=s["workload"],
@@ -339,8 +348,11 @@ def main() -> None:
                         q3=fmt(s["ops_per_s_q3"]),
                         speedup=fmt(s["speedup_vs_c1"]) if s["speedup_vs_c1"] is not None else "—",
                         efficiency=fmt(s["parallel_efficiency_vs_c1"]) if s["parallel_efficiency_vs_c1"] is not None else "—",
+                        p99mult=fmt(s["p99_read_multiplier_vs_c1"]) if s["p99_read_multiplier_vs_c1"] is not None else "—",
+                        txmult=fmt(s["p99_write_txn_multiplier_vs_c1"]) if s["p99_write_txn_multiplier_vs_c1"] is not None else "—",
                         cpucores=fmt(s["cpu_cores_median"]) if s["cpu_cores_median"] is not None else "—",
                         fairness=fmt(s["client_throughput_max_min_ratio_median"]) if s["client_throughput_max_min_ratio_median"] is not None else "—",
+                        setup=fmt(1000.0 * s["client_setup_s_median"]) if s.get("client_setup_s_median") is not None else "—",
                         conflicts=fmt(s["write_conflict_retries_per_k_write_ops_median"]) if s["write_conflict_retries_per_k_write_ops_median"] is not None else "—",
                         p99=fmt(p99) if p99 is not None else "—",
                         tx=fmt(s["p99_write_txn_us_median"]) if s["p99_write_txn_us_median"] is not None else "—",
