@@ -292,7 +292,7 @@ jq -n \
     pressure_scope:"both pressure workers span the complete kvbench process invocation including open, prefill, warmup and measured phase",
     pressure_precondition_s:2,
     pressure_statistics:"each fio worker uses ramp_time=2 to exclude its startup/precondition period from delivered-rate statistics; pressure-lifetime storage evidence spans worker start through stop, while storage/ sidecars bracket only the database interval",
-    external_noise_guard:"quick/full reject normal-priority compiler/build work, wide filesystem scans, or unknown >=50% CPU foreign processes immediately before and after each database invocation; nice >=15 work is ignored by policy",
+    external_noise_guard:"quick/full reject normal-priority compiler/build work, wide filesystem scans, or unknown >=50% CPU foreign processes immediately before and after each database invocation; nice >=15 work is ignored by policy, as is the dedicated sccache-dist worker subtree when its root runs at nice >=10",
     post_pressure_settle:"after each nonzero pressure case, stop both fio workers, sync, then sleep 0.5 s before another case",
     interpretation:"pressure percent is requested total IOPS relative to min(read_iops/read_fraction, write_iops/write_fraction); read and write caps and delivered rates remain independently inspectable"
   }' > "$RUN_DIR/support.json" || exit $?

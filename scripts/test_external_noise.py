@@ -14,6 +14,7 @@ SPEC.loader.exec_module(MODULE)
 ProcessRow = MODULE.ProcessRow
 classify_process = MODULE.classify_process
 descendant_pids = MODULE.descendant_pids
+low_priority_sccache_tree = MODULE.low_priority_sccache_tree
 
 
 class ExternalNoiseTests(unittest.TestCase):
@@ -48,6 +49,14 @@ class ExternalNoiseTests(unittest.TestCase):
             ProcessRow(300, 1, 0, 100.0, "python3", "python3 foreign.py"),
         ]
         self.assertEqual(descendant_pids(rows, {100}), {100, 200, 201})
+
+    def test_excludes_only_low_priority_sccache_worker_tree(self) -> None:
+        rows = [
+            ProcessRow(400, 1, 10, 20.0, "sccache-dist", "/usr/local/bin/sccache-dist server --config /etc/sccache-dist/server.conf"),
+            ProcessRow(401, 400, 10, 100.0, "cc1plus", "/usr/lib/gcc/cc1plus file.cc"),
+            ProcessRow(500, 1, 0, 5.0, "cargo", "cargo check --workspace"),
+        ]
+        self.assertEqual(low_priority_sccache_tree(rows), {400, 401})
 
 
 if __name__ == "__main__":

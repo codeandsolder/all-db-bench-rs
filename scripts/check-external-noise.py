@@ -11,6 +11,7 @@ from dataclasses import asdict, dataclass
 BUILD_RE = re.compile(r"(?:^|[ /])(?:cargo(?:-[A-Za-z0-9_.-]+)?|rustc|clippy-driver|cc1plus|clang(?:\+\+)?|gcc|g\+\+|cmake|ninja|make)(?:\s|$)")
 WIDE_SCAN_RE = re.compile(r"(?:^|\s)(?:find|rg|ripgrep)\s+(?:/root\b|/srv\b|/opt\b|/home\b|/mnt\b)")
 ALLOWED_RE = re.compile(r"(?:run-io-contention-matrix\.sh|/kvbench(?:\s|$)|fio --name=pressure-(?:read|write))")
+SCCACHE_WORKER_RE = re.compile(r"(?:^|/)sccache-dist server(?:\s|$)")
 
 
 @dataclass(frozen=True)
@@ -61,6 +62,11 @@ def descendant_pids(rows: list[ProcessRow], roots: set[int]) -> set[int]:
     return descendants
 
 
+def low_priority_sccache_tree(rows: list[ProcessRow], *, min_nice: int = 10) -> set[int]:
+    roots = {row.pid for row in rows if row.nice >= min_nice and SCCACHE_WORKER_RE.search(row.args)}
+    return descendant_pids(rows, roots) if roots else set()
+
+
 def process_rows() -> list[ProcessRow]:
     proc = subprocess.run(
         ["ps", "-eo", "pid=,ppid=,ni=,pcpu=,comm=,args="],
@@ -89,9 +95,10 @@ def main() -> int:
     ancestors = ancestor_pids(os.getpid())
     rows = process_rows()
     own_tree = descendant_pids(rows, {os.getpid()})
+    sccache_worker_tree = low_priority_sccache_tree(rows)
     offenders = []
     for row in rows:
-        if row.pid in ancestors or row.pid in own_tree:
+        if row.pid in ancestors or row.pid in own_tree or row.pid in sccache_worker_tree:
             continue
         reason = classify_process(row, ignore_nice_at_least=args.ignore_nice_at_least)
         if reason is not None:
