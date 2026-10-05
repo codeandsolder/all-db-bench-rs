@@ -116,7 +116,7 @@ case "$PROFILE" in
   *) echo "usage: $0 [smoke|quick|full] BASELINE_RUN_DIR" >&2; exit 2 ;;
 esac
 
-ROOT=${ROOT:-/srv/scratch/db-bench-2026-09-27}
+ROOT=${ROOT:-$(cd -- "$(dirname -- "$0")/.." && pwd)}
 CURRENT_HOST_NAME=$(hostname)
 CURRENT_MACHINE_ID_SHA256=$(sha256sum /etc/machine-id | awk '{print $1}')
 if [[ -z "$BASELINE_HOST_NAME" || -z "$BASELINE_MACHINE_ID_SHA256" || -z "$BASELINE_FSTYPE" || -z "$BASELINE_SOURCE" ]]; then
@@ -329,6 +329,17 @@ record_failure() {
 
 pressure_read_pid=""
 pressure_write_pid=""
+normalize_fio_output() {
+  local verbatim=$1 json=$2 tmp="${json}.tmp"
+  [[ -s "$verbatim" ]] || return 1
+  awk 'found || /^[[:space:]]*\{/ { found=1; print }' "$verbatim" > "$tmp"
+  if jq -e . "$tmp" >/dev/null 2>&1; then
+    mv "$tmp" "$json"
+    return 0
+  fi
+  rm -f "$tmp" "$json"
+  return 1
+}
 stop_pressure() {
   local pid
   for pid in "$pressure_read_pid" "$pressure_write_pid"; do
@@ -364,6 +375,8 @@ for job in "${ORDERED[@]}"; do
 
   pressure_read_raw="$RUN_DIR/pressure/raw/$case_id-read.json"
   pressure_write_raw="$RUN_DIR/pressure/raw/$case_id-write.json"
+  pressure_read_verbatim="$RUN_DIR/pressure/raw/$case_id-read.fio-output"
+  pressure_write_verbatim="$RUN_DIR/pressure/raw/$case_id-write.fio-output"
 
   if [[ -s "$out" && -s "$pressure_out" && -s "$storage_out" ]]; then
     resume_evidence_ok=0
@@ -386,7 +399,8 @@ for job in "${ORDERED[@]}"; do
       continue
     fi
   fi
-  rm -f "$out" "$pressure_out" "$storage_out" "$pressure_read_raw" "$pressure_write_raw"
+  rm -f "$out" "$pressure_out" "$storage_out" \
+    "$pressure_read_raw" "$pressure_write_raw" "$pressure_read_verbatim" "$pressure_write_verbatim"
   clear_failure "$case_id"
   echo "[$INDEX/$TOTAL] $case_id" >&2
 
@@ -407,13 +421,13 @@ for job in "${ORDERED[@]}"; do
       --rw=randread --bs="$PRESSURE_BS_BYTES" --blockalign="$PRESSURE_BS_BYTES" \
       --ioengine=psync --direct=1 --rate_iops="$read_iops" \
       --time_based=1 --runtime=86400 --ramp_time=2 --randrepeat=1 \
-      --output-format=json --output="$pressure_read_raw" &
+      --output-format=json --output="$pressure_read_verbatim" &
     pressure_read_pid=$!
     fio --name=pressure-write --filename="$PRESSURE_WRITE_FILE" --size="$PRESSURE_SIZE" \
       --rw=randwrite --bs="$PRESSURE_BS_BYTES" --blockalign="$PRESSURE_BS_BYTES" \
       --ioengine=psync --direct=1 --rate_iops="$write_iops" \
       --time_based=1 --runtime=86400 --ramp_time=2 --randrepeat=1 \
-      --output-format=json --output="$pressure_write_raw" &
+      --output-format=json --output="$pressure_write_verbatim" &
     pressure_write_pid=$!
     sleep 2
     if ! kill -0 "$pressure_read_pid" 2>/dev/null || ! kill -0 "$pressure_write_pid" 2>/dev/null; then
@@ -457,6 +471,10 @@ for job in "${ORDERED[@]}"; do
     pressure_alive_after=0
   fi
   stop_pressure
+  if (( pct > 0 )); then
+    normalize_fio_output "$pressure_read_verbatim" "$pressure_read_raw" || true
+    normalize_fio_output "$pressure_write_verbatim" "$pressure_write_raw" || true
+  fi
 
   pressure_ok=1
   if (( pct > 0 )); then
@@ -480,12 +498,13 @@ for job in "${ORDERED[@]}"; do
       if ! jq -cn \
         --slurpfile read_raw "$pressure_read_raw" --slurpfile write_raw "$pressure_write_raw" \
         --arg read_raw_file "$(basename "$pressure_read_raw")" --arg write_raw_file "$(basename "$pressure_write_raw")" \
+        --arg read_verbatim_file "$(basename "$pressure_read_verbatim")" --arg write_verbatim_file "$(basename "$pressure_write_verbatim")" \
         --argjson pressure_percent "$pct" --argjson target_iops "$target_total" \
         --argjson target_read_iops "$read_iops" --argjson target_write_iops "$write_iops" \
         --argjson baseline_iops "$BASE_IOPS" --argjson baseline_read_iops "$BASE_READ_IOPS" \
         --argjson baseline_write_iops "$BASE_WRITE_IOPS" --argjson read_fraction "$READ_FRACTION" \
         --argjson write_fraction "$WRITE_FRACTION" --argjson bs_bytes "$PRESSURE_BS_BYTES" \
-        '{pressure_percent:$pressure_percent,target_iops:$target_iops,target_read_iops:$target_read_iops,target_write_iops:$target_write_iops,baseline_iops:$baseline_iops,baseline_read_iops:$baseline_read_iops,baseline_write_iops:$baseline_write_iops,read_fraction:$read_fraction,write_fraction:$write_fraction,bs_bytes:$bs_bytes,jobs:[$read_raw[0].jobs[0],$write_raw[0].jobs[0]],raw_files:{read:$read_raw_file,write:$write_raw_file}}' \
+        '{pressure_percent:$pressure_percent,target_iops:$target_iops,target_read_iops:$target_read_iops,target_write_iops:$target_write_iops,baseline_iops:$baseline_iops,baseline_read_iops:$baseline_read_iops,baseline_write_iops:$baseline_write_iops,read_fraction:$read_fraction,write_fraction:$write_fraction,bs_bytes:$bs_bytes,jobs:[$read_raw[0].jobs[0],$write_raw[0].jobs[0]],raw_files:{read_json:$read_raw_file,write_json:$write_raw_file,read_fio_output:$read_verbatim_file,write_fio_output:$write_verbatim_file}}' \
         > "$pressure_out"; then
         pressure_ok=0
       fi

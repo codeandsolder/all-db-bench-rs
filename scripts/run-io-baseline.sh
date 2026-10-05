@@ -8,7 +8,7 @@ case "$PROFILE" in
   *) echo "usage: $0 [smoke|quick|full]" >&2; exit 2 ;;
 esac
 
-ROOT=${ROOT:-/srv/scratch/db-bench-2026-09-27}
+ROOT=${ROOT:-$(cd -- "$(dirname -- "$0")/.." && pwd)}
 for tool in fio jq findmnt sha256sum uv awk; do
   command -v "$tool" >/dev/null 2>&1 || { echo "required tool not found: $tool" >&2; exit 127; }
 done
