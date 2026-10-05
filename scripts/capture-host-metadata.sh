@@ -4,6 +4,7 @@ OUT=${1:?usage: capture-host-metadata.sh OUTPUT [BENCH_ROOT]}
 ROOT=${2:-/srv/scratch/db-bench-2026-09-27}
 mkdir -p "$(dirname "$OUT")"
 SOURCE=$(findmnt -T "$ROOT" -n -o SOURCE 2>/dev/null || true)
+FSTYPE=$(findmnt -T "$ROOT" -n -o FSTYPE 2>/dev/null || true)
 DEV=""
 if [[ "$SOURCE" == /dev/* ]]; then
   DEV=$(basename "$SOURCE")
@@ -56,6 +57,21 @@ fi
   df -hT "$ROOT"
   findmnt -T "$ROOT" -o TARGET,SOURCE,FSTYPE,OPTIONS
   stat -f "$ROOT"
+  if [[ "$FSTYPE" == zfs ]] && command -v zfs >/dev/null 2>&1; then
+    echo
+    echo "## zfs dataset"
+    zfs get -H -o property,value \
+      recordsize,primarycache,secondarycache,sync,compression,atime,logbias,dnodesize,xattr \
+      "$SOURCE" 2>/dev/null || true
+    zpool status -LP "${SOURCE%%/*}" 2>/dev/null || true
+    if [[ -r /proc/spl/kstat/zfs/arcstats ]]; then
+      echo "[arc]"
+      awk '$1 ~ /^(size|c_min|c_max|hits|misses|compressed_size|uncompressed_size)$/ {print $1 "=" $3}' \
+        /proc/spl/kstat/zfs/arcstats
+    fi
+    [[ -r /sys/module/zfs/parameters/zfs_arc_max ]] && \
+      echo "zfs_arc_max=$(cat /sys/module/zfs/parameters/zfs_arc_max)"
+  fi
   echo
   echo "## block topology"
   lsblk -b -o NAME,MAJ:MIN,TYPE,SIZE,ROTA,RO,MODEL,SERIAL,FSTYPE,FSAVAIL,FSUSE%,MOUNTPOINTS
@@ -89,7 +105,7 @@ fi
   cat /proc/diskstats
   echo
   echo "## provenance"
-  sha256sum Cargo.lock Cargo.toml rust-toolchain src/metrics.rs src/bin/kvbench.rs src/bin/recordbench.rs scripts/*.sh scripts/*.py docs/*.md engines/surrealdb-rocksdb/Cargo.toml engines/surrealdb-rocksdb/Cargo.lock engines/surrealdb-rocksdb/src/*.rs 2>/dev/null | sort
+  sha256sum Cargo.lock Cargo.toml rust-toolchain src/metrics.rs src/bin/*.rs scripts/*.sh scripts/*.py docs/*.md engines/surrealdb-rocksdb/Cargo.toml engines/surrealdb-rocksdb/Cargo.lock engines/surrealdb-rocksdb/src/*.rs 2>/dev/null | sort
   if [[ -x "$ROOT/.deps/sqlite-3.53.4/bin/sqlite3" ]]; then
     echo "sqlite_runtime=$("$ROOT/.deps/sqlite-3.53.4/bin/sqlite3" --version)"
   fi

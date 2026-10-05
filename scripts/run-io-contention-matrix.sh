@@ -13,13 +13,13 @@ BASELINE_JSON="$BASELINE_DIR/direct-randrw70-4k-q1.json"
 
 case "$PROFILE" in
   smoke)
-    TRIALS=1; RECORDS=5000; OPS=2000; PRESSURE_SIZE=256M; LEVELS=(0 30 60)
+    TRIALS=1; RECORDS=5000; OPS=2000; PRESSURE_SIZE=256M; MIN_FREE_GIB=2; LEVELS=(0 30 60)
     ;;
   quick)
-    TRIALS=3; RECORDS=100000; OPS=50000; PRESSURE_SIZE=2G; LEVELS=(0 10 30 60)
+    TRIALS=3; RECORDS=100000; OPS=50000; PRESSURE_SIZE=2G; MIN_FREE_GIB=10; LEVELS=(0 10 30 60)
     ;;
   full)
-    TRIALS=7; RECORDS=1000000; OPS=250000; PRESSURE_SIZE=8G; LEVELS=(0 10 30 60 90)
+    TRIALS=7; RECORDS=1000000; OPS=250000; PRESSURE_SIZE=8G; MIN_FREE_GIB=30; LEVELS=(0 10 30 60 90)
     ;;
   *) echo "usage: $0 [smoke|quick|full] BASELINE_RUN_DIR" >&2; exit 2 ;;
 esac
@@ -27,9 +27,16 @@ esac
 ROOT=${ROOT:-/srv/scratch/db-bench-2026-09-27}
 CPUS=$(getconf _NPROCESSORS_ONLN)
 LOAD1=$(awk '{print $1}' /proc/loadavg)
-if [[ "${ALLOW_BUSY:-0}" != 1 ]] && ! awk -v l="$LOAD1" -v c="$CPUS" 'BEGIN { exit !(l <= c * 1.5) }'; then
-  echo "refusing I/O-contention benchmark on already-busy host: load1=$LOAD1 visible_cpus=$CPUS" >&2
-  exit 75
+IO_PSI10=$(awk '/^full / {for(i=1;i<=NF;i++) if($i ~ /^avg10=/){split($i,a,"="); print a[2]}}' /proc/pressure/io)
+if [[ "${ALLOW_BUSY:-0}" != 1 ]]; then
+  if ! awk -v l="$LOAD1" -v c="$CPUS" 'BEGIN { exit !(l <= c * 0.5) }'; then
+    echo "refusing I/O-contention benchmark on busy host: load1=$LOAD1 visible_cpus=$CPUS" >&2
+    exit 75
+  fi
+  if ! awk -v p="${IO_PSI10:-0}" 'BEGIN { exit !(p <= 5.0) }'; then
+    echo "refusing I/O-contention benchmark under existing I/O pressure: io PSI full avg10=${IO_PSI10}%" >&2
+    exit 75
+  fi
 fi
 
 BASE_IOPS=$(jq -r '(.jobs[0].read.iops // 0) + (.jobs[0].write.iops // 0)' "$BASELINE_JSON")
@@ -42,6 +49,12 @@ RUN_ID=${RUN_ID:-"$(date -u +%Y%m%dT%H%M%SZ)-io-contention-$PROFILE"}
 RUN_DIR="$ROOT/results/runs/$RUN_ID"
 DATA_DIR="$ROOT/data/runs/$RUN_ID"
 mkdir -p "$RUN_DIR"/{cases,stderr,pressure} "$DATA_DIR"
+free_bytes=$(df -B1 --output=avail "$DATA_DIR" | tail -n1 | tr -d ' ')
+min_free_bytes=$((MIN_FREE_GIB * 1024 * 1024 * 1024))
+if (( free_bytes < min_free_bytes )); then
+  echo "refusing I/O-contention run: free=$free_bytes required=$min_free_bytes" >&2
+  exit 75
+fi
 "$ROOT/scripts/capture-host-metadata.sh" "$RUN_DIR/host-start.txt" "$ROOT"
 cp "$BASELINE_JSON" "$RUN_DIR/baseline-randrw.json"
 
@@ -84,7 +97,13 @@ stop_pressure() {
   fi
   pressure_pid=""
 }
-trap stop_pressure EXIT INT TERM
+cleanup() {
+  stop_pressure
+  rm -f -- "$PRESSURE_FILE"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 FAILURES=0
 INDEX=0
