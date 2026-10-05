@@ -194,6 +194,9 @@ def aggregate(cases: list[dict[str, Any]]) -> list[dict[str, Any]]:
         "zfs_arc_hits", "zfs_arc_misses", "storage_read_mbps", "storage_write_mbps",
         "zfs_arc_hit_fraction", "zfs_direct_read_ios", "zfs_direct_read_bytes",
         "zfs_direct_write_ios", "zfs_direct_write_bytes",
+        "pressure_storage_accounting_s", "pressure_zfs_direct_read_ios",
+        "pressure_zfs_direct_read_bytes", "pressure_zfs_direct_write_ios",
+        "pressure_zfs_direct_write_bytes",
         "zfs_direct_read_bytes_per_pressure_read_byte",
         "zfs_direct_write_bytes_per_pressure_write_byte",
     ]
@@ -250,6 +253,7 @@ def main() -> None:
     case_paths = sorted((run_dir / "cases").glob("*.json"))
     pressure_paths = {p.stem: p for p in (run_dir / "pressure").glob("*.json")}
     storage_paths = {p.stem: p for p in (run_dir / "storage").glob("*.json")}
+    pressure_storage_paths = {p.stem: p for p in (run_dir / "pressure-storage").glob("*.json")}
     for case_path in case_paths:
         pressure_path = pressure_paths.get(case_path.stem)
         storage_path = storage_paths.get(case_path.stem)
@@ -265,14 +269,32 @@ def main() -> None:
                 baseline_read_iops, baseline_write_iops, read_fraction, write_fraction,
             )
             c.update(load_storage_delta(storage_path))
-            c["zfs_direct_read_bytes_per_pressure_read_byte"] = ratio(
-                float(c["zfs_direct_read_bytes"]) if c["zfs_direct_read_bytes"] is not None else None,
-                float(c["pressure_read_bytes"]),
-            )
-            c["zfs_direct_write_bytes_per_pressure_write_byte"] = ratio(
-                float(c["zfs_direct_write_bytes"]) if c["zfs_direct_write_bytes"] is not None else None,
-                float(c["pressure_write_bytes"]),
-            )
+            if c["pressure_percent"] > 0:
+                pressure_storage_path = pressure_storage_paths.get(case_path.stem)
+                if pressure_storage_path is None:
+                    raise ValueError("missing pressure-lifetime storage sidecar")
+                pressure_storage = load_storage_delta(pressure_storage_path)
+                c["pressure_storage_accounting_s"] = pressure_storage["storage_accounting_s"]
+                c["pressure_zfs_direct_read_ios"] = pressure_storage["zfs_direct_read_ios"]
+                c["pressure_zfs_direct_read_bytes"] = pressure_storage["zfs_direct_read_bytes"]
+                c["pressure_zfs_direct_write_ios"] = pressure_storage["zfs_direct_write_ios"]
+                c["pressure_zfs_direct_write_bytes"] = pressure_storage["zfs_direct_write_bytes"]
+                c["zfs_direct_read_bytes_per_pressure_read_byte"] = ratio(
+                    float(c["pressure_zfs_direct_read_bytes"]) if c["pressure_zfs_direct_read_bytes"] is not None else None,
+                    float(c["pressure_read_bytes"]),
+                )
+                c["zfs_direct_write_bytes_per_pressure_write_byte"] = ratio(
+                    float(c["pressure_zfs_direct_write_bytes"]) if c["pressure_zfs_direct_write_bytes"] is not None else None,
+                    float(c["pressure_write_bytes"]),
+                )
+            else:
+                c["pressure_storage_accounting_s"] = None
+                c["pressure_zfs_direct_read_ios"] = None
+                c["pressure_zfs_direct_read_bytes"] = None
+                c["pressure_zfs_direct_write_ios"] = None
+                c["pressure_zfs_direct_write_bytes"] = None
+                c["zfs_direct_read_bytes_per_pressure_read_byte"] = None
+                c["zfs_direct_write_bytes_per_pressure_write_byte"] = None
         except (ValueError, KeyError, json.JSONDecodeError) as exc:
             problems.append(f"{case_path.stem}: {exc}")
             continue
@@ -309,6 +331,9 @@ def main() -> None:
     extra_storage = sorted(set(storage_paths) - completed_stems)
     for stem in extra_storage:
         warnings.append(f"storage sidecar has no completed database result: {stem}")
+    extra_pressure_storage = sorted(set(pressure_storage_paths) - completed_stems)
+    for stem in extra_pressure_storage:
+        warnings.append(f"pressure-lifetime storage sidecar has no completed database result: {stem}")
 
     enrich_ratios(cases, problems)
     groups = aggregate(cases)

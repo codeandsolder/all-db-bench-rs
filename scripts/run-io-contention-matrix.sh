@@ -173,7 +173,7 @@ if (( PRESSURE_BS_BYTES > PREP_BS_BYTES )); then PREP_BS_BYTES=$PRESSURE_BS_BYTE
 RUN_ID=${RUN_ID:-"$(date -u +%Y%m%dT%H%M%SZ)-io-contention-$PROFILE"}
 RUN_DIR="$ROOT/results/runs/$RUN_ID"
 DATA_DIR="$ROOT/data/runs/$RUN_ID"
-mkdir -p "$RUN_DIR"/{cases,stderr,pressure,storage} "$DATA_DIR"
+mkdir -p "$RUN_DIR"/{cases,stderr,pressure,pressure-storage,storage} "$DATA_DIR"
 CURRENT_FSTYPE=$(findmnt -T "$DATA_DIR" -n -o FSTYPE 2>/dev/null || true)
 CURRENT_SOURCE=$(findmnt -T "$DATA_DIR" -n -o SOURCE 2>/dev/null || true)
 if [[ "$CURRENT_FSTYPE" != "$BASELINE_FSTYPE" || "$CURRENT_SOURCE" != "$BASELINE_SOURCE" ]]; then
@@ -374,6 +374,7 @@ for job in "${ORDERED[@]}"; do
   out="$RUN_DIR/cases/$case_id.json"
   pressure_out="$RUN_DIR/pressure/$case_id.json"
   storage_out="$RUN_DIR/storage/$case_id.json"
+  pressure_storage_out="$RUN_DIR/pressure-storage/$case_id.json"
 
   pressure_read_raw="$RUN_DIR/pressure/raw/$case_id-read.json"
   pressure_write_raw="$RUN_DIR/pressure/raw/$case_id-write.json"
@@ -388,7 +389,7 @@ for job in "${ORDERED[@]}"; do
         "$pressure_out" >/dev/null 2>&1; then
         resume_evidence_ok=1
       fi
-    elif jq -e --arg bs "$PRESSURE_BS_BYTES" --argjson pct "$pct" '
+    elif [[ -s "$pressure_storage_out" ]] && jq -e --arg bs "$PRESSURE_BS_BYTES" --argjson pct "$pct" '
       .pressure_percent == $pct and .bs_bytes == ($bs | tonumber) and
       (.jobs | length) == 2 and
       ([.jobs[] | select(.error == 0 and .["job options"].rw == "randread" and .["job options"].bs == $bs and .["job options"].ba == $bs and .["job options"].ioengine == "psync" and .["job options"].direct == "1")] | length) == 1 and
@@ -401,13 +402,16 @@ for job in "${ORDERED[@]}"; do
       continue
     fi
   fi
-  rm -f "$out" "$pressure_out" "$storage_out" \
+  rm -f "$out" "$pressure_out" "$storage_out" "$pressure_storage_out" \
     "$pressure_read_raw" "$pressure_write_raw" "$pressure_read_verbatim" "$pressure_write_verbatim"
   clear_failure "$case_id"
   echo "[$INDEX/$TOTAL] $case_id" >&2
 
   pressure_read_pid=""
   pressure_write_pid=""
+  pressure_storage_before=""
+  pressure_storage_after=""
+  pressure_storage_rc=0
   target_total=0
   read_iops=0
   write_iops=0
@@ -419,6 +423,10 @@ for job in "${ORDERED[@]}"; do
     write_iops=$((target_total - read_iops))
     (( write_iops < 1 )) && write_iops=1
     target_total=$((read_iops + write_iops))
+    pressure_storage_before=$("$ROOT/scripts/capture-storage-counters.sh" "$DATA_DIR") || {
+      record_failure "$case_id" pressure-storage-before 1 "$pressure_storage_out"
+      continue
+    }
     fio --name=pressure-read --filename="$PRESSURE_READ_FILE" --size="$PRESSURE_SIZE" \
       --rw=randread --bs="$PRESSURE_BS_BYTES" --blockalign="$PRESSURE_BS_BYTES" \
       --ioengine=psync --direct=1 --rate_iops="$read_iops" \
@@ -476,6 +484,12 @@ for job in "${ORDERED[@]}"; do
   if (( pct > 0 )); then
     normalize_fio_output "$pressure_read_verbatim" "$pressure_read_raw" || true
     normalize_fio_output "$pressure_write_verbatim" "$pressure_write_raw" || true
+    pressure_storage_after=$("$ROOT/scripts/capture-storage-counters.sh" "$DATA_DIR")
+    pressure_storage_rc=$?
+    if (( pressure_storage_rc == 0 )); then
+      jq -cn --argjson before "$pressure_storage_before" --argjson after "$pressure_storage_after" \
+        '{before:$before,after:$after}' > "$pressure_storage_out" || pressure_storage_rc=$?
+    fi
   fi
 
   pressure_ok=1
@@ -522,6 +536,9 @@ for job in "${ORDERED[@]}"; do
   elif (( storage_rc != 0 )) || [[ ! -s "$storage_out" ]]; then
     rm -f "$out"
     record_failure "$case_id" storage-evidence "${storage_rc:-1}" "$storage_out"
+  elif (( pct > 0 )) && { (( pressure_storage_rc != 0 )) || [[ ! -s "$pressure_storage_out" ]]; }; then
+    rm -f "$out"
+    record_failure "$case_id" pressure-storage-evidence "${pressure_storage_rc:-1}" "$pressure_storage_out"
   elif (( pressure_ok == 0 )); then
     rm -f "$out"
     record_failure "$case_id" pressure-evidence 1 "$pressure_out"
