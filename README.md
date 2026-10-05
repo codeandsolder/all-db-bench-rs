@@ -89,9 +89,9 @@ Storage/filesystem calibration (including an aligned pressure-calibration record
 
     ./scripts/run-io-baseline.sh quick
 
-On ZFS, `direct=1` is only a request: writes smaller than `recordsize` may be redirected through ARC. The runner records those 4 KiB cases as diagnostics but uses a recordsize-aligned mixed-I/O result as the authoritative external-pressure calibration.
+On ZFS, `direct=1` is only a request: writes smaller than `recordsize` may be redirected through ARC, and same-file mixed reads/writes can trigger coherence fallback even when aligned. Protocol v4 therefore calibrates recordsize-aligned QD1 random reads and random writes **separately on disjoint files** and verifies each direction against OpenZFS `direct_*` byte counters. The 70/30 reference capacity is `min(read_iops / 0.7, write_iops / 0.3)`.
 
-A completed calibration additionally writes `calibration.json`, binding hashes of the exact aligned fio result, `support.json`, and the parsed calibration summary to the host/filesystem provenance. Calibrated I/O-pressure runs refuse incomplete or modified calibration state.
+A completed calibration additionally writes `calibration.json`, binding hashes of both directional fio results, `support.json`, and the parsed calibration summary to the host/filesystem provenance. Calibrated I/O-pressure runs refuse incomplete or modified calibration state.
 
 Dimensional KV sweeps (locality, misses, key shape/size, value entropy, write placement, tombstones and deferred-work settling):
 
