@@ -330,7 +330,9 @@ record_failure() {
 pressure_read_pid=""
 pressure_write_pid=""
 normalize_fio_output() {
-  local verbatim=$1 json=$2 tmp="${json}.tmp"
+  local verbatim=$1
+  local json=$2
+  local tmp="${json}.tmp"
   [[ -s "$verbatim" ]] || return 1
   awk 'found || /^[[:space:]]*\{/ { found=1; print }' "$verbatim" > "$tmp"
   if jq -e . "$tmp" >/dev/null 2>&1; then
