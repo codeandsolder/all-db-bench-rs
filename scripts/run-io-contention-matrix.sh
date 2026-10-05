@@ -149,6 +149,28 @@ check_quiet_host() {
     return 75
   fi
 }
+
+check_external_noise() {
+  local phase=${1:-case} evidence=${2:-} rc tmp remove_tmp=0
+  if [[ "$PROFILE" == smoke || "${ALLOW_EXTERNAL_NOISE:-0}" == 1 ]]; then
+    return 0
+  fi
+  if [[ -n "$evidence" ]]; then
+    tmp="$evidence"
+  else
+    tmp=$(mktemp)
+    remove_tmp=1
+  fi
+  uv run --script "$ROOT/scripts/check-external-noise.py" --json-out "$tmp"
+  rc=$?
+  if (( rc != 0 )); then
+    echo "refusing I/O-contention performance case due to external host work ($phase): $(cat "$tmp" 2>/dev/null)" >&2
+  fi
+  if (( remove_tmp == 1 )); then
+    rm -f "$tmp"
+  fi
+  return "$rc"
+}
 if [[ "${ALLOW_BUSY:-0}" != 1 ]]; then
   check_quiet_host start || exit $?
 fi
@@ -173,7 +195,7 @@ if (( PRESSURE_BS_BYTES > PREP_BS_BYTES )); then PREP_BS_BYTES=$PRESSURE_BS_BYTE
 RUN_ID=${RUN_ID:-"$(date -u +%Y%m%dT%H%M%SZ)-io-contention-$PROFILE"}
 RUN_DIR="$ROOT/results/runs/$RUN_ID"
 DATA_DIR="$ROOT/data/runs/$RUN_ID"
-mkdir -p "$RUN_DIR"/{cases,stderr,pressure,pressure-storage,storage} "$DATA_DIR"
+mkdir -p "$RUN_DIR"/{cases,stderr,pressure,pressure-storage,storage,noise} "$DATA_DIR"
 CURRENT_FSTYPE=$(findmnt -T "$DATA_DIR" -n -o FSTYPE 2>/dev/null || true)
 CURRENT_SOURCE=$(findmnt -T "$DATA_DIR" -n -o SOURCE 2>/dev/null || true)
 if [[ "$CURRENT_FSTYPE" != "$BASELINE_FSTYPE" || "$CURRENT_SOURCE" != "$BASELINE_SOURCE" ]]; then
@@ -270,6 +292,7 @@ jq -n \
     pressure_scope:"both pressure workers span the complete kvbench process invocation including open, prefill, warmup and measured phase",
     pressure_precondition_s:2,
     pressure_statistics:"each fio worker uses ramp_time=2 to exclude its startup/precondition period from delivered-rate statistics; pressure-lifetime storage evidence spans worker start through stop, while storage/ sidecars bracket only the database interval",
+    external_noise_guard:"quick/full reject normal-priority compiler/build work, wide filesystem scans, or unknown >=50% CPU foreign processes immediately before and after each database invocation; nice >=15 work is ignored by policy",
     post_pressure_settle:"after each nonzero pressure case, stop both fio workers, sync, then sleep 0.5 s before another case",
     interpretation:"pressure percent is requested total IOPS relative to min(read_iops/read_fraction, write_iops/write_fraction); read and write caps and delivered rates remain independently inspectable"
   }' > "$RUN_DIR/support.json" || exit $?
@@ -380,6 +403,8 @@ for job in "${ORDERED[@]}"; do
   pressure_write_raw="$RUN_DIR/pressure/raw/$case_id-write.json"
   pressure_read_verbatim="$RUN_DIR/pressure/raw/$case_id-read.fio-output"
   pressure_write_verbatim="$RUN_DIR/pressure/raw/$case_id-write.fio-output"
+  noise_before="$RUN_DIR/noise/$case_id.before.json"
+  noise_after="$RUN_DIR/noise/$case_id.after.json"
 
   if [[ -s "$out" && -s "$pressure_out" && -s "$storage_out" ]]; then
     resume_evidence_ok=0
@@ -403,7 +428,8 @@ for job in "${ORDERED[@]}"; do
     fi
   fi
   rm -f "$out" "$pressure_out" "$storage_out" "$pressure_storage_out" \
-    "$pressure_read_raw" "$pressure_write_raw" "$pressure_read_verbatim" "$pressure_write_verbatim"
+    "$pressure_read_raw" "$pressure_write_raw" "$pressure_read_verbatim" "$pressure_write_verbatim" \
+    "$noise_before" "$noise_after"
   clear_failure "$case_id"
   echo "[$INDEX/$TOTAL] $case_id" >&2
 
@@ -459,6 +485,15 @@ for job in "${ORDERED[@]}"; do
       > "$pressure_out"
   fi
 
+  check_external_noise "before-db:$case_id" "$noise_before"
+  noise_rc=$?
+  if (( noise_rc != 0 )); then
+    stop_pressure
+    jq -cn --arg case_id "$case_id" --arg phase before-db --arg evidence "$noise_before" \
+      '{case_id:$case_id,phase:$phase,evidence:$evidence}' >> "$RUN_DIR/noise-events.ndjson"
+    exit "$noise_rc"
+  fi
+
   storage_before=$("$ROOT/scripts/capture-storage-counters.sh" "$DATA_DIR") || {
     stop_pressure
     record_failure "$case_id" storage-before 1 "$RUN_DIR/storage/$case_id.before.error"
@@ -471,6 +506,8 @@ for job in "${ORDERED[@]}"; do
     --trial "$trial" --seed 1592606758 --scenario "io-pressure-${pct}pct" \
     --root "$DATA_DIR" --output "$out" 2>"$err"
   rc=$?
+  check_external_noise "after-db:$case_id" "$noise_after"
+  noise_rc=$?
   storage_after=$("$ROOT/scripts/capture-storage-counters.sh" "$DATA_DIR")
   storage_rc=$?
   if (( storage_rc == 0 )); then
@@ -530,7 +567,13 @@ for job in "${ORDERED[@]}"; do
   fi
 
 
-  if (( rc != 0 )); then
+  if (( noise_rc != 0 )); then
+    rm -f "$out" "$pressure_out" "$storage_out" "$pressure_storage_out" \
+      "$pressure_read_raw" "$pressure_write_raw" "$pressure_read_verbatim" "$pressure_write_verbatim"
+    jq -cn --arg case_id "$case_id" --arg phase after-db --arg evidence "$noise_after" \
+      '{case_id:$case_id,phase:$phase,evidence:$evidence}' >> "$RUN_DIR/noise-events.ndjson"
+    exit "$noise_rc"
+  elif (( rc != 0 )); then
     rm -f "$out"
     record_failure "$case_id" benchmark "$rc" "$err"
   elif (( storage_rc != 0 )) || [[ ! -s "$storage_out" ]]; then
