@@ -13,6 +13,7 @@ sys.modules[SPEC.name] = MODULE
 SPEC.loader.exec_module(MODULE)
 ProcessRow = MODULE.ProcessRow
 classify_process = MODULE.classify_process
+descendant_pids = MODULE.descendant_pids
 
 
 class ExternalNoiseTests(unittest.TestCase):
@@ -39,6 +40,14 @@ class ExternalNoiseTests(unittest.TestCase):
 
     def test_allows_benchmark_process(self) -> None:
         self.assertIsNone(classify_process(self.row(cpu=100, comm="kvbench", args="/tmp/kvbench --engine redb")))
+
+    def test_excludes_helper_descendant_tree(self) -> None:
+        rows = [
+            ProcessRow(200, 100, 0, 100.0, "ps", "ps -eo pid=,ppid=,ni=,pcpu=,comm=,args="),
+            ProcessRow(201, 200, 0, 100.0, "helper", "helper child"),
+            ProcessRow(300, 1, 0, 100.0, "python3", "python3 foreign.py"),
+        ]
+        self.assertEqual(descendant_pids(rows, {100}), {100, 200, 201})
 
 
 if __name__ == "__main__":

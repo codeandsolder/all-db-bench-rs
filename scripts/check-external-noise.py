@@ -49,6 +49,18 @@ def ancestor_pids(pid: int) -> set[int]:
     return out
 
 
+def descendant_pids(rows: list[ProcessRow], roots: set[int]) -> set[int]:
+    descendants = set(roots)
+    changed = True
+    while changed:
+        changed = False
+        for row in rows:
+            if row.pid not in descendants and row.ppid in descendants:
+                descendants.add(row.pid)
+                changed = True
+    return descendants
+
+
 def process_rows() -> list[ProcessRow]:
     proc = subprocess.run(
         ["ps", "-eo", "pid=,ppid=,ni=,pcpu=,comm=,args="],
@@ -75,9 +87,11 @@ def main() -> int:
     args = parser.parse_args()
 
     ancestors = ancestor_pids(os.getpid())
+    rows = process_rows()
+    own_tree = descendant_pids(rows, {os.getpid()})
     offenders = []
-    for row in process_rows():
-        if row.pid in ancestors:
+    for row in rows:
+        if row.pid in ancestors or row.pid in own_tree:
             continue
         reason = classify_process(row, ignore_nice_at_least=args.ignore_nice_at_least)
         if reason is not None:
