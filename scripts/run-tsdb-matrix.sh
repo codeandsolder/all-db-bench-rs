@@ -73,6 +73,7 @@ INSTALLER_SHA=$(sha256sum "$ROOT/scripts/ensure-tsdb-binaries.sh" | awk '{print 
 PROCESS_CAPTURE_SHA=$(sha256sum "$ROOT/scripts/capture-process-tree.py" | awk '{print $1}')
 MERGE_RESULT_SHA=$(sha256sum "$ROOT/scripts/merge-tsdb-result.py" | awk '{print $1}')
 SUMMARIZER_SHA=$(sha256sum "$ROOT/scripts/summarize-tsdb.py" | awk '{print $1}')
+NOISE_GUARD_SHA=$(sha256sum "$ROOT/scripts/check-external-noise.py" | awk '{print $1}')
 free_bytes=$(df -B1 --output=avail "$DATA_DIR" | tail -n1 | tr -d ' ')
 min_free_bytes=$((MIN_FREE_GIB * 1024 * 1024 * 1024))
 if (( free_bytes < min_free_bytes )); then
@@ -208,7 +209,8 @@ cat > "$SUPPORT_NEW" <<EOF_SUPPORT
     "installer": "$INSTALLER_SHA",
     "process_capture": "$PROCESS_CAPTURE_SHA",
     "result_merge": "$MERGE_RESULT_SHA",
-    "summarizer": "$SUMMARIZER_SHA"
+    "summarizer": "$SUMMARIZER_SHA",
+    "noise_guard": "$NOISE_GUARD_SHA"
   },
   "hostname": "$HOST_NAME",
   "machine_id_sha256": "$MACHINE_ID_SHA256",
