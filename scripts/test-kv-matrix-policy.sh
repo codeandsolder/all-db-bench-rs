@@ -17,3 +17,6 @@ fi
 if kv_effective_ops lsmdb range-scan 50000 nope >/dev/null 2>&1; then
   echo 'invalid record count unexpectedly accepted' >&2; exit 1
 fi
+# Import provenance is runner-level, but the policy test also pins the expected
+# scaled counts that imported legacy cases must never impersonate.
+eq "$(kv_effective_ops lsmdb range-scan 50000 100000 50000000 50)" 1000

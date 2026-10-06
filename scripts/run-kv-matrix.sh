@@ -18,6 +18,14 @@ source "$ROOT/scripts/kv-matrix-policy.sh"
 KV_LSMDB_RANGE_TARGET_TRAVERSED_ENTRIES=${KV_LSMDB_RANGE_TARGET_TRAVERSED_ENTRIES:-50000000}
 KV_LSMDB_RANGE_MIN_OPS=${KV_LSMDB_RANGE_MIN_OPS:-50}
 LSMDB_RANGE_OPS=$(kv_effective_ops lsmdb range-scan "$OPS" "$RECORDS" "$KV_LSMDB_RANGE_TARGET_TRAVERSED_ENTRIES" "$KV_LSMDB_RANGE_MIN_OPS") || { echo "invalid KV range-scan policy" >&2; exit 2; }
+KV_IMPORTED_FROM_RUN=${KV_IMPORTED_FROM_RUN:-}
+KV_IMPORTED_CASES_MANIFEST=${KV_IMPORTED_CASES_MANIFEST:-}
+IMPORTED_CASES_MANIFEST_SHA=""
+if [[ -n "$KV_IMPORTED_CASES_MANIFEST" ]]; then
+  [[ -n "$KV_IMPORTED_FROM_RUN" ]] || { echo "KV_IMPORTED_FROM_RUN is required with KV_IMPORTED_CASES_MANIFEST" >&2; exit 2; }
+  [[ -s "$KV_IMPORTED_CASES_MANIFEST" ]] || { echo "import manifest missing or empty: $KV_IMPORTED_CASES_MANIFEST" >&2; exit 2; }
+  IMPORTED_CASES_MANIFEST_SHA=$(sha256sum "$KV_IMPORTED_CASES_MANIFEST" | awk '{print $1}')
+fi
 RUN_ID=${RUN_ID:-"$(date -u +%Y%m%dT%H%M%SZ)-kv-$PROFILE"}
 RUN_DIR="$ROOT/results/runs/$RUN_ID"
 DATA_DIR="$ROOT/data/runs/$RUN_ID"
@@ -105,6 +113,8 @@ json.dump({
   "lsmdb_range_scan_ops":$LSMDB_RANGE_OPS,
   "lsmdb_range_target_traversed_entries":$KV_LSMDB_RANGE_TARGET_TRAVERSED_ENTRIES,
   "lsmdb_range_min_ops":$KV_LSMDB_RANGE_MIN_OPS,
+  "imported_from_run":"$KV_IMPORTED_FROM_RUN",
+  "imported_cases_manifest_sha256":"$IMPORTED_CASES_MANIFEST_SHA",
   "engines":"${ENGINES[*]}", "workloads":"${WORKLOADS[*]}", "durabilities":"${DURABILITIES[*]}",
   "resume_order_policy":"$RESUME_ORDER_POLICY", "build_profile":"$BUILD_PROFILE",
   "benchmark_binary_sha256":"$BIN_SHA", "runner_sha256":"$RUNNER_SHA", "kv_matrix_policy_sha256":"$POLICY_SHA", "noise_guard_sha256":"$NOISE_SHA",
