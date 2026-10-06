@@ -85,6 +85,7 @@ The compact defaults are intentionally small enough for modest hosts and do not 
 - **read-heavy**: 95% reads, 5% updates. Existing-key accesses use an 80/20 hot-set distribution.
 - **balanced**: 50% reads, 30% updates, 10% inserts, 10% deletes, also using an 80/20 hot set for existing-key access.
 - **tiny-txn**: one new record per committed transaction; exposes commit and sync overhead. Because each logical op is itself a commit/barrier opportunity, baseline and wide matrices use one tenth of the profile-wide op budget for this workload (100 smoke, 5,000 quick, 25,000 full). That matches the concurrency lane's existing tiny-transaction sizing and avoids spending minutes repeating tens of thousands of sync barriers on slow engines. Groups that become too short are sizing probes and are rerun upward by the same duration/CV acceptance process used elsewhere; effective `ops_requested` remains in every result.
+The record-product baseline uses the same duration-first rule with its smaller profile: tiny-txn uses 50 ops in smoke, 5,000 in quick and 25,000 in full, while other record workloads retain the full profile count. `tiny_txn_ops` is stored in support identity and the effective `ops_requested` remains in every result.
 - **write-burst**: append-like inserts in configurable transaction batches.
 - **churn**: 40% updates, 30% inserts, 30% deletes with uniform existing-key selection; intended to exercise free-space management, tombstones and compaction.
 
