@@ -25,7 +25,7 @@ done
 DEPS=${TSDB_DEPS_DIR:-"$ROOT/.deps/tsdb"}
 GREPTIME="$DEPS/greptimedb-1.2.1/greptime"
 VICTORIA="$DEPS/victoriametrics-1.153.0/victoria-metrics-prod"
-PROMETHEUS="$DEPS/prometheus-3.14.0/prometheus"
+PROMETHEUS="$DEPS/prometheus-3.15.0/prometheus"
 INFLUXDB3="$DEPS/influxdb3-3.12.0/influxdb3"
 for binary in "$GREPTIME" "$VICTORIA" "$PROMETHEUS" "$INFLUXDB3"; do
   [[ -x "$binary" ]] || { echo "missing TSDB binary after install: $binary" >&2; exit 2; }
@@ -152,7 +152,7 @@ start_server() {
       ;;
     prometheus)
       ENDPOINT=http://127.0.0.1:19020
-      VERSION=3.14.0
+      VERSION=3.15.0
       cfg="$RUN_DIR/server-configs/$case_id.prometheus.yml"
       mkdir -p "$case_data"
       cat > "$cfg" <<'YAML'
@@ -221,7 +221,7 @@ cat > "$SUPPORT_NEW" <<EOF_SUPPORT
   "engines": {
     "greptimedb": "1.2.1",
     "victoriametrics": "1.153.0",
-    "prometheus": "3.14.0",
+    "prometheus": "3.15.0",
     "influxdb3": "3.12.0"
   },
   "dataset": "bench_metric{host=hNNNNNN,region=rNN} with one float value every 10 seconds",

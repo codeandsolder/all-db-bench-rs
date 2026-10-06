@@ -48,7 +48,7 @@ install_tarball() {
 
 GREPTIME_VERSION=1.2.1
 VICTORIA_VERSION=1.153.0
-PROMETHEUS_VERSION=3.14.0
+PROMETHEUS_VERSION=3.15.0
 INFLUXDB3_VERSION=3.12.0
 
 install_tarball greptimedb "$GREPTIME_VERSION" \
@@ -61,7 +61,7 @@ install_tarball victoriametrics "$VICTORIA_VERSION" \
   victoria-metrics-prod
 install_tarball prometheus "$PROMETHEUS_VERSION" \
   "https://github.com/prometheus/prometheus/releases/download/v${PROMETHEUS_VERSION}/prometheus-${PROMETHEUS_VERSION}.linux-amd64.tar.gz" \
-  "f665c6da19eb7ba399c915d30c7d9793c9b417bf8a749b504bc470678631478d" \
+  "2a542df32eac02ee17b9d844fb2aa1de00dafa5476579ba8a3ba862e9d572ea0" \
   prometheus
 install_tarball influxdb3 "$INFLUXDB3_VERSION" \
   "https://download.influxdata.com/influxdb/releases/influxdb3-core-${INFLUXDB3_VERSION}_linux_amd64.tar.gz" \
