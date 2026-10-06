@@ -16,6 +16,7 @@ classify_process = MODULE.classify_process
 descendant_pids = MODULE.descendant_pids
 low_priority_sccache_tree = MODULE.low_priority_sccache_tree
 aggregate_foreign_cpu_percent = MODULE.aggregate_foreign_cpu_percent
+cpu_percent_from_samples = MODULE.cpu_percent_from_samples
 
 
 class ExternalNoiseTests(unittest.TestCase):
@@ -68,6 +69,19 @@ class ExternalNoiseTests(unittest.TestCase):
             ProcessRow(804, 1, 0, 100.0, "kvbench", "/tmp/kvbench --engine redb"),
         ]
         self.assertEqual(aggregate_foreign_cpu_percent(rows, excluded_pids=set()), 60.0)
+
+
+    def test_cpu_percent_uses_interval_delta_not_lifetime_average(self) -> None:
+        self.assertAlmostEqual(
+            cpu_percent_from_samples((10_000, 123), (10_025, 123), elapsed_s=0.25, uptime_s=1000.0, ticks_per_second=100),
+            100.0,
+        )
+
+    def test_cpu_percent_handles_process_born_during_sample(self) -> None:
+        self.assertAlmostEqual(
+            cpu_percent_from_samples(None, (25, 99_975), elapsed_s=0.25, uptime_s=1000.0, ticks_per_second=100),
+            100.0,
+        )
 
     def test_explicit_exclusion_can_cover_a_server_process_tree(self) -> None:
         rows = [
