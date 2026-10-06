@@ -140,8 +140,12 @@ for job in "${ORDERED[@]}"; do
     --records "$RECORDS" --ops "$OPS" --value-bytes 256 --txn-size 100 --scan-len 100 \
     --trial "$trial" --seed 1592606758 --scenario baseline-core --root "$DATA_DIR" --output "$out" 2>"$err"
   rc=$?
+  io_rc=0; check_io_quiet "after:$case_id" || io_rc=$?
   noise_rc=0; check_external_noise "after:$case_id" "$noise_after" || noise_rc=$?
-  if (( noise_rc != 0 )); then rm -f "$out"; clear_failure "$case_id"; exit "$noise_rc"; fi
+  if (( io_rc != 0 || noise_rc != 0 )); then
+    rm -f "$out"; clear_failure "$case_id"
+    if (( io_rc != 0 )); then exit "$io_rc"; else exit "$noise_rc"; fi
+  fi
   if (( rc != 0 )) || [[ ! -s "$out" ]] || [[ $(wc -l < "$out") -ne 1 ]]; then
     rm -f "$out"; clear_failure "$case_id"
     jq -cn --arg case_id "$case_id" --arg stderr "$err" --argjson rc "$rc" '{case_id:$case_id,returncode:$rc,stderr:$stderr}' >> "$RUN_DIR/failures.ndjson"
