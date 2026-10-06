@@ -8,6 +8,9 @@ case "$PROFILE" in
   full)  RECORDS=1000000; OPS=250000; TRIALS=7; MIN_FREE_GIB=30 ;;
   *) echo "usage: $0 [smoke|quick|full]" >&2; exit 2 ;;
 esac
+TRIALS=${KV_TRIALS_OVERRIDE:-$TRIALS}
+RECORDS=${KV_RECORDS_OVERRIDE:-$RECORDS}
+OPS=${KV_OPS_OVERRIDE:-$OPS}
 
 ROOT=${ROOT:-"$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"}
 RUN_ID=${RUN_ID:-"$(date -u +%Y%m%dT%H%M%SZ)-kv-$PROFILE"}
