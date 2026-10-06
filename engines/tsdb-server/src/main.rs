@@ -729,7 +729,12 @@ fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{align_timestamp_to_step, effective_batch_samples, prometheus_seconds};
+    use super::{
+        WriteRequest, align_timestamp_to_step, effective_batch_samples, prometheus_seconds,
+        remote_write_body,
+    };
+    use prost::Message;
+    use snap::raw::Decoder as SnappyDecoder;
 
     #[test]
     fn prometheus_timestamp_format_preserves_millisecond_phase() {
@@ -742,6 +747,22 @@ mod tests {
         assert_eq!(effective_batch_samples(120, 0), 120);
         assert_eq!(effective_batch_samples(6_000, 120), 120);
         assert_eq!(effective_batch_samples(50, 120), 50);
+    }
+
+    #[test]
+    fn remote_write_chunk_preserves_global_sample_indices() {
+        let compressed = remote_write_body(2, 3, 5, 8, 1_000, 10).expect("encode chunk");
+        let protobuf = SnappyDecoder::new()
+            .decompress_vec(&compressed)
+            .expect("decompress chunk");
+        let request = WriteRequest::decode(protobuf.as_slice()).expect("decode protobuf");
+        assert_eq!(request.timeseries.len(), 1);
+        let series = &request.timeseries[0];
+        assert_eq!(series.samples.len(), 3);
+        assert_eq!(series.samples[0].timestamp, 1_050);
+        assert_eq!(series.samples[1].timestamp, 1_060);
+        assert_eq!(series.samples[2].timestamp, 1_070);
+        assert!((series.samples[0].value - 5.002).abs() < f64::EPSILON);
     }
 
     #[test]
