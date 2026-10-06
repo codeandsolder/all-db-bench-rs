@@ -83,6 +83,31 @@ def preflight_host(repo: Path, *, max_io_full_avg10: float) -> int:
     return proc.returncode
 
 
+def scrub_short_pressure(repo: Path, run_id: str) -> int:
+    run_dir = repo / "results" / "runs" / run_id
+    proc = subprocess.run(
+        [sys.executable, str(repo / "scripts" / "scrub-short-trial-pressure.py"), str(run_dir)],
+        cwd=repo,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"short-trial pressure scrub failed rc={proc.returncode}: {proc.stderr.strip()}"
+        )
+    try:
+        report = json.loads(proc.stdout)
+    except json.JSONDecodeError as error:
+        raise RuntimeError(f"invalid short-trial pressure scrub output: {proc.stdout!r}") from error
+    rejected = int(report.get("rejected", 0))
+    if rejected:
+        case_ids = ",".join(str(item.get("case_id")) for item in report.get("cases", []))
+        print(f"archived {rejected} transient-pressure record trial(s): {case_ids}", flush=True)
+    return rejected
+
+
 def complete(repo: Path, run_id: str) -> bool:
     run_dir = repo / "results" / "runs" / run_id
     summary_path = run_dir / "summary.json"
@@ -151,6 +176,12 @@ def main() -> int:
         return 73
 
     with lock_handle:
+        try:
+            scrub_short_pressure(args.repo, args.run_id)
+        except RuntimeError as error:
+            write_status(args.status_file, state="failed", campaign="record-quick-stock", run_id=args.run_id, error=str(error))
+            print(error, flush=True)
+            return 2
         if complete(args.repo, args.run_id):
             audit(args.repo, args.run_id, args.audit_dir)
             write_status(args.status_file, state="complete", campaign="record-quick-stock", run_id=args.run_id, busy_events=0)
@@ -207,9 +238,17 @@ def main() -> int:
                 stderr=subprocess.STDOUT,
                 text=True,
             )
+            try:
+                scrubbed = scrub_short_pressure(args.repo, args.run_id)
+            except RuntimeError as error:
+                write_status(args.status_file, state="failed", campaign="record-quick-stock", run_id=args.run_id, error=str(error))
+                print(error, flush=True)
+                return 2
             if proc.returncode == 0:
                 if proc.stdout:
                     print(proc.stdout, end="", flush=True)
+                if scrubbed:
+                    continue
                 if not complete(args.repo, args.run_id):
                     write_status(args.status_file, state="failed", campaign="record-quick-stock", run_id=args.run_id, error="runner success did not validate")
                     return 2

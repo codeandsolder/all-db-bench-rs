@@ -161,6 +161,30 @@ def preflight_host(repo: Path, *, max_io_full_avg10: float) -> int:
     return proc.returncode
 
 
+def scrub_short_pressure(repo: Path, run_dir: Path) -> int:
+    proc = subprocess.run(
+        [sys.executable, str(repo / "scripts" / "scrub-short-trial-pressure.py"), str(run_dir)],
+        cwd=repo,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"short-trial pressure scrub failed rc={proc.returncode}: {proc.stderr.strip()}"
+        )
+    try:
+        report = json.loads(proc.stdout)
+    except json.JSONDecodeError as error:
+        raise RuntimeError(f"invalid short-trial pressure scrub output: {proc.stdout!r}") from error
+    rejected = int(report.get("rejected", 0))
+    if rejected:
+        case_ids = ",".join(str(item.get("case_id")) for item in report.get("cases", []))
+        print(f"archived {rejected} transient-pressure trial(s): {case_ids}", flush=True)
+    return rejected
+
+
 def groups_from_plan(path: Path) -> list[dict[str, Any]]:
     plan = json.loads(path.read_text())
     if plan.get("sizing_policy_version") != 2:
@@ -243,6 +267,14 @@ def main() -> int:
 
         for index, group in enumerate(groups, 1):
             rid = run_id(group)
+            run_dir = args.repo / "results" / "runs" / rid
+            if group.get("resize_strategy") == "more-trials":
+                try:
+                    scrub_short_pressure(args.repo, run_dir)
+                except RuntimeError as error:
+                    write_status(args.status_file, state="failed", campaign="record-sizing-followups", current_run_id=rid, error=str(error))
+                    print(error, flush=True)
+                    return 2
             if complete(args.repo, group):
                 skipped += 1
                 elapsed = calibration_elapsed(
@@ -315,9 +347,19 @@ def main() -> int:
                     stderr=subprocess.STDOUT,
                     text=True,
                 )
+                scrubbed = 0
+                if group.get("resize_strategy") == "more-trials":
+                    try:
+                        scrubbed = scrub_short_pressure(args.repo, run_dir)
+                    except RuntimeError as error:
+                        write_status(args.status_file, state="failed", campaign="record-sizing-followups", current_run_id=rid, error=str(error))
+                        print(error, flush=True)
+                        return 2
                 if proc.returncode == 0:
                     if proc.stdout:
                         print(proc.stdout, end="", flush=True)
+                    if scrubbed:
+                        continue
                     if not complete(args.repo, group):
                         print(f"record runner returned success but result validation failed: {rid}", flush=True)
                         return 2
