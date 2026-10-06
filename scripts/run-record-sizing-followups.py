@@ -18,10 +18,11 @@ from pathlib import Path
 from typing import Any, TextIO
 
 DEFAULT_REPO = Path("/srv/scratch/db-bench-work/kv-sizing-v3-followup")
-DEFAULT_PLAN = Path("/srv/scratch/db-bench-work/kv-sizing-audit/20261006-kv-quick-67228ce.json")
-DEFAULT_BIN = Path("/srv/scratch/db-bench-work/kv-sizing-audit/bin/kvbench-v3")
+DEFAULT_PLAN = Path("/srv/scratch/db-bench-work/record-sizing-audit/20261006-record-quick-stock.json")
+DEFAULT_BIN = Path("/srv/scratch/db-bench-work/record-sizing-audit/bin/recordbench-ae74103b847171d1")
+DEFAULT_ROCKS_BIN = Path("/srv/scratch/db-bench-work/record-sizing-audit/bin/surrealdb-rocksdb-recordbench-c3978a3b66a24edd")
 DEFAULT_LOCK = Path("/run/lock/all-db-bench-performance.lock")
-DEFAULT_STATUS = Path("/srv/scratch/db-bench-work/kv-sizing-audit/idle-status.json")
+DEFAULT_STATUS = Path("/srv/scratch/db-bench-work/record-sizing-audit/resize-idle-status.json")
 
 
 def slug(value: str) -> str:
@@ -30,7 +31,7 @@ def slug(value: str) -> str:
 
 def run_id(group: dict[str, Any]) -> str:
     return (
-        "20261006-kv-resize-"
+        "20261006-record-resize-"
         f"{slug(str(group['engine']))}-{slug(str(group['durability']))}-"
         f"{slug(str(group['workload']))}-e{int(group['suggested_effective_ops'])}"
     )
@@ -68,7 +69,7 @@ def complete(repo: Path, group: dict[str, Any]) -> bool:
 
 def median_elapsed(repo: Path, group: dict[str, Any]) -> float:
     case_dir = repo / "results" / "runs" / run_id(group) / "cases"
-    values = []
+    values: list[float] = []
     for path in sorted(case_dir.glob("*.json")):
         row = json.loads(path.read_text())
         if (
@@ -97,7 +98,7 @@ def calibration_elapsed(
     elapsed = median_elapsed(repo, group)
     if not minimum <= elapsed <= maximum:
         raise RuntimeError(
-            f"resize calibration outside [{minimum:.3f}, {maximum:.3f}] s for {run_id(group)}: "
+            f"record resize calibration outside [{minimum:.3f}, {maximum:.3f}] s for {run_id(group)}: "
             f"median_elapsed_s={elapsed:.3f}"
         )
     return elapsed
@@ -120,11 +121,7 @@ def acquire_lock(path: Path) -> TextIO:
 
 def write_status(path: Path, **fields: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-        "pid": os.getpid(),
-        **fields,
-    }
+    payload = {"updated_at": datetime.now(timezone.utc).isoformat(), "pid": os.getpid(), **fields}
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
     tmp.replace(path)
@@ -172,31 +169,32 @@ def groups_from_plan(path: Path) -> list[dict[str, Any]]:
     return groups
 
 
-def command_env(group: dict[str, Any], bench_bin: Path) -> dict[str, str]:
+def command_env(group: dict[str, Any], bench_bin: Path, rocks_bench_bin: Path) -> dict[str, str]:
     env = os.environ.copy()
     env.update(
         {
             "RUN_ID": run_id(group),
             "BENCH_BIN": str(bench_bin),
+            "ROCKS_BENCH_BIN": str(rocks_bench_bin),
             "ENGINES_OVERRIDE": str(group["engine"]),
             "DURABILITIES_OVERRIDE": str(group["durability"]),
             "WORKLOADS_OVERRIDE": str(group["workload"]),
-            "KV_OPS_OVERRIDE": str(int(group["runner_ops_override"])),
-            "KV_RECORDS_OVERRIDE": str(int(group["records"])),
-            "KV_TRIALS_OVERRIDE": "3",
+            "RECORD_OPS_OVERRIDE": str(int(group["runner_ops_override"])),
+            "RECORD_RECORDS_OVERRIDE": str(int(group["records"])),
+            "RECORD_TRIALS_OVERRIDE": "3",
         }
     )
     return env
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Opportunistically run undersized raw-KV quick follow-ups whenever the host is quiet"
-    )
+    parser = argparse.ArgumentParser(description="Opportunistically resize undersized record-product quick groups")
     parser.add_argument("--repo", type=Path, default=DEFAULT_REPO)
     parser.add_argument("--plan", type=Path, default=DEFAULT_PLAN)
     parser.add_argument("--bench-bin", type=Path, default=DEFAULT_BIN)
+    parser.add_argument("--rocks-bench-bin", type=Path, default=DEFAULT_ROCKS_BIN)
     parser.add_argument("--expected-bench-sha256")
+    parser.add_argument("--expected-rocks-bench-sha256")
     parser.add_argument("--lock-file", type=Path, default=DEFAULT_LOCK)
     parser.add_argument("--status-file", type=Path, default=DEFAULT_STATUS)
     parser.add_argument("--limit", type=int)
@@ -205,16 +203,17 @@ def main() -> int:
     parser.add_argument("--max-io-full-avg10", type=float, default=5.0)
     parser.add_argument("--calibration-count", type=int, default=5)
     parser.add_argument("--calibration-min-seconds", type=float, default=1.5)
-    parser.add_argument("--calibration-max-seconds", type=float, default=6.0)
-    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--calibration-max-seconds", type=float, default=15.0)
     args = parser.parse_args()
 
-    if not args.repo.is_dir():
-        parser.error(f"repo does not exist: {args.repo}")
     if not args.plan.is_file():
         parser.error(f"plan does not exist: {args.plan}")
-    if not args.bench_bin.is_file() or not os.access(args.bench_bin, os.X_OK):
-        parser.error(f"benchmark binary is not executable: {args.bench_bin}")
+    for path, expected in (
+        (args.bench_bin, args.expected_bench_sha256),
+        (args.rocks_bench_bin, args.expected_rocks_bench_sha256),
+    ):
+        if not path.is_file() or not os.access(path, os.X_OK):
+            parser.error(f"benchmark binary is not executable: {path}")
 
     try:
         lock_handle = acquire_lock(args.lock_file)
@@ -227,46 +226,26 @@ def main() -> int:
         if args.limit is not None:
             groups = groups[: args.limit]
         total = len(groups)
-        print(
-            f"planned={total} repo={args.repo} bench={args.bench_bin} watch={args.watch}",
-            flush=True,
-        )
+        print(f"record resize planned={total}", flush=True)
         completed_now = 0
         skipped = 0
         busy_events = 0
-        bench_verified = not bool(args.expected_bench_sha256)
+        binaries_verified = not bool(args.expected_bench_sha256 or args.expected_rocks_bench_sha256)
 
         for index, group in enumerate(groups, 1):
             rid = run_id(group)
             if complete(args.repo, group):
                 skipped += 1
-                print(f"[{index}/{total}] skip complete {rid}", flush=True)
-                try:
-                    elapsed = calibration_elapsed(
-                        args.repo,
-                        group,
-                        index=index,
-                        count=args.calibration_count,
-                        minimum=args.calibration_min_seconds,
-                        maximum=args.calibration_max_seconds,
-                    )
-                except RuntimeError as error:
-                    write_status(
-                        args.status_file,
-                        state="calibration-failed",
-                        campaign="raw-kv-sizing-followups",
-                        current_index=index,
-                        total=total,
-                        current_run_id=rid,
-                        error=str(error),
-                        completed_now=completed_now,
-                        skipped=skipped,
-                        busy_events=busy_events,
-                    )
-                    print(error, flush=True)
-                    return 2
+                elapsed = calibration_elapsed(
+                    args.repo,
+                    group,
+                    index=index,
+                    count=args.calibration_count,
+                    minimum=args.calibration_min_seconds,
+                    maximum=args.calibration_max_seconds,
+                )
                 if elapsed is not None:
-                    print(f"calibration {index}/{args.calibration_count}: median_elapsed_s={elapsed:.3f}", flush=True)
+                    print(f"record calibration {index}/{args.calibration_count}: median_elapsed_s={elapsed:.3f}", flush=True)
                 continue
 
             print(
@@ -274,9 +253,6 @@ def main() -> int:
                 f"runner_ops={int(group['runner_ops_override'])}",
                 flush=True,
             )
-            if args.dry_run:
-                continue
-
             while True:
                 preflight_rc = preflight_host(args.repo, max_io_full_avg10=args.max_io_full_avg10)
                 if preflight_rc == 75:
@@ -284,7 +260,7 @@ def main() -> int:
                     write_status(
                         args.status_file,
                         state="waiting-for-idle",
-                        campaign="raw-kv-sizing-followups",
+                        campaign="record-sizing-followups",
                         current_index=index,
                         total=total,
                         current_run_id=rid,
@@ -295,38 +271,24 @@ def main() -> int:
                     if not args.watch:
                         return 75
                     if busy_events == 1 or busy_events % 30 == 0:
-                        print(f"waiting for idle: run={rid} busy_events={busy_events}", flush=True)
+                        print(f"record resize waiting for idle: run={rid} busy_events={busy_events}", flush=True)
                     time.sleep(max(args.busy_sleep, 0.1))
                     continue
                 if preflight_rc != 0:
-                    write_status(
-                        args.status_file,
-                        state="failed",
-                        campaign="raw-kv-sizing-followups",
-                        current_index=index,
-                        total=total,
-                        current_run_id=rid,
-                        returncode=preflight_rc,
-                        error="host preflight failed",
-                        completed_now=completed_now,
-                        skipped=skipped,
-                        busy_events=busy_events,
-                    )
-                    print(f"host preflight failed rc={preflight_rc} run={rid}", flush=True)
                     return preflight_rc
 
-                if not bench_verified:
-                    actual = sha256(args.bench_bin)
-                    if actual != args.expected_bench_sha256:
-                        write_status(args.status_file, state="failed", campaign="raw-kv-sizing-followups", error="benchmark binary SHA-256 mismatch")
-                        print(f"benchmark binary SHA-256 mismatch: expected {args.expected_bench_sha256}, got {actual}", flush=True)
-                        return 2
-                    bench_verified = True
+                if not binaries_verified:
+                    checks = ((args.bench_bin, args.expected_bench_sha256), (args.rocks_bench_bin, args.expected_rocks_bench_sha256))
+                    for path, expected in checks:
+                        if expected and sha256(path) != expected:
+                            write_status(args.status_file, state="failed", campaign="record-sizing-followups", current_run_id=rid, error=f"benchmark binary SHA-256 mismatch: {path}")
+                            return 2
+                    binaries_verified = True
 
                 write_status(
                     args.status_file,
                     state="running",
-                    campaign="raw-kv-sizing-followups",
+                    campaign="record-sizing-followups",
                     current_index=index,
                     total=total,
                     current_run_id=rid,
@@ -335,9 +297,9 @@ def main() -> int:
                     busy_events=busy_events,
                 )
                 proc = subprocess.run(
-                    [str(args.repo / "scripts" / "run-kv-matrix.sh"), "quick"],
+                    [str(args.repo / "scripts" / "run-record-matrix.sh"), "quick"],
                     cwd=args.repo,
-                    env=command_env(group, args.bench_bin),
+                    env=command_env(group, args.bench_bin, args.rocks_bench_bin),
                     check=False,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
@@ -347,7 +309,7 @@ def main() -> int:
                     if proc.stdout:
                         print(proc.stdout, end="", flush=True)
                     if not complete(args.repo, group):
-                        print(f"runner returned success but result validation failed: {rid}", flush=True)
+                        print(f"record runner returned success but result validation failed: {rid}", flush=True)
                         return 2
                     completed_now += 1
                     break
@@ -357,7 +319,7 @@ def main() -> int:
                     write_status(
                         args.status_file,
                         state="failed",
-                        campaign="raw-kv-sizing-followups",
+                        campaign="record-sizing-followups",
                         current_index=index,
                         total=total,
                         current_run_id=rid,
@@ -366,14 +328,12 @@ def main() -> int:
                         skipped=skipped,
                         busy_events=busy_events,
                     )
-                    print(f"fatal rc={proc.returncode} run={rid}", flush=True)
                     return proc.returncode
-
                 busy_events += 1
                 write_status(
                     args.status_file,
                     state="waiting-for-idle",
-                    campaign="raw-kv-sizing-followups",
+                    campaign="record-sizing-followups",
                     current_index=index,
                     total=total,
                     current_run_id=rid,
@@ -382,10 +342,9 @@ def main() -> int:
                     busy_events=busy_events,
                 )
                 if not args.watch:
-                    print(f"busy rc=75 run={rid}; exiting because --watch was not supplied", flush=True)
                     return 75
                 if busy_events == 1 or busy_events % 30 == 0:
-                    print(f"waiting for idle: run={rid} busy_events={busy_events}", flush=True)
+                    print(f"record resize yielded after host became busy: run={rid} busy_events={busy_events}", flush=True)
                 time.sleep(max(args.busy_sleep, 0.1))
 
             try:
@@ -401,7 +360,7 @@ def main() -> int:
                 write_status(
                     args.status_file,
                     state="calibration-failed",
-                    campaign="raw-kv-sizing-followups",
+                    campaign="record-sizing-followups",
                     current_index=index,
                     total=total,
                     current_run_id=rid,
@@ -413,22 +372,18 @@ def main() -> int:
                 print(error, flush=True)
                 return 2
             if elapsed is not None:
-                print(f"calibration {index}/{args.calibration_count}: median_elapsed_s={elapsed:.3f}", flush=True)
+                print(f"record calibration {index}/{args.calibration_count}: median_elapsed_s={elapsed:.3f}", flush=True)
 
-        state = "dry-run-complete" if args.dry_run else "complete"
         write_status(
             args.status_file,
-            state=state,
-            campaign="raw-kv-sizing-followups",
+            state="complete",
+            campaign="record-sizing-followups",
             total=total,
             completed_now=completed_now,
             skipped=skipped,
             busy_events=busy_events,
         )
-        print(
-            f"done completed_now={completed_now} skipped={skipped} planned={total} busy_events={busy_events}",
-            flush=True,
-        )
+        print(f"record resize complete: completed_now={completed_now} skipped={skipped} total={total}", flush=True)
         return 0
 
 

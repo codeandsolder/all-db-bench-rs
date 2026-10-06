@@ -354,6 +354,8 @@ Before each campaign the runner requires substantial free disk headroom for WAL/
 
 Quick/full baseline cases require low full-I/O PSI before launch and the priority-aware external-noise detector both before and after the benchmark process. Raw loadavg is not an admission gate because it includes explicitly allowed low-priority work and has long decay hysteresis. A case whose post-check sees new disallowed foreground work is deleted before acceptance and is retried on a later clean window. Smoke remains a functional check and is exempt from performance admission gates.
 
+The laptop also runs a serialized idle campaign queue for long performance collection. Its supervisors perform a cheap CPU/I/O admission check before invoking the heavyweight matrix runners, so a busy host does not repeatedly hash hundreds of MiB of pinned benchmark binaries. Binary SHA-256 is verified once, lazily, on the first admitted window; matrix runners still repeat their authoritative pre/post trial gates. The queue finishes raw-KV resize follow-ups first, then the record-product stock quick matrix, its sizing audit, and record resize follow-ups. Each stage uses the shared /run/lock/all-db-bench-performance.lock and resumes from immutable per-case results.
+
 ## Current execution host
 
 Code and canonical history live at https://github.com/codeandsolder/all-db-bench-rs. Validation/execution moved from the I/O-contended cold-storage VPS to the laptop checkout under /srv/scratch/db-bench-2026-09-27. The laptop's ZFS-backed /srv/scratch has substantially more free space and 8 logical CPUs, making it the primary host for out-of-core, compaction, concurrency and controlled-pressure campaigns.
