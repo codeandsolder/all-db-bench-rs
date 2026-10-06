@@ -16,6 +16,11 @@ case "$PROFILE" in
     ;;
   *) echo "usage: $0 [smoke|quick|full]" >&2; exit 2 ;;
 esac
+TRIALS=${TSDB_TRIALS_OVERRIDE:-$TRIALS}
+SERIES=${TSDB_SERIES_OVERRIDE:-$SERIES}
+SAMPLES=${TSDB_SAMPLES_OVERRIDE:-$SAMPLES}
+BATCH_SERIES=${TSDB_BATCH_SERIES_OVERRIDE:-$BATCH_SERIES}
+QUERY_ITERATIONS=${TSDB_QUERY_ITERATIONS_OVERRIDE:-$QUERY_ITERATIONS}
 
 for tool in curl sha256sum uv awk shuf du cmp sort find findmnt hostname; do
   command -v "$tool" >/dev/null 2>&1 || { echo "missing required tool: $tool" >&2; exit 2; }
