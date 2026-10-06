@@ -7,18 +7,22 @@ mkdir -p "$DEST"
 require_tool() {
   command -v "$1" >/dev/null 2>&1 || { echo "missing required tool: $1" >&2; exit 2; }
 }
-for tool in curl sha256sum tar find install uname; do require_tool "$tool"; done
+for tool in curl sha256sum tar find install cp uname; do require_tool "$tool"; done
 [[ "$(uname -m)" == "x86_64" ]] || { echo "TSDB binary installer currently supports x86_64 only" >&2; exit 2; }
 
 install_tarball() {
-  local name=$1 version=$2 url=$3 sha256=$4 binary_name=$5
+  local name=$1 version=$2 url=$3 sha256=$4 binary_name=$5 companion_dir=${6:-}
   local dir="$DEST/$name-$version" target="$DEST/$name-$version/$binary_name" marker="$DEST/$name-$version/.verified-sha256"
   if [[ -x "$target" && -s "$marker" ]]; then
-    local recorded_archive recorded_binary current_binary
+    local recorded_archive recorded_binary current_binary companion_ok
     recorded_archive=$(awk -F= '$1 == "archive" {print $2}' "$marker")
     recorded_binary=$(awk -F= '$1 == "binary" {print $2}' "$marker")
     current_binary=$(sha256sum "$target" | awk '{print $1}')
-    if [[ "$recorded_archive" == "$sha256" && -n "$recorded_binary" && "$current_binary" == "$recorded_binary" ]]; then
+    companion_ok=1
+    if [[ -n "$companion_dir" && ! -d "$dir/$companion_dir" ]]; then
+      companion_ok=0
+    fi
+    if [[ "$recorded_archive" == "$sha256" && -n "$recorded_binary" && "$current_binary" == "$recorded_binary" && "$companion_ok" == 1 ]]; then
       printf '%s\n' "$target"
       return 0
     fi
@@ -38,6 +42,11 @@ install_tarball() {
   [[ -n "$found" ]] || { echo "archive for $name $version does not contain $binary_name" >&2; exit 2; }
   mkdir -p "$dir"
   install -m 0755 "$found" "$target"
+  if [[ -n "$companion_dir" ]]; then
+    local source_dir=${found%/*}
+    [[ -d "$source_dir/$companion_dir" ]] || { echo "archive for $name $version does not contain companion directory $companion_dir" >&2; exit 2; }
+    cp -a -- "$source_dir/$companion_dir" "$dir/$companion_dir"
+  fi
   local binary_sha
   binary_sha=$(sha256sum "$target" | awk '{print $1}')
   printf 'archive=%s\nbinary=%s\n' "$sha256" "$binary_sha" > "$marker"
@@ -66,4 +75,4 @@ install_tarball prometheus "$PROMETHEUS_VERSION" \
 install_tarball influxdb3 "$INFLUXDB3_VERSION" \
   "https://download.influxdata.com/influxdb/releases/influxdb3-core-${INFLUXDB3_VERSION}_linux_amd64.tar.gz" \
   "bd50a59aa8c7665fa837d877baffdee632bdc321bfca90d5e9706062f9e69645" \
-  influxdb3
+  influxdb3 python
