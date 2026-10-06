@@ -15,6 +15,7 @@ ProcessRow = MODULE.ProcessRow
 classify_process = MODULE.classify_process
 descendant_pids = MODULE.descendant_pids
 low_priority_sccache_tree = MODULE.low_priority_sccache_tree
+aggregate_foreign_cpu_percent = MODULE.aggregate_foreign_cpu_percent
 
 
 class ExternalNoiseTests(unittest.TestCase):
@@ -57,6 +58,16 @@ class ExternalNoiseTests(unittest.TestCase):
             ProcessRow(500, 1, 0, 5.0, "cargo", "cargo check --workspace"),
         ]
         self.assertEqual(low_priority_sccache_tree(rows), {400, 401})
+
+    def test_aggregate_cpu_catches_many_medium_foreign_workers(self) -> None:
+        rows = [
+            ProcessRow(800, 1, 0, 20.0, "python", "python worker-a.py"),
+            ProcessRow(801, 1, 0, 20.0, "python", "python worker-b.py"),
+            ProcessRow(802, 1, 0, 20.0, "python", "python worker-c.py"),
+            ProcessRow(803, 1, 19, 95.0, "python", "python low-priority.py"),
+            ProcessRow(804, 1, 0, 100.0, "kvbench", "/tmp/kvbench --engine redb"),
+        ]
+        self.assertEqual(aggregate_foreign_cpu_percent(rows, excluded_pids=set()), 60.0)
 
     def test_explicit_exclusion_can_cover_a_server_process_tree(self) -> None:
         rows = [

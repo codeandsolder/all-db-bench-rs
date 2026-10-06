@@ -75,16 +75,10 @@ if (( free_bytes < min_free_bytes )); then
   exit 75
 fi
 
-CPUS=$(getconf _NPROCESSORS_ONLN)
 check_quiet_host() {
-  local phase=${1:-case} load1 io_psi10
+  local phase=${1:-case} io_psi10
   [[ "$PROFILE" == smoke || "${ALLOW_BUSY:-0}" == 1 ]] && return 0
-  load1=$(awk '{print $1}' /proc/loadavg)
   io_psi10=$(awk '/^full / {for(i=1;i<=NF;i++) if($i ~ /^avg10=/){split($i,a,"="); print a[2]}}' /proc/pressure/io)
-  if ! awk -v l="$load1" -v c="$CPUS" 'BEGIN { exit !(l <= c * 0.5) }'; then
-    echo "refusing TSDB performance case on busy host ($phase): load1=$load1 visible_cpus=$CPUS" >&2
-    return 75
-  fi
   if ! awk -v p="${io_psi10:-0}" 'BEGIN { exit !(p <= 5.0) }'; then
     echo "refusing TSDB performance case under I/O pressure ($phase): io PSI full avg10=${io_psi10}%" >&2
     return 75

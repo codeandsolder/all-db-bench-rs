@@ -67,6 +67,21 @@ def low_priority_sccache_tree(rows: list[ProcessRow], *, min_nice: int = 10) -> 
     return descendant_pids(rows, roots) if roots else set()
 
 
+
+
+def aggregate_foreign_cpu_percent(
+    rows: list[ProcessRow],
+    *,
+    excluded_pids: set[int],
+    ignore_nice_at_least: int = 15,
+) -> float:
+    total = 0.0
+    for row in rows:
+        if row.pid in excluded_pids or row.nice >= ignore_nice_at_least or not row.args or ALLOWED_RE.search(row.args):
+            continue
+        total += row.cpu_percent
+    return total
+
 def process_rows() -> list[ProcessRow]:
     proc = subprocess.run(
         ["ps", "-eo", "pid=,ppid=,ni=,pcpu=,comm=,args="],
@@ -91,6 +106,7 @@ def main() -> int:
     parser.add_argument("--ignore-nice-at-least", type=int, default=15)
     parser.add_argument("--json-out")
     parser.add_argument("--exclude-pid", type=int, action="append", default=[])
+    parser.add_argument("--max-aggregate-cpu-percent", type=float, default=50.0)
     args = parser.parse_args()
 
     ancestors = ancestor_pids(os.getpid())
@@ -98,17 +114,25 @@ def main() -> int:
     own_tree = descendant_pids(rows, {os.getpid()})
     sccache_worker_tree = low_priority_sccache_tree(rows)
     explicit_excluded_tree = descendant_pids(rows, set(args.exclude_pid)) if args.exclude_pid else set()
+    excluded = ancestors | own_tree | sccache_worker_tree | explicit_excluded_tree
     offenders = []
     for row in rows:
-        if row.pid in ancestors or row.pid in own_tree or row.pid in sccache_worker_tree or row.pid in explicit_excluded_tree:
+        if row.pid in excluded:
             continue
         reason = classify_process(row, ignore_nice_at_least=args.ignore_nice_at_least)
         if reason is not None:
             offenders.append({**asdict(row), "reason": reason})
     offenders.sort(key=lambda item: (-item["cpu_percent"], item["pid"]))
+    aggregate_cpu_percent = aggregate_foreign_cpu_percent(
+        rows, excluded_pids=excluded, ignore_nice_at_least=args.ignore_nice_at_least
+    )
+    aggregate_cpu_exceeded = aggregate_cpu_percent >= args.max_aggregate_cpu_percent
     result = {
-        "quiet": not offenders,
+        "quiet": not offenders and not aggregate_cpu_exceeded,
         "ignore_nice_at_least": args.ignore_nice_at_least,
+        "max_aggregate_cpu_percent": args.max_aggregate_cpu_percent,
+        "aggregate_foreign_cpu_percent": aggregate_cpu_percent,
+        "aggregate_cpu_exceeded": aggregate_cpu_exceeded,
         "excluded_pids": sorted(explicit_excluded_tree),
         "offenders": offenders,
     }
