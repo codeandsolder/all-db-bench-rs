@@ -21,6 +21,7 @@ SERIES=${TSDB_SERIES_OVERRIDE:-$SERIES}
 SAMPLES=${TSDB_SAMPLES_OVERRIDE:-$SAMPLES}
 BATCH_SERIES=${TSDB_BATCH_SERIES_OVERRIDE:-$BATCH_SERIES}
 QUERY_ITERATIONS=${TSDB_QUERY_ITERATIONS_OVERRIDE:-$QUERY_ITERATIONS}
+BATCH_SAMPLES=${TSDB_BATCH_SAMPLES_OVERRIDE:-0}
 
 for tool in curl sha256sum uv awk shuf du cmp sort find findmnt hostname; do
   command -v "$tool" >/dev/null 2>&1 || { echo "missing required tool: $tool" >&2; exit 2; }
@@ -231,6 +232,7 @@ cat > "$SUPPORT_NEW" <<EOF_SUPPORT
   "series": $SERIES,
   "samples_per_series": $SAMPLES,
   "batch_series": $BATCH_SERIES,
+  "batch_samples_per_series": $BATCH_SAMPLES,
   "query_iterations": $QUERY_ITERATIONS,
   "step_ms": 10000,
   "engines": {
@@ -336,7 +338,8 @@ for job in "${ORDERED[@]}"; do
   set +e
   "$BIN" --engine "$engine" --engine-version "$VERSION" --endpoint "$ENDPOINT" \
     --series "$SERIES" --samples-per-series "$SAMPLES" --step-ms 10000 \
-    --batch-series "$BATCH_SERIES" --query-iterations "$QUERY_ITERATIONS" \
+    --batch-series "$BATCH_SERIES" --batch-samples-per-series "$BATCH_SAMPLES" \
+    --query-iterations "$QUERY_ITERATIONS" \
     --trial "$trial" --scenario "tsdb-${PROFILE}" --output "$client_out" 2>"$err"
   rc=$?
   set -e

@@ -62,6 +62,8 @@ struct Args {
     step_ms: i64,
     #[arg(long, default_value_t = 16)]
     batch_series: usize,
+    #[arg(long, default_value_t = 0)]
+    batch_samples_per_series: usize,
     #[arg(long, default_value_t = 3)]
     query_iterations: usize,
     #[arg(long, default_value_t = 1)]
@@ -152,6 +154,7 @@ struct Measurement {
     total_samples: u64,
     step_ms: i64,
     batch_series: usize,
+    batch_samples_per_series: usize,
     trial: u32,
     scenario: String,
     start_timestamp_ms: i64,
@@ -216,14 +219,15 @@ fn region_label(series: usize) -> String {
 fn remote_write_body(
     start_series: usize,
     end_series: usize,
-    samples_per_series: usize,
+    start_sample: usize,
+    end_sample: usize,
     start_ms: i64,
     step_ms: i64,
 ) -> Result<Vec<u8>> {
     let mut timeseries = Vec::with_capacity(end_series - start_series);
     for series in start_series..end_series {
-        let mut samples = Vec::with_capacity(samples_per_series);
-        for sample in 0..samples_per_series {
+        let mut samples = Vec::with_capacity(end_sample - start_sample);
+        for sample in start_sample..end_sample {
             let sample_i64 = i64::try_from(sample).context("sample index overflow")?;
             samples.push(Sample {
                 value: deterministic_value(series, sample),
@@ -252,6 +256,14 @@ fn remote_write_body(
     SnappyEncoder::new()
         .compress_vec(&protobuf)
         .context("snappy-compress remote-write request")
+}
+
+fn effective_batch_samples(samples_per_series: usize, configured: usize) -> usize {
+    if configured == 0 {
+        samples_per_series
+    } else {
+        configured.min(samples_per_series)
+    }
 }
 
 fn influx_body(
@@ -314,70 +326,95 @@ fn ingest(client: &Client, args: &Args, start_ms: i64) -> Result<IngestMeasureme
     let mut payload_bytes = 0u64;
     let mut requests = 0u64;
 
-    for start_series in (0..args.series).step_by(args.batch_series) {
-        let end_series = (start_series + args.batch_series).min(args.series);
-        let encode_started = Instant::now();
-        let body = match args.engine {
-            EngineKind::Influxdb3 => influx_body(
-                start_series,
-                end_series,
-                args.samples_per_series,
-                start_ms,
-                args.step_ms,
-            )?,
+    let sample_batch =
+        effective_batch_samples(args.samples_per_series, args.batch_samples_per_series);
+    let sample_starts: Vec<usize> = match args.engine {
+        EngineKind::Influxdb3 => vec![0],
+        EngineKind::Greptimedb | EngineKind::Victoriametrics | EngineKind::Prometheus => {
+            (0..args.samples_per_series).step_by(sample_batch).collect()
+        }
+    };
+
+    for start_sample in sample_starts {
+        let end_sample = match args.engine {
+            EngineKind::Influxdb3 => args.samples_per_series,
             EngineKind::Greptimedb | EngineKind::Victoriametrics | EngineKind::Prometheus => {
-                remote_write_body(
+                start_sample
+                    .saturating_add(sample_batch)
+                    .min(args.samples_per_series)
+            }
+        };
+        for start_series in (0..args.series).step_by(args.batch_series) {
+            let end_series = (start_series + args.batch_series).min(args.series);
+            let encode_started = Instant::now();
+            let body = match args.engine {
+                EngineKind::Influxdb3 => influx_body(
                     start_series,
                     end_series,
                     args.samples_per_series,
                     start_ms,
                     args.step_ms,
-                )?
-            }
-        };
-        encode_elapsed += encode_started.elapsed();
-        payload_bytes = payload_bytes.saturating_add(u64::try_from(body.len()).unwrap_or(u64::MAX));
+                )?,
+                EngineKind::Greptimedb | EngineKind::Victoriametrics | EngineKind::Prometheus => {
+                    remote_write_body(
+                        start_series,
+                        end_series,
+                        start_sample,
+                        end_sample,
+                        start_ms,
+                        args.step_ms,
+                    )?
+                }
+            };
+            encode_elapsed += encode_started.elapsed();
+            payload_bytes =
+                payload_bytes.saturating_add(u64::try_from(body.len()).unwrap_or(u64::MAX));
 
-        let request_started = Instant::now();
-        let response = match args.engine {
-            EngineKind::Greptimedb => client
-                .post(format!(
-                    "{}/v1/prometheus/write?db=public",
-                    args.endpoint.trim_end_matches('/')
-                ))
-                .header("Content-Encoding", "snappy")
-                .header("Content-Type", "application/x-protobuf")
-                .header("X-Prometheus-Remote-Write-Version", "0.1.0")
-                .body(body)
-                .send(),
-            EngineKind::Victoriametrics | EngineKind::Prometheus => client
-                .post(format!(
-                    "{}/api/v1/write",
-                    args.endpoint.trim_end_matches('/')
-                ))
-                .header("Content-Encoding", "snappy")
-                .header("Content-Type", "application/x-protobuf")
-                .header("X-Prometheus-Remote-Write-Version", "0.1.0")
-                .body(body)
-                .send(),
-            EngineKind::Influxdb3 => client
-                .post(format!(
-                    "{}/api/v3/write_lp?db={INFLUX_DATABASE}&precision=nanosecond&accept_partial=false",
-                    args.endpoint.trim_end_matches('/')
-                ))
-                .header("Content-Type", "text/plain; charset=utf-8")
-                .body(body)
-                .send(),
-        }
-        .with_context(|| format!("send ingestion request for series {start_series}..{end_series}"))?;
-        let elapsed = request_started.elapsed();
-        request_elapsed += elapsed;
-        record_duration(&mut hist, elapsed)?;
-        requests += 1;
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().unwrap_or_default();
-            bail!("ingestion returned HTTP {status}: {body}");
+            let request_started = Instant::now();
+            let response = match args.engine {
+                EngineKind::Greptimedb => client
+                    .post(format!(
+                        "{}/v1/prometheus/write?db=public",
+                        args.endpoint.trim_end_matches('/')
+                    ))
+                    .header("Content-Encoding", "snappy")
+                    .header("Content-Type", "application/x-protobuf")
+                    .header("X-Prometheus-Remote-Write-Version", "0.1.0")
+                    .body(body)
+                    .send(),
+                EngineKind::Victoriametrics | EngineKind::Prometheus => client
+                    .post(format!(
+                        "{}/api/v1/write",
+                        args.endpoint.trim_end_matches('/')
+                    ))
+                    .header("Content-Encoding", "snappy")
+                    .header("Content-Type", "application/x-protobuf")
+                    .header("X-Prometheus-Remote-Write-Version", "0.1.0")
+                    .body(body)
+                    .send(),
+                EngineKind::Influxdb3 => client
+                    .post(format!(
+                        "{}/api/v3/write_lp?db={INFLUX_DATABASE}&precision=nanosecond&accept_partial=false",
+                        args.endpoint.trim_end_matches('/')
+                    ))
+                    .header("Content-Type", "text/plain; charset=utf-8")
+                    .body(body)
+                    .send(),
+            }
+            .with_context(|| {
+                format!(
+                    "send ingestion request for series {start_series}..{end_series}, samples {start_sample}..{end_sample}"
+                )
+            })?;
+            let elapsed = request_started.elapsed();
+            request_elapsed += elapsed;
+            record_duration(&mut hist, elapsed)?;
+            requests += 1;
+            if !response.status().is_success() {
+                let status = response.status();
+                let body = response.text().unwrap_or_default();
+                bail!("ingestion returned HTTP {status}: {body}");
+            }
         }
     }
 
@@ -673,6 +710,7 @@ fn main() -> Result<()> {
         total_samples,
         step_ms: args.step_ms,
         batch_series: args.batch_series,
+        batch_samples_per_series: args.batch_samples_per_series,
         trial: args.trial,
         scenario: args.scenario.clone(),
         start_timestamp_ms: start_ms,
@@ -691,12 +729,19 @@ fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{align_timestamp_to_step, prometheus_seconds};
+    use super::{align_timestamp_to_step, effective_batch_samples, prometheus_seconds};
 
     #[test]
     fn prometheus_timestamp_format_preserves_millisecond_phase() {
         assert_eq!(prometheus_seconds(1_791_237_928_632), "1791237928.632");
         assert_eq!(prometheus_seconds(10_000), "10.000");
+    }
+
+    #[test]
+    fn remote_write_sample_batch_defaults_to_whole_series() {
+        assert_eq!(effective_batch_samples(120, 0), 120);
+        assert_eq!(effective_batch_samples(6_000, 120), 120);
+        assert_eq!(effective_batch_samples(50, 120), 50);
     }
 
     #[test]
