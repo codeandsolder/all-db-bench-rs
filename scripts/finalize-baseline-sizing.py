@@ -18,7 +18,6 @@ def finalize_one(
     audit: Path,
     resize_prefix: str,
     out_dir: Path,
-    expected_rows: int,
     expected_groups: int,
 ) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -47,8 +46,6 @@ def finalize_one(
             sys.executable,
             str(repo / "scripts" / "summarize.py"),
             str(ndjson),
-            "--expect-trials",
-            "3",
             "--json-out",
             str(summary),
             "--markdown-out",
@@ -61,9 +58,14 @@ def finalize_one(
     summary_data = json.loads(summary.read_text())
     if not manifest_data.get("complete"):
         raise RuntimeError(f"selection remained incomplete: {out_dir}")
-    if manifest_data.get("selected_rows") != expected_rows or manifest_data.get("selected_groups") != expected_groups:
-        raise RuntimeError(f"selection cardinality mismatch: {out_dir}")
-    if summary_data.get("row_count") != expected_rows or summary_data.get("group_count") != expected_groups or summary_data.get("problems"):
+    selected_rows = int(manifest_data.get("selected_rows", -1))
+    if manifest_data.get("selected_groups") != expected_groups:
+        raise RuntimeError(f"selection group-count mismatch: {out_dir}")
+    if (
+        summary_data.get("row_count") != selected_rows
+        or summary_data.get("group_count") != expected_groups
+        or summary_data.get("problems")
+    ):
         raise RuntimeError(f"summary validation failed: {out_dir}")
 
 
@@ -76,22 +78,20 @@ def main() -> int:
     finalize_one(
         repo,
         stock_results=Path("/srv/scratch/db-bench-work/kv-sizing-v3/results/runs/20261006-kv-quick-67228ce/results.ndjson"),
-        audit=Path("/srv/scratch/db-bench-work/kv-sizing-audit/20261006-kv-quick-67228ce.json"),
-        resize_prefix="20261006-kv-resize",
-        out_dir=Path("/srv/scratch/db-bench-work/kv-sizing-audit/selected-final"),
-        expected_rows=540,
+        audit=Path("/srv/scratch/db-bench-work/kv-sizing-audit/20261006-kv-quick-67228ce-v4.json"),
+        resize_prefix="20261006-kv-resize-v4",
+        out_dir=Path("/srv/scratch/db-bench-work/kv-sizing-audit/selected-final-v4"),
         expected_groups=180,
     )
     finalize_one(
         repo,
         stock_results=repo / "results" / "runs" / "20261006-record-quick-stock" / "results.ndjson",
-        audit=Path("/srv/scratch/db-bench-work/record-sizing-audit/20261006-record-quick-stock.json"),
-        resize_prefix="20261006-record-resize",
-        out_dir=Path("/srv/scratch/db-bench-work/record-sizing-audit/selected-final"),
-        expected_rows=120,
+        audit=Path("/srv/scratch/db-bench-work/record-sizing-audit/20261006-record-quick-stock-v4.json"),
+        resize_prefix="20261006-record-resize-v4",
+        out_dir=Path("/srv/scratch/db-bench-work/record-sizing-audit/selected-final-v4"),
         expected_groups=40,
     )
-    print("final baseline corpora validated: kv=540/180 record=120/40", flush=True)
+    print("final baseline corpora validated: kv=180 groups record=40 groups", flush=True)
     return 0
 
 

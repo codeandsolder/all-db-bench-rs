@@ -43,6 +43,7 @@ def run_id(group: dict[str, Any], resize_prefix: str) -> str:
         f"{resize_prefix}-"
         f"{slug(str(group['engine']))}-{slug(str(group['durability']))}-"
         f"{slug(str(group['workload']))}-e{int(group['suggested_effective_ops'])}"
+        f"-t{int(group['suggested_trials'])}"
     )
 
 
@@ -58,10 +59,11 @@ def read_ndjson(path: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
-def validate_trials(rows: list[dict[str, Any]], *, label: str) -> None:
+def validate_trials(rows: list[dict[str, Any]], *, label: str, expected_count: int) -> None:
     trials = sorted(int(row["trial"]) for row in rows)
-    if trials != [1, 2, 3]:
-        raise ValueError(f"{label}: expected trials [1, 2, 3], got {trials}")
+    expected = list(range(1, expected_count + 1))
+    if trials != expected:
+        raise ValueError(f"{label}: expected trials {expected}, got {trials}")
 
 
 def select_rows(
@@ -69,9 +71,13 @@ def select_rows(
     audit: dict[str, Any],
     resize_root: Path,
     *,
-    resize_prefix: str = "20261006-kv-resize",
+    resize_prefix: str = "20261006-kv-resize-v4",
     allow_missing_resize: bool,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    if audit.get("sizing_policy_version") != 2:
+        raise ValueError(f"unsupported sizing policy: {audit.get('sizing_policy_version')!r}")
+    stock_trial_count = int(audit.get("thresholds", {}).get("expect_trials", 3))
+
     stock_groups: dict[tuple[Any, ...], list[dict[str, Any]]] = defaultdict(list)
     for row in stock_rows:
         stock_groups[identity(row)].append(row)
@@ -84,7 +90,11 @@ def select_rows(
     sources: list[dict[str, Any]] = []
 
     for group_identity, rows in sorted(stock_groups.items(), key=lambda item: tuple(str(v) for v in item[0])):
-        validate_trials(rows, label=f"stock {rows[0].get('engine')}/{rows[0].get('durability')}/{rows[0].get('workload')}")
+        validate_trials(
+            rows,
+            label=f"stock {rows[0].get('engine')}/{rows[0].get('durability')}/{rows[0].get('workload')}",
+            expected_count=stock_trial_count,
+        )
         first = rows[0]
         key = audit_key(first)
         group = audit_groups.get(key)
@@ -94,13 +104,16 @@ def select_rows(
         if group["status"] != "undersized":
             output.extend(rows)
             selected_stock += 1
-            sources.append({
-                "engine": first["engine"],
-                "durability": first["durability"],
-                "workload": first["workload"],
-                "source": "stock",
-                "ops_requested": int(first["ops_requested"]),
-            })
+            sources.append(
+                {
+                    "engine": first["engine"],
+                    "durability": first["durability"],
+                    "workload": first["workload"],
+                    "source": "stock",
+                    "ops_requested": int(first["ops_requested"]),
+                    "trials": stock_trial_count,
+                }
+            )
             continue
 
         rid = run_id(group, resize_prefix)
@@ -112,11 +125,16 @@ def select_rows(
                 continue
             raise ValueError(f"missing resized result: {rid}")
 
+        expected_resize_trials = int(group["suggested_trials"])
         summary = json.loads(summary_path.read_text())
-        if summary.get("row_count") != 3 or summary.get("group_count") != 1 or summary.get("problems"):
+        if (
+            summary.get("row_count") != expected_resize_trials
+            or summary.get("group_count") != 1
+            or summary.get("problems")
+        ):
             raise ValueError(f"invalid resized summary: {rid}")
         resized = read_ndjson(results_path)
-        validate_trials(resized, label=f"resize {rid}")
+        validate_trials(resized, label=f"resize {rid}", expected_count=expected_resize_trials)
         if len({identity(row) for row in resized}) != 1 or identity(resized[0]) != group_identity:
             raise ValueError(f"resized identity differs from stock group: {rid}")
         expected_ops = int(group["suggested_effective_ops"])
@@ -126,14 +144,18 @@ def select_rows(
 
         output.extend(resized)
         selected_resize += 1
-        sources.append({
-            "engine": first["engine"],
-            "durability": first["durability"],
-            "workload": first["workload"],
-            "source": "resize",
-            "run_id": rid,
-            "ops_requested": expected_ops,
-        })
+        sources.append(
+            {
+                "engine": first["engine"],
+                "durability": first["durability"],
+                "workload": first["workload"],
+                "source": "resize",
+                "resize_strategy": group.get("resize_strategy"),
+                "run_id": rid,
+                "ops_requested": expected_ops,
+                "trials": expected_resize_trials,
+            }
+        )
 
     expected_audit_groups = int(audit.get("group_count", len(audit_groups)))
     if len(stock_groups) != expected_audit_groups:
@@ -142,6 +164,7 @@ def select_rows(
         )
 
     manifest = {
+        "sizing_policy_version": audit["sizing_policy_version"],
         "stock_rows": len(stock_rows),
         "stock_groups": len(stock_groups),
         "selected_rows": len(output),
@@ -157,13 +180,13 @@ def select_rows(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Select stock or resized baseline groups without mixing op counts")
+    parser = argparse.ArgumentParser(description="Select stock or resized baseline groups without mixing semantics")
     parser.add_argument("stock_results", type=Path)
     parser.add_argument("audit", type=Path)
     parser.add_argument("resize_root", type=Path)
     parser.add_argument("--ndjson-out", type=Path, required=True)
     parser.add_argument("--manifest-out", type=Path, required=True)
-    parser.add_argument("--resize-prefix", default="20261006-kv-resize")
+    parser.add_argument("--resize-prefix", default="20261006-kv-resize-v4")
     parser.add_argument("--allow-missing-resize", action="store_true")
     args = parser.parse_args()
 
@@ -178,9 +201,22 @@ def main() -> int:
     args.ndjson_out.write_text("".join(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n" for row in rows))
     args.manifest_out.parent.mkdir(parents=True, exist_ok=True)
     args.manifest_out.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
-    print(json.dumps({key: manifest[key] for key in (
-        "selected_rows", "selected_groups", "selected_stock_groups", "selected_resize_groups", "pending_resize_groups", "complete"
-    )}, sort_keys=True))
+    print(
+        json.dumps(
+            {
+                key: manifest[key]
+                for key in (
+                    "selected_rows",
+                    "selected_groups",
+                    "selected_stock_groups",
+                    "selected_resize_groups",
+                    "pending_resize_groups",
+                    "complete",
+                )
+            },
+            sort_keys=True,
+        )
+    )
     return 0
 
 

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import os
 import sys
 import tempfile
 import unittest
@@ -26,6 +25,8 @@ def group(**overrides):
         "ops_requested": 50_000,
         "suggested_effective_ops": 300_000,
         "runner_ops_override": 300_000,
+        "suggested_trials": 3,
+        "resize_strategy": "more-ops",
         "median_elapsed_s": 0.5,
         "status": "undersized",
     }
@@ -34,46 +35,57 @@ def group(**overrides):
 
 
 class KvSizingFollowupsTests(unittest.TestCase):
-    def test_run_id_encodes_effective_count(self) -> None:
+    def test_run_id_encodes_effective_count_and_trials(self) -> None:
         self.assertEqual(
-            MODULE.run_id(group(engine="paritydb-hash", workload="tiny-txn", suggested_effective_ops=780_000)),
-            "20261006-kv-resize-paritydb-hash-sync-tiny-txn-e780000",
+            MODULE.run_id(group(engine="paritydb-hash", suggested_effective_ops=780_000)),
+            "20261006-kv-resize-v4-paritydb-hash-sync-point-read-e780000-t3",
         )
 
-    def test_groups_from_plan_filters_and_sorts(self) -> None:
+    def test_groups_from_plan_requires_v2_and_calibrates_more_ops_first(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             plan = Path(tmp) / "plan.json"
             plan.write_text(
                 json.dumps(
                     {
+                        "sizing_policy_version": 2,
                         "groups": [
-                            group(engine="slow", median_elapsed_s=1.0),
+                            group(engine="state", median_elapsed_s=0.01, resize_strategy="more-trials", suggested_trials=51),
+                            group(engine="read", median_elapsed_s=1.0),
                             group(engine="accepted", median_elapsed_s=0.1, status="accepted"),
-                            group(engine="fast", median_elapsed_s=0.05),
-                        ]
+                        ],
                     }
                 )
             )
             groups = MODULE.groups_from_plan(plan)
-            self.assertEqual([item["engine"] for item in groups], ["fast", "slow"])
+            self.assertEqual([item["engine"] for item in groups], ["read", "state"])
+            plan.write_text(json.dumps({"sizing_policy_version": 1, "groups": []}))
+            with self.assertRaises(ValueError):
+                MODULE.groups_from_plan(plan)
 
-    def test_command_env_preserves_tiny_txn_profile_override(self) -> None:
+    def test_command_env_preserves_stateful_ops_and_expands_trials(self) -> None:
         env = MODULE.command_env(
-            group(workload="tiny-txn", suggested_effective_ops=30_000, runner_ops_override=300_000),
+            group(
+                workload="tiny-txn",
+                suggested_effective_ops=5_000,
+                runner_ops_override=50_000,
+                suggested_trials=11,
+                resize_strategy="more-trials",
+            ),
             Path("/tmp/pinned-kvbench"),
         )
-        self.assertEqual(env["KV_OPS_OVERRIDE"], "300000")
+        self.assertEqual(env["KV_OPS_OVERRIDE"], "50000")
+        self.assertEqual(env["KV_TRIALS_OVERRIDE"], "11")
         self.assertEqual(env["WORKLOADS_OVERRIDE"], "tiny-txn")
         self.assertEqual(env["BENCH_BIN"], "/tmp/pinned-kvbench")
 
-    def test_complete_requires_identity_and_effective_ops(self) -> None:
+    def test_complete_requires_identity_effective_ops_and_trial_count(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            expected = group()
+            expected = group(suggested_trials=5)
             run_dir = repo / "results" / "runs" / MODULE.run_id(expected)
             run_dir.mkdir(parents=True)
             summary = {
-                "row_count": 3,
+                "row_count": 5,
                 "group_count": 1,
                 "problems": [],
                 "groups": [
@@ -82,16 +94,17 @@ class KvSizingFollowupsTests(unittest.TestCase):
                         "durability": "sync",
                         "workload": "point-read",
                         "ops_requested": 300_000,
+                        "trials": [1, 2, 3, 4, 5],
                     }
                 ],
             }
             (run_dir / "summary.json").write_text(json.dumps(summary))
             self.assertTrue(MODULE.complete(repo, expected))
-            summary["groups"][0]["ops_requested"] = 50_000
+            summary["groups"][0]["trials"] = [1, 2, 3]
             (run_dir / "summary.json").write_text(json.dumps(summary))
             self.assertFalse(MODULE.complete(repo, expected))
 
-    def test_calibration_uses_three_trial_median_and_bounds(self) -> None:
+    def test_calibration_only_applies_to_more_ops(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             expected = group()
@@ -111,32 +124,14 @@ class KvSizingFollowupsTests(unittest.TestCase):
                 )
             self.assertEqual(
                 MODULE.calibration_elapsed(
-                    repo,
-                    expected,
-                    index=1,
-                    count=5,
-                    minimum=1.5,
-                    maximum=6.0,
+                    repo, expected, index=1, count=5, minimum=1.5, maximum=6.0
                 ),
                 3.0,
             )
-            with self.assertRaises(RuntimeError):
-                MODULE.calibration_elapsed(
-                    repo,
-                    expected,
-                    index=1,
-                    count=5,
-                    minimum=3.1,
-                    maximum=6.0,
-                )
+            repeated = group(resize_strategy="more-trials", suggested_effective_ops=50_000, suggested_trials=11)
             self.assertIsNone(
                 MODULE.calibration_elapsed(
-                    repo,
-                    expected,
-                    index=6,
-                    count=5,
-                    minimum=1.5,
-                    maximum=6.0,
+                    repo, repeated, index=1, count=5, minimum=1.5, maximum=6.0
                 )
             )
 

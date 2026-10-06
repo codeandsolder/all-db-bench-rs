@@ -45,7 +45,15 @@ def row(engine: str, workload: str, trial: int, ops: int) -> dict[str, object]:
     }
 
 
-def audit_group(engine: str, workload: str, ops: int, status: str, suggested: int | None = None) -> dict[str, object]:
+def audit_group(
+    engine: str,
+    workload: str,
+    ops: int,
+    status: str,
+    suggested: int | None = None,
+    trials: int | None = None,
+    strategy: str | None = None,
+) -> dict[str, object]:
     return {
         "engine": engine,
         "engine_version": "1.0",
@@ -54,61 +62,90 @@ def audit_group(engine: str, workload: str, ops: int, status: str, suggested: in
         "records": 100,
         "ops_requested": ops,
         "status": status,
+        "resize_strategy": strategy,
         "suggested_effective_ops": suggested,
+        "suggested_trials": trials,
+    }
+
+
+def audit(*groups: dict[str, object]) -> dict[str, object]:
+    return {
+        "sizing_policy_version": 2,
+        "group_count": len(groups),
+        "thresholds": {"expect_trials": 3},
+        "groups": list(groups),
     }
 
 
 class SelectBaselineSizingResultsTests(unittest.TestCase):
-    def test_run_id_accepts_record_prefix(self) -> None:
-        target = audit_group("sqlite", "tiny-txn", 5_000, "undersized", 30_000)
+    def test_run_id_accepts_record_prefix_and_trial_count(self) -> None:
+        target = audit_group("sqlite", "tiny-txn", 5_000, "undersized", 5_000, 11, "more-trials")
         self.assertEqual(
-            run_id(target, "20261006-record-resize"),
-            "20261006-record-resize-sqlite-relaxed-tiny-txn-e30000",
+            run_id(target, "20261006-record-resize-v4"),
+            "20261006-record-resize-v4-sqlite-relaxed-tiny-txn-e5000-t11",
         )
 
-    def test_replaces_only_undersized_group(self) -> None:
-        stock = [row("a", "point-read", t, 100) for t in (1, 2, 3)] + [row("b", "tiny-txn", t, 100) for t in (1, 2, 3)]
-        target = audit_group("b", "tiny-txn", 100, "undersized", 300)
-        audit = {"group_count": 2, "groups": [audit_group("a", "point-read", 100, "accepted"), target]}
+    def test_replaces_stateful_group_with_more_trials_same_ops(self) -> None:
+        stock = [row("a", "point-read", t, 100) for t in (1, 2, 3)] + [
+            row("b", "tiny-txn", t, 100) for t in (1, 2, 3)
+        ]
+        target = audit_group("b", "tiny-txn", 100, "undersized", 100, 5, "more-trials")
+        plan = audit(audit_group("a", "point-read", 100, "accepted"), target)
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            run = root / run_id(target, "20261006-kv-resize")
+            run = root / run_id(target, "20261006-kv-resize-v4")
             run.mkdir()
-            resized = [row("b", "tiny-txn", t, 300) for t in (1, 2, 3)]
+            resized = [row("b", "tiny-txn", t, 100) for t in range(1, 6)]
             (run / "results.ndjson").write_text("".join(json.dumps(item) + "\n" for item in resized))
-            (run / "summary.json").write_text(json.dumps({"row_count": 3, "group_count": 1, "problems": []}))
-            selected, manifest = select_rows(stock, audit, root, allow_missing_resize=False)
-        self.assertEqual(len(selected), 6)
-        self.assertEqual({int(item["ops_requested"]) for item in selected if item["engine"] == "a"}, {100})
-        self.assertEqual({int(item["ops_requested"]) for item in selected if item["engine"] == "b"}, {300})
-        self.assertEqual(manifest["selected_stock_groups"], 1)
-        self.assertEqual(manifest["selected_resize_groups"], 1)
+            (run / "summary.json").write_text(json.dumps({"row_count": 5, "group_count": 1, "problems": []}))
+            selected, manifest = select_rows(stock, plan, root, allow_missing_resize=False)
+        self.assertEqual(len(selected), 8)
+        self.assertEqual([item["trial"] for item in selected if item["engine"] == "b"], [1, 2, 3, 4, 5])
+        self.assertEqual({int(item["ops_requested"]) for item in selected if item["engine"] == "b"}, {100})
         self.assertTrue(manifest["complete"])
 
-    def test_partial_mode_omits_pending_undersized_group(self) -> None:
-        stock = [row("a", "point-read", t, 100) for t in (1, 2, 3)] + [row("b", "tiny-txn", t, 100) for t in (1, 2, 3)]
-        target = audit_group("b", "tiny-txn", 100, "undersized", 300)
-        audit = {"group_count": 2, "groups": [audit_group("a", "point-read", 100, "accepted"), target]}
+    def test_replaces_read_only_group_with_more_ops(self) -> None:
+        stock = [row("a", "point-read", t, 100) for t in (1, 2, 3)]
+        target = audit_group("a", "point-read", 100, "undersized", 300, 3, "more-ops")
         with tempfile.TemporaryDirectory() as tmp:
-            selected, manifest = select_rows(stock, audit, Path(tmp), allow_missing_resize=True)
+            root = Path(tmp)
+            run = root / run_id(target, "20261006-kv-resize-v4")
+            run.mkdir()
+            resized = [row("a", "point-read", t, 300) for t in (1, 2, 3)]
+            (run / "results.ndjson").write_text("".join(json.dumps(item) + "\n" for item in resized))
+            (run / "summary.json").write_text(json.dumps({"row_count": 3, "group_count": 1, "problems": []}))
+            selected, _ = select_rows(stock, audit(target), root, allow_missing_resize=False)
+        self.assertEqual({int(item["ops_requested"]) for item in selected}, {300})
+
+    def test_partial_mode_omits_pending_undersized_group(self) -> None:
+        stock = [row("a", "point-read", t, 100) for t in (1, 2, 3)] + [
+            row("b", "tiny-txn", t, 100) for t in (1, 2, 3)
+        ]
+        target = audit_group("b", "tiny-txn", 100, "undersized", 100, 5, "more-trials")
+        plan = audit(audit_group("a", "point-read", 100, "accepted"), target)
+        with tempfile.TemporaryDirectory() as tmp:
+            selected, manifest = select_rows(stock, plan, Path(tmp), allow_missing_resize=True)
         self.assertEqual(len(selected), 3)
         self.assertEqual(manifest["pending_resize_groups"], 1)
         self.assertFalse(manifest["complete"])
 
     def test_rejects_resize_identity_mismatch(self) -> None:
         stock = [row("b", "tiny-txn", t, 100) for t in (1, 2, 3)]
-        target = audit_group("b", "tiny-txn", 100, "undersized", 300)
-        audit = {"group_count": 1, "groups": [target]}
+        target = audit_group("b", "tiny-txn", 100, "undersized", 100, 5, "more-trials")
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            run = root / run_id(target, "20261006-kv-resize")
+            run = root / run_id(target, "20261006-kv-resize-v4")
             run.mkdir()
-            resized = [row("b", "tiny-txn", t, 300) for t in (1, 2, 3)]
+            resized = [row("b", "tiny-txn", t, 100) for t in range(1, 6)]
             resized[0]["configuration"] = "different"
             (run / "results.ndjson").write_text("".join(json.dumps(item) + "\n" for item in resized))
-            (run / "summary.json").write_text(json.dumps({"row_count": 3, "group_count": 1, "problems": []}))
+            (run / "summary.json").write_text(json.dumps({"row_count": 5, "group_count": 1, "problems": []}))
             with self.assertRaisesRegex(ValueError, "identity"):
-                select_rows(stock, audit, root, allow_missing_resize=False)
+                select_rows(stock, audit(target), root, allow_missing_resize=False)
+
+    def test_rejects_old_policy(self) -> None:
+        with self.assertRaisesRegex(ValueError, "unsupported sizing policy"):
+            select_rows([], {"sizing_policy_version": 1, "groups": []}, Path("/tmp"), allow_missing_resize=True)
 
 
 if __name__ == "__main__":

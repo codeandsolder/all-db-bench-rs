@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, TextIO
 
 DEFAULT_REPO = Path("/srv/scratch/db-bench-work/kv-sizing-v3-followup")
-DEFAULT_PLAN = Path("/srv/scratch/db-bench-work/kv-sizing-audit/20261006-kv-quick-67228ce.json")
+DEFAULT_PLAN = Path("/srv/scratch/db-bench-work/kv-sizing-audit/20261006-kv-quick-67228ce-v4.json")
 DEFAULT_BIN = Path("/srv/scratch/db-bench-work/kv-sizing-audit/bin/kvbench-v3")
 DEFAULT_LOCK = Path("/run/lock/all-db-bench-performance.lock")
 DEFAULT_STATUS = Path("/srv/scratch/db-bench-work/kv-sizing-audit/idle-status.json")
@@ -30,9 +30,10 @@ def slug(value: str) -> str:
 
 def run_id(group: dict[str, Any]) -> str:
     return (
-        "20261006-kv-resize-"
+        "20261006-kv-resize-v4-"
         f"{slug(str(group['engine']))}-{slug(str(group['durability']))}-"
         f"{slug(str(group['workload']))}-e{int(group['suggested_effective_ops'])}"
+        f"-t{int(group['suggested_trials'])}"
     )
 
 
@@ -52,7 +53,8 @@ def complete(repo: Path, group: dict[str, Any]) -> bool:
         data = json.loads(summary.read_text())
     except (json.JSONDecodeError, OSError):
         return False
-    if data.get("row_count") != 3 or data.get("group_count") != 1 or data.get("problems"):
+    expected_trials = int(group["suggested_trials"])
+    if data.get("row_count") != expected_trials or data.get("group_count") != 1 or data.get("problems"):
         return False
     groups = data.get("groups")
     if not isinstance(groups, list) or len(groups) != 1:
@@ -63,6 +65,7 @@ def complete(repo: Path, group: dict[str, Any]) -> bool:
         and result.get("durability") == group.get("durability")
         and result.get("workload") == group.get("workload")
         and int(result.get("ops_requested", -1)) == int(group["suggested_effective_ops"])
+        and result.get("trials") == list(range(1, expected_trials + 1))
     )
 
 
@@ -78,8 +81,11 @@ def median_elapsed(repo: Path, group: dict[str, Any]) -> float:
             and int(row.get("ops_requested", -1)) == int(group["suggested_effective_ops"])
         ):
             values.append(float(row["elapsed_s"]))
-    if len(values) != 3:
-        raise RuntimeError(f"expected three validated trials for {run_id(group)}, found {len(values)}")
+    expected_trials = int(group["suggested_trials"])
+    if len(values) != expected_trials:
+        raise RuntimeError(
+            f"expected {expected_trials} validated trials for {run_id(group)}, found {len(values)}"
+        )
     return statistics.median(values)
 
 
@@ -92,7 +98,7 @@ def calibration_elapsed(
     minimum: float,
     maximum: float,
 ) -> float | None:
-    if index > count:
+    if group.get("resize_strategy") != "more-ops" or index > count:
         return None
     elapsed = median_elapsed(repo, group)
     if not minimum <= elapsed <= maximum:
@@ -160,9 +166,12 @@ def preflight_host(repo: Path, *, max_io_full_avg10: float) -> int:
 
 def groups_from_plan(path: Path) -> list[dict[str, Any]]:
     plan = json.loads(path.read_text())
+    if plan.get("sizing_policy_version") != 2:
+        raise ValueError(f"unsupported sizing policy: {plan.get('sizing_policy_version')!r}")
     groups = [group for group in plan["groups"] if group["status"] == "undersized"]
     groups.sort(
         key=lambda group: (
+            0 if group.get("resize_strategy") == "more-ops" else 1,
             float(group["median_elapsed_s"]),
             str(group["engine"]),
             str(group["durability"]),
@@ -183,7 +192,7 @@ def command_env(group: dict[str, Any], bench_bin: Path) -> dict[str, str]:
             "WORKLOADS_OVERRIDE": str(group["workload"]),
             "KV_OPS_OVERRIDE": str(int(group["runner_ops_override"])),
             "KV_RECORDS_OVERRIDE": str(int(group["records"])),
-            "KV_TRIALS_OVERRIDE": "3",
+            "KV_TRIALS_OVERRIDE": str(int(group["suggested_trials"])),
         }
     )
     return env
@@ -270,8 +279,9 @@ def main() -> int:
                 continue
 
             print(
-                f"[{index}/{total}] {rid} effective_ops={int(group['suggested_effective_ops'])} "
-                f"runner_ops={int(group['runner_ops_override'])}",
+                f"[{index}/{total}] {rid} strategy={group['resize_strategy']} "
+                f"effective_ops={int(group['suggested_effective_ops'])} "
+                f"trials={int(group['suggested_trials'])} runner_ops={int(group['runner_ops_override'])}",
                 flush=True,
             )
             if args.dry_run:
