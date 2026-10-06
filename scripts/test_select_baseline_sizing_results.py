@@ -72,7 +72,14 @@ def audit(*groups: dict[str, object]) -> dict[str, object]:
     return {
         "sizing_policy_version": 2,
         "group_count": len(groups),
-        "thresholds": {"expect_trials": 3},
+        "thresholds": {
+            "expect_trials": 3,
+            "max_cv": 0.10,
+            "max_relative_spread": 0.25,
+            "read_only_min_seconds": 0.5,
+            "read_only_workloads": ["indexed-read", "point-read", "range-scan"],
+            "stateful_min_total_seconds": 1.0,
+        },
         "groups": list(groups),
     }
 

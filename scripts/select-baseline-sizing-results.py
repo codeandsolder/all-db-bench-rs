@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import statistics
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
@@ -66,6 +67,37 @@ def validate_trials(rows: list[dict[str, Any]], *, label: str, expected_count: i
         raise ValueError(f"{label}: expected trials {expected}, got {trials}")
 
 
+
+def final_quality(rows: list[dict[str, Any]], thresholds: dict[str, Any]) -> dict[str, Any]:
+    elapsed = [float(row["elapsed_s"]) for row in rows]
+    rates = [float(row["ops_per_s"]) for row in rows]
+    median_elapsed = statistics.median(elapsed)
+    total_elapsed = sum(elapsed)
+    median_rate = statistics.median(rates)
+    mean_rate = statistics.fmean(rates)
+    throughput_cv = statistics.stdev(rates) / mean_rate if len(rates) > 1 and mean_rate else 0.0
+    relative_spread = (max(rates) - min(rates)) / median_rate if median_rate else float("inf")
+    workload = str(rows[0].get("workload"))
+    read_only = workload in set(thresholds["read_only_workloads"])
+    undersized = (
+        median_elapsed < float(thresholds["read_only_min_seconds"])
+        if read_only
+        else total_elapsed < float(thresholds["stateful_min_total_seconds"])
+    )
+    variable = (
+        throughput_cv > float(thresholds["max_cv"])
+        or relative_spread > float(thresholds["max_relative_spread"])
+    )
+    status = "undersized" if undersized else "variable" if variable else "accepted"
+    return {
+        "final_status": status,
+        "median_elapsed_s": median_elapsed,
+        "total_elapsed_s": total_elapsed,
+        "throughput_cv": throughput_cv,
+        "throughput_relative_spread": relative_spread,
+    }
+
+
 def select_rows(
     stock_rows: list[dict[str, Any]],
     audit: dict[str, Any],
@@ -76,7 +108,8 @@ def select_rows(
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     if audit.get("sizing_policy_version") != 2:
         raise ValueError(f"unsupported sizing policy: {audit.get('sizing_policy_version')!r}")
-    stock_trial_count = int(audit.get("thresholds", {}).get("expect_trials", 3))
+    thresholds = audit.get("thresholds", {})
+    stock_trial_count = int(thresholds.get("expect_trials", 3))
 
     stock_groups: dict[tuple[Any, ...], list[dict[str, Any]]] = defaultdict(list)
     for row in stock_rows:
@@ -102,6 +135,11 @@ def select_rows(
             raise ValueError(f"stock group missing from audit: {key}")
 
         if group["status"] != "undersized":
+            quality = final_quality(rows, thresholds)
+            if quality["final_status"] != group["status"]:
+                raise ValueError(
+                    f"stock quality no longer matches audit for {key}: audit={group['status']} recomputed={quality['final_status']}"
+                )
             output.extend(rows)
             selected_stock += 1
             sources.append(
@@ -112,6 +150,7 @@ def select_rows(
                     "source": "stock",
                     "ops_requested": int(first["ops_requested"]),
                     "trials": stock_trial_count,
+                    **quality,
                 }
             )
             continue
@@ -141,6 +180,9 @@ def select_rows(
         actual_ops = {int(row["ops_requested"]) for row in resized}
         if actual_ops != {expected_ops}:
             raise ValueError(f"resized op count mismatch for {rid}: expected {expected_ops}, got {sorted(actual_ops)}")
+        quality = final_quality(resized, thresholds)
+        if quality["final_status"] == "undersized":
+            raise ValueError(f"resized result remains undersized: {rid}")
 
         output.extend(resized)
         selected_resize += 1
@@ -154,6 +196,7 @@ def select_rows(
                 "run_id": rid,
                 "ops_requested": expected_ops,
                 "trials": expected_resize_trials,
+                **quality,
             }
         )
 
@@ -163,6 +206,10 @@ def select_rows(
             f"stock/audit group count mismatch: stock={len(stock_groups)} audit={expected_audit_groups}"
         )
 
+    status_counts = {
+        status: sum(source["final_status"] == status for source in sources)
+        for status in ("accepted", "variable", "undersized")
+    }
     manifest = {
         "sizing_policy_version": audit["sizing_policy_version"],
         "stock_rows": len(stock_rows),
@@ -174,6 +221,7 @@ def select_rows(
         "pending_resize_groups": len(pending),
         "pending_run_ids": pending,
         "complete": not pending,
+        "final_status_counts": status_counts,
         "sources": sources,
     }
     return output, manifest
