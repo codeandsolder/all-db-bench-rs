@@ -18,6 +18,7 @@ if [[ ! -x "$RUSTC_REAL" ]]; then
   echo "Rust 1.99.0 rustc not found: $RUSTC_REAL" >&2
   exit 127
 fi
+export RUSTUP_TOOLCHAIN=1.99.0
 export RUSTC="$RUSTC_REAL"
 export RUSTC_WRAPPER=
 export CC="${CC_REAL:-/usr/bin/cc}"

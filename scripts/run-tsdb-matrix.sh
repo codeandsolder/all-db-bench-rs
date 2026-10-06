@@ -45,7 +45,7 @@ BIN_SHA=$(sha256sum "$BIN" | awk '{print $1}')
 RUN_ID=${RUN_ID:-"$(date -u +%Y%m%dT%H%M%SZ)-tsdb-$PROFILE"}
 RUN_DIR="$ROOT/results/runs/$RUN_ID"
 DATA_DIR="$ROOT/data/runs/$RUN_ID"
-mkdir -p "$RUN_DIR"/{cases,client,server-before,server-after,stderr,server-logs,noise} "$DATA_DIR"
+mkdir -p "$RUN_DIR"/{cases,client,server-before,server-after,stderr,server-logs,server-configs,noise} "$DATA_DIR"
 HOST_NAME=$(hostname)
 MACHINE_ID_SHA256=$(sha256sum /etc/machine-id | awk '{print $1}')
 FILESYSTEM=$(findmnt -T "$DATA_DIR" -n -o FSTYPE 2>/dev/null || true)
@@ -153,7 +153,7 @@ start_server() {
     prometheus)
       ENDPOINT=http://127.0.0.1:19020
       VERSION=3.14.0
-      cfg="$case_data/prometheus.yml"
+      cfg="$RUN_DIR/server-configs/$case_id.prometheus.yml"
       mkdir -p "$case_data"
       cat > "$cfg" <<'YAML'
 global:
@@ -227,7 +227,8 @@ cat > "$SUPPORT_NEW" <<EOF_SUPPORT
   "dataset": "bench_metric{host=hNNNNNN,region=rNN} with one float value every 10 seconds",
   "transport_policy": "Prometheus Remote Write v1 for GreptimeDB/VictoriaMetrics/Prometheus; InfluxDB v3 line protocol for InfluxDB 3 Core; protocol is explicit in every result",
   "query_policy": "equivalent latest-series, full-range single-series, and latest-timestamp aggregate semantics; PromQL for Prometheus-shaped engines and SQL for InfluxDB 3",
-  "durability_note": "server-native acknowledgement semantics are retained and must not be interpreted as byte-identical durability contracts"
+  "durability_note": "server-native acknowledgement semantics are retained and must not be interpreted as byte-identical durability contracts",
+  "storage_footprint_point": "after graceful server shutdown; CPU/runqueue/process-I/O accounting remains bracketed around the client interval"
 }
 EOF_SUPPORT
 
@@ -334,15 +335,23 @@ for job in "${ORDERED[@]}"; do
     fi
   fi
 
+  # Resource accounting ends before shutdown; storage footprint is sampled only
+  # after a graceful stop so buffered/compacted state is represented on disk.
+  stop_server
   if (( rc == 0 )); then
+    set +e
     uv run --script "$ROOT/scripts/merge-tsdb-result.py" \
       --client "$client_out" --server-before "$before_out" --server-after "$after_out" \
       --data-dir "$case_data" --startup-s "$STARTUP_S" --server-log "$log" --output "$out"
+    rc=$?
+    set -e
+  fi
+  if (( rc == 0 )); then
     clear_failure "$case_id"
   else
-    printf '{"case_id":"%s","stage":"client","returncode":%d,"stderr":"%s"}\n' "$case_id" "$rc" "$err" >> "$RUN_DIR/failures.ndjson"
+    rm -f "$out"
+    printf '{"case_id":"%s","stage":"client-or-merge","returncode":%d,"stderr":"%s"}\n' "$case_id" "$rc" "$err" >> "$RUN_DIR/failures.ndjson"
   fi
-  stop_server
   [[ "${KEEP_TSDB_DATA:-0}" == 1 ]] || rm -rf -- "$case_data"
   [[ -s "$err" ]] || rm -f "$err"
 done

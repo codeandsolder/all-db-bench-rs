@@ -137,7 +137,7 @@ GreptimeDB, VictoriaMetrics, Prometheus and InfluxDB 3 Core are benchmarked in a
     ./scripts/run-tsdb-matrix.sh smoke
     ./scripts/run-tsdb-matrix.sh quick
 
-The runner installs pinned official Linux/amd64 binaries under `.deps/tsdb`, starts one fresh local server per case, uses a logically identical step-aligned `bench_metric{host,region}` dataset, and records server-process CPU/runqueue/I/O/RSS plus on-disk bytes. GreptimeDB, VictoriaMetrics and Prometheus ingest through Prometheus Remote Write v1 and query with PromQL. InfluxDB 3 ingests the same samples through its native v3 line-protocol endpoint and queries equivalent semantics with SQL. Transport/query language are explicit result fields and are **not** normalized away. This lane must not be merged into the embedded-KV or record-product leaderboards.
+The runner installs pinned official Linux/amd64 binaries under `.deps/tsdb`, starts one fresh local server per case, uses a logically identical step-aligned `bench_metric{host,region}` dataset, and records server-process CPU/runqueue/I/O/RSS plus on-disk bytes measured after graceful shutdown. GreptimeDB, VictoriaMetrics and Prometheus ingest through Prometheus Remote Write v1 and query with PromQL. InfluxDB 3 ingests the same samples through its native v3 line-protocol endpoint and queries equivalent semantics with SQL. Transport/query language are explicit result fields and are **not** normalized away. This lane must not be merged into the embedded-KV or record-product leaderboards.
 
 
 ## Latest engine set

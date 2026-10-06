@@ -34,12 +34,17 @@ CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target} \
   "$ROOT/scripts/cargo-local-1.99.sh" check --locked --features record --bin recordconcurrency
 CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target} \
   "$ROOT/scripts/cargo-local-1.99.sh" check --locked --features record --bin recordsustained
+"$ROOT/scripts/cargo-local-1.99.sh" fmt \
+  --manifest-path "$ROOT/engines/tsdb-server/Cargo.toml" -- --check
 "$ROOT/scripts/cargo-local-1.99.sh" check --locked \
   --manifest-path "$ROOT/engines/tsdb-server/Cargo.toml" \
   --target-dir "${TSDB_TARGET_DIR:-/tmp/rust-db-tsdb-target}"
 "$ROOT/scripts/cargo-local-1.99.sh" test --locked \
   --manifest-path "$ROOT/engines/tsdb-server/Cargo.toml" \
   --target-dir "${TSDB_TARGET_DIR:-/tmp/rust-db-tsdb-target}"
+"$ROOT/scripts/cargo-local-1.99.sh" clippy --locked \
+  --manifest-path "$ROOT/engines/tsdb-server/Cargo.toml" \
+  --target-dir "${TSDB_TARGET_DIR:-/tmp/rust-db-tsdb-target}" -- -D warnings
 "$ROOT/scripts/cargo-local-1.99.sh" check --locked \
   --manifest-path "$ROOT/engines/surrealdb-rocksdb/Cargo.toml" \
   --target-dir "${SURREAL_ROCKS_TARGET_DIR:-/tmp/rust-db-surreal-rocks-target}"
