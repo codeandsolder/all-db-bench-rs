@@ -31,6 +31,8 @@ case "$PROFILE" in
 esac
 
 ROOT=${ROOT:-/srv/scratch/db-bench-2026-09-27}
+# shellcheck source=kv-matrix-policy.sh
+source "$ROOT/scripts/kv-matrix-policy.sh"
 CPUS=$(getconf _NPROCESSORS_ONLN)
 LOAD1=$(awk '{print $1}' /proc/loadavg)
 if [[ "${ALLOW_BUSY:-0}" != 1 ]] && ! awk -v l="$LOAD1" -v c="$CPUS" 'BEGIN { exit !(l <= c * 1.5) }'; then
@@ -68,6 +70,7 @@ valid() {
 add_job() {
   local scenario=$1 engine=$2 dur=$3 workload=$4 records=$5 ops=$6 value=$7 txn=$8 scan=$9 trial=${10}
   valid "$engine" "$dur" "$workload" || return 0
+  ops=$(kv_effective_ops "$engine" "$workload" "$ops" "$records") || return 2
   JOBS+=("$scenario|$engine|$dur|$workload|$records|$ops|$value|$txn|$scan|$trial")
 }
 

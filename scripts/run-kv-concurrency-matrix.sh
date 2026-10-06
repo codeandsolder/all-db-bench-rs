@@ -31,6 +31,8 @@ case "$PROFILE" in
 esac
 
 ROOT=${ROOT:-/srv/scratch/db-bench-2026-09-27}
+# shellcheck source=kv-matrix-policy.sh
+source "$ROOT/scripts/kv-matrix-policy.sh"
 CPUS=$(getconf _NPROCESSORS_ONLN)
 LOAD1=$(awk '{print $1}' /proc/loadavg)
 if [[ "${ALLOW_BUSY:-0}" != 1 ]] && ! awk -v l="$LOAD1" -v c="$CPUS" 'BEGIN { exit !(l <= c * 1.5) }'; then
@@ -48,6 +50,7 @@ cat > "$RUN_DIR/support.json" <<'JSON'
   "lane": "kv-concurrency",
   "shared_database": true,
   "total_ops_fixed_across_client_counts": true,
+  "lsmdb_range_policy": "cap native lsm-db 1.0.0 bounded scans at about 50M expected pre-range entries using kv-matrix-policy.sh; never increase an existing lane budget",
   "unsupported": [
     {
       "engine": "lkv",
@@ -150,6 +153,7 @@ for job in "${ORDERED[@]}"; do
   if [[ "$workload" == range-scan ]]; then
     ops=$(( OPS / scan ))
     (( ops < clients )) && ops=$clients
+    ops=$(kv_effective_ops "$engine" "$workload" "$ops" "$RECORDS") || exit 2
   elif [[ "$workload" == tiny-txn ]]; then
     # Keep transaction-serialization coverage without making full mode
     # dominated by hundreds of thousands of one-key sync barriers per case.

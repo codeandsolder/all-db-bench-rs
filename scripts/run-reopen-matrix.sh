@@ -20,6 +20,8 @@ case "$CACHE" in
   *) echo "cache mode must be warm or cold" >&2; exit 2 ;;
 esac
 ROOT=${ROOT:-/srv/scratch/db-bench-2026-09-27}
+# shellcheck source=kv-matrix-policy.sh
+source "$ROOT/scripts/kv-matrix-policy.sh"
 RUN_ID=${RUN_ID:-"$(date -u +%Y%m%dT%H%M%SZ)-reopen-$CACHE-$PROFILE"}
 RUN_DIR="$ROOT/results/runs/$RUN_ID"; DATA_DIR="$ROOT/data/runs/$RUN_ID"
 mkdir -p "$RUN_DIR"/{cases,stderr} "$DATA_DIR"
@@ -43,9 +45,16 @@ for trial in $(seq 1 "$TRIALS"); do
       for workload in "${WORKLOADS[@]}"; do
         [[ "$engine" == lkv && "$workload" == range-scan ]] && continue
         [[ "$engine" == paritydb-hash && "$workload" == range-scan ]] && continue
+        case_ops=$(kv_effective_ops "$engine" "$workload" "$OPS" "$RECORDS") || exit 2
         db_name="reopen-${trial}-${engine}-${dur}-${workload}"
         case_id="t${trial}-reopen-${CACHE}-${engine}-${dur}-${workload}-n${RECORDS}"
-        out="$RUN_DIR/cases/$case_id.json"; [[ -s "$out" ]] && continue
+        out="$RUN_DIR/cases/$case_id.json"
+        if [[ -s "$out" ]]; then
+          existing_ops=$(jq -r '.ops_requested // -1' "$out" 2>/dev/null || echo -1)
+          [[ "$existing_ops" == "$case_ops" ]] && continue
+          echo "discarding stale reopen result with ops_requested=$existing_ops; current policy requires $case_ops: $case_id" >&2
+          rm -f "$out"
+        fi
 
         # Prepare exactly the DB shape the reopen process will consume. The one read is discarded.
         "$BIN" --engine "$engine" --durability "$dur" --workload "$workload" \
@@ -65,7 +74,7 @@ for trial in $(seq 1 "$TRIALS"); do
         fi
 
         "$BIN" --engine "$engine" --durability "$dur" --workload "$workload" \
-          --records "$RECORDS" --ops "$OPS" --value-bytes 256 --txn-size 100 --scan-len 100 \
+          --records "$RECORDS" --ops "$case_ops" --value-bytes 256 --txn-size 100 --scan-len 100 \
           --trial "$trial" --seed 1592606758 --scenario "reopen-$CACHE" --db-name "$db_name" \
           --root "$DATA_DIR" --output "$out" --reuse-db --skip-prefill --warmup-reads 0 \
           2>"$RUN_DIR/stderr/$case_id.log"
