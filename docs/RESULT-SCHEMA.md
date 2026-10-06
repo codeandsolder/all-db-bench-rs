@@ -19,6 +19,8 @@ Each isolated benchmark invocation appends exactly one JSON object to NDJSON.
 
 For `range-scan`, one logical operation is one range query. `reads` records rows visited, while `ops_completed` records range queries, so row throughput can be derived as `reads / elapsed_s`. The baseline matrix may intentionally use a lower `ops_requested` for `lsm-db` range scans because that crate's native bounded scan traverses from the beginning of each run; compare range-scan rates using the recorded per-case operation count rather than assuming the profile-wide default.
 
+Baseline support metadata also records workload-specific effective operation budgets where they differ from the profile-wide default: `lsmdb_range_scan_ops` for the bounded `lsm-db` scan cap and `tiny_txn_ops` for one-key transaction sizing. Per-case `ops_requested` remains authoritative for aggregation; `summarize.py` never combines rows with different effective operation counts.
+
 ## Latency
 
 `read_latency` / `operation_latency` and `write_txn_latency` / `transaction_latency` contain actual HDR-histogram sample counts and p50/p95/p99/p99.9/max in microseconds.
