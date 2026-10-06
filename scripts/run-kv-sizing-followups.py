@@ -269,14 +269,21 @@ def main() -> int:
                     cwd=args.repo,
                     env=command_env(group, args.bench_bin),
                     check=False,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
                 )
                 if proc.returncode == 0:
+                    if proc.stdout:
+                        print(proc.stdout, end="", flush=True)
                     if not complete(args.repo, group):
                         print(f"runner returned success but result validation failed: {rid}", flush=True)
                         return 2
                     completed_now += 1
                     break
                 if proc.returncode != 75:
+                    if proc.stdout:
+                        print(proc.stdout, end="", flush=True)
                     write_status(
                         args.status_file,
                         state="failed",
@@ -307,6 +314,8 @@ def main() -> int:
                 if not args.watch:
                     print(f"busy rc=75 run={rid}; exiting because --watch was not supplied", flush=True)
                     return 75
+                if busy_events == 1 or busy_events % 30 == 0:
+                    print(f"waiting for idle: run={rid} busy_events={busy_events}", flush=True)
                 time.sleep(max(args.busy_sleep, 0.1))
 
             try:
