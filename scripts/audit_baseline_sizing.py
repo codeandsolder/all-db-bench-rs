@@ -53,6 +53,17 @@ def _group_key(row: dict[str, Any]) -> tuple[Any, ...]:
     return tuple(row.get(field) for field in GROUP_FIELDS)
 
 
+def _runner_ops_override(row: dict[str, Any], effective_ops: int) -> int:
+    if row.get("workload") != "tiny-txn":
+        return effective_ops
+    lane = row.get("lane")
+    if lane == "kv":
+        return effective_ops * 10
+    if lane == "record":
+        return effective_ops * 2
+    raise ValueError(f"unknown tiny-txn baseline lane: {lane!r}")
+
+
 def _cv(values: list[float]) -> float:
     mean = statistics.fmean(values)
     if len(values) < 2 or mean == 0:
@@ -107,14 +118,10 @@ def audit_rows(
         if undersized:
             scaled = effective_ops * target_seconds / max(median_elapsed, 1e-9)
             suggested_effective_ops = _round_up_ops(scaled)
-            # The baseline runner intentionally applies the one-key tiny-txn
-            # divisor to its profile-wide override. Expose the corresponding
-            # runner input as well as the authoritative effective op count.
-            runner_ops_override = (
-                suggested_effective_ops * 10
-                if first.get("workload") == "tiny-txn"
-                else suggested_effective_ops
-            )
+            # Baseline runners apply workload-specific tiny-txn divisors to
+            # their profile-wide override. Expose the runner input as well as
+            # the authoritative effective operation count.
+            runner_ops_override = _runner_ops_override(first, suggested_effective_ops)
 
         groups.append(
             {

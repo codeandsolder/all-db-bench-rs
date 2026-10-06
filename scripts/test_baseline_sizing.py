@@ -84,6 +84,23 @@ class SizingAuditTests(unittest.TestCase):
         self.assertEqual(group["suggested_effective_ops"], 30_000)
         self.assertEqual(group["runner_ops_override"], 300_000)
 
+    def test_record_tiny_txn_uses_record_divisor(self) -> None:
+        rows = [row(engine="record-tiny", elapsed=0.5, rate=1000.0, trial=trial, ops=5_000) for trial in (1, 2, 3)]
+        for item in rows:
+            item["lane"] = "record"
+            item["workload"] = "tiny-txn"
+        report = MODULE.audit_rows(
+            rows,
+            expect_trials=3,
+            min_seconds=2.0,
+            target_seconds=3.0,
+            max_cv=0.10,
+            max_relative_spread=0.25,
+        )
+        group = report["groups"][0]
+        self.assertEqual(group["suggested_effective_ops"], 30_000)
+        self.assertEqual(group["runner_ops_override"], 60_000)
+
     def test_missing_trial_is_problem(self) -> None:
         rows = [row(engine="missing", elapsed=3.0, rate=100.0, trial=trial) for trial in (1, 3)]
         report = MODULE.audit_rows(
