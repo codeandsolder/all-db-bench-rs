@@ -157,6 +157,12 @@ def scrub(
         "rejected": len(rejected),
         "dry_run": dry_run,
         "available_cpus": cpu_count,
+        "thresholds": {
+            "max_elapsed_s": max_elapsed_s,
+            "max_runqueue_fraction": max_runqueue_fraction,
+            "max_cpu_psi_fraction": max_cpu_psi_fraction,
+            "max_benchmark_cpu_share": max_benchmark_cpu_share,
+        },
         "cases": rejected,
     }
 

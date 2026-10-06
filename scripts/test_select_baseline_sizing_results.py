@@ -17,7 +17,7 @@ select_rows = MODULE.select_rows
 run_id = MODULE.run_id
 
 
-def row(engine: str, workload: str, trial: int, ops: int) -> dict[str, object]:
+def row(engine: str, workload: str, trial: int, ops: int, *, elapsed: float = 1.0, rate: float | None = None) -> dict[str, object]:
     return {
         "lane": "kv",
         "scenario": "baseline-core",
@@ -40,8 +40,8 @@ def row(engine: str, workload: str, trial: int, ops: int) -> dict[str, object]:
         "settle_ms": 0,
         "configuration": "fixed",
         "trial": trial,
-        "elapsed_s": 1.0,
-        "ops_per_s": float(ops),
+        "elapsed_s": elapsed,
+        "ops_per_s": float(ops if rate is None else rate),
     }
 
 
@@ -114,7 +114,7 @@ class SelectBaselineSizingResultsTests(unittest.TestCase):
         self.assertEqual({int(item["ops_requested"]) for item in selected if item["engine"] == "b"}, {100})
         source = next(item for item in manifest["sources"] if item["engine"] == "b")
         self.assertEqual(source["rejected_pressure_attempts"], 1)
-        self.assertEqual(manifest["selected_resize_rejected_pressure_attempts"], 1)
+        self.assertEqual(manifest["selected_followup_rejected_pressure_attempts"], 1)
         self.assertTrue(manifest["complete"])
 
     def test_replaces_read_only_group_with_more_ops(self) -> None:
@@ -155,6 +155,36 @@ class SelectBaselineSizingResultsTests(unittest.TestCase):
             (run / "summary.json").write_text(json.dumps({"row_count": 5, "group_count": 1, "problems": []}))
             with self.assertRaisesRegex(ValueError, "identity"):
                 select_rows(stock, audit(target), root, allow_missing_resize=False)
+
+
+    def test_quality_repair_replaces_retained_variable_stock(self) -> None:
+        stock = [row("q", "write-burst", t, 100, elapsed=0.3, rate=rate) for t, rate in enumerate((100.0, 70.0, 100.0), 1)]
+        variable = audit_group("q", "write-burst", 100, "variable")
+        plan = audit(variable)
+        repair = {
+            **variable,
+            "quality_repair_required": True,
+            "resize_strategy": "quality-repair",
+            "suggested_effective_ops": 100,
+            "runner_ops_override": 100,
+            "suggested_trials": 3,
+        }
+        quality_plan = {"quality_policy_version": 1, "groups": [repair]}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run = root / run_id(repair, "20261006-kv-resize-v4")
+            run.mkdir()
+            repaired = [row("q", "write-burst", t, 100, elapsed=0.35, rate=100.0 + t) for t in (1, 2, 3)]
+            (run / "results.ndjson").write_text("".join(json.dumps(item) + "\n" for item in repaired))
+            (run / "summary.json").write_text(json.dumps({"row_count": 3, "group_count": 1, "problems": []}))
+            selected, manifest = select_rows(
+                stock, plan, root, allow_missing_resize=False, quality_repair_plan=quality_plan
+            )
+        self.assertEqual(len(selected), 3)
+        self.assertEqual(manifest["selected_stock_groups"], 0)
+        self.assertEqual(manifest["selected_quality_repair_groups"], 1)
+        self.assertEqual(manifest["sources"][0]["source"], "quality-repair")
+        self.assertEqual(manifest["sources"][0]["final_status"], "accepted")
 
     def test_rejects_old_policy(self) -> None:
         with self.assertRaisesRegex(ValueError, "unsupported sizing policy"):

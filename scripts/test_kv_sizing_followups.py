@@ -56,8 +56,27 @@ class KvSizingFollowupsTests(unittest.TestCase):
                     }
                 )
             )
-            groups = MODULE.groups_from_plan(plan)
-            self.assertEqual([item["engine"] for item in groups], ["read", "state"])
+            quality = Path(tmp) / "quality.json"
+            quality.write_text(
+                json.dumps(
+                    {
+                        "quality_policy_version": 1,
+                        "groups": [
+                            group(
+                                engine="repair",
+                                status="variable",
+                                resize_strategy="quality-repair",
+                                suggested_effective_ops=50_000,
+                                runner_ops_override=50_000,
+                                suggested_trials=3,
+                                median_elapsed_s=0.3,
+                            )
+                        ],
+                    }
+                )
+            )
+            groups = MODULE.groups_from_plan(plan, quality)
+            self.assertEqual([item["engine"] for item in groups], ["read", "state", "repair"])
             plan.write_text(json.dumps({"sizing_policy_version": 1, "groups": []}))
             with self.assertRaises(ValueError):
                 MODULE.groups_from_plan(plan)

@@ -110,6 +110,7 @@ def select_rows(
     *,
     resize_prefix: str = "20261006-kv-resize-v4",
     allow_missing_resize: bool,
+    quality_repair_plan: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     if audit.get("sizing_policy_version") != 2:
         raise ValueError(f"unsupported sizing policy: {audit.get('sizing_policy_version')!r}")
@@ -121,9 +122,17 @@ def select_rows(
         stock_groups[identity(row)].append(row)
 
     audit_groups = {audit_key(group): group for group in audit["groups"]}
+    quality_groups: dict[tuple[Any, ...], dict[str, Any]] = {}
+    if quality_repair_plan is not None:
+        if quality_repair_plan.get("quality_policy_version") != 1:
+            raise ValueError(
+                f"unsupported stock quality policy: {quality_repair_plan.get('quality_policy_version')!r}"
+            )
+        quality_groups = {audit_key(group): group for group in quality_repair_plan.get("groups", [])}
     output: list[dict[str, Any]] = []
     selected_stock = 0
     selected_resize = 0
+    selected_quality_repair = 0
     pending: list[str] = []
     sources: list[dict[str, Any]] = []
 
@@ -138,6 +147,51 @@ def select_rows(
         group = audit_groups.get(key)
         if group is None:
             raise ValueError(f"stock group missing from audit: {key}")
+
+        quality_group = quality_groups.get(key)
+        if quality_group is not None:
+            rid = run_id(quality_group, resize_prefix)
+            results_path = resize_root / rid / "results.ndjson"
+            summary_path = resize_root / rid / "summary.json"
+            if not results_path.is_file() or not summary_path.is_file():
+                pending.append(rid)
+                if allow_missing_resize:
+                    continue
+                raise ValueError(f"missing quality-repair result: {rid}")
+            expected_trials = int(quality_group["suggested_trials"])
+            summary = json.loads(summary_path.read_text())
+            if summary.get("row_count") != expected_trials or summary.get("group_count") != 1 or summary.get("problems"):
+                raise ValueError(f"invalid quality-repair summary: {rid}")
+            repaired = read_ndjson(results_path)
+            validate_trials(repaired, label=f"quality repair {rid}", expected_count=expected_trials)
+            if len({identity(row) for row in repaired}) != 1 or identity(repaired[0]) != group_identity:
+                raise ValueError(f"quality-repair identity differs from stock group: {rid}")
+            expected_ops = int(quality_group["suggested_effective_ops"])
+            actual_ops = {int(row["ops_requested"]) for row in repaired}
+            if actual_ops != {expected_ops}:
+                raise ValueError(
+                    f"quality-repair op count mismatch for {rid}: expected {expected_ops}, got {sorted(actual_ops)}"
+                )
+            quality = final_quality(repaired, thresholds)
+            if quality["final_status"] == "undersized":
+                raise ValueError(f"quality-repair result remains undersized: {rid}")
+            output.extend(repaired)
+            selected_quality_repair += 1
+            sources.append(
+                {
+                    "engine": first["engine"],
+                    "durability": first["durability"],
+                    "workload": first["workload"],
+                    "source": "quality-repair",
+                    "resize_strategy": "quality-repair",
+                    "run_id": rid,
+                    "ops_requested": expected_ops,
+                    "trials": expected_trials,
+                    "rejected_pressure_attempts": rejected_pressure_attempts(resize_root / rid),
+                    **quality,
+                }
+            )
+            continue
 
         if group["status"] != "undersized":
             quality = final_quality(rows, thresholds)
@@ -221,14 +275,15 @@ def select_rows(
         "stock_rows": len(stock_rows),
         "stock_groups": len(stock_groups),
         "selected_rows": len(output),
-        "selected_groups": selected_stock + selected_resize,
+        "selected_groups": selected_stock + selected_resize + selected_quality_repair,
         "selected_stock_groups": selected_stock,
         "selected_resize_groups": selected_resize,
+        "selected_quality_repair_groups": selected_quality_repair,
         "pending_resize_groups": len(pending),
         "pending_run_ids": pending,
         "complete": not pending,
         "final_status_counts": status_counts,
-        "selected_resize_rejected_pressure_attempts": sum(
+        "selected_followup_rejected_pressure_attempts": sum(
             int(source.get("rejected_pressure_attempts", 0)) for source in sources
         ),
         "sources": sources,
@@ -244,6 +299,7 @@ def main() -> int:
     parser.add_argument("--ndjson-out", type=Path, required=True)
     parser.add_argument("--manifest-out", type=Path, required=True)
     parser.add_argument("--resize-prefix", default="20261006-kv-resize-v4")
+    parser.add_argument("--quality-repair-plan", type=Path)
     parser.add_argument("--allow-missing-resize", action="store_true")
     args = parser.parse_args()
 
@@ -253,6 +309,7 @@ def main() -> int:
         args.resize_root,
         resize_prefix=args.resize_prefix,
         allow_missing_resize=args.allow_missing_resize,
+        quality_repair_plan=(json.loads(args.quality_repair_plan.read_text()) if args.quality_repair_plan else None),
     )
     manifest["stock_rejected_pressure_attempts"] = rejected_pressure_attempts(args.stock_results.parent)
     args.ndjson_out.parent.mkdir(parents=True, exist_ok=True)
@@ -268,6 +325,7 @@ def main() -> int:
                     "selected_groups",
                     "selected_stock_groups",
                     "selected_resize_groups",
+                    "selected_quality_repair_groups",
                     "pending_resize_groups",
                     "complete",
                 )

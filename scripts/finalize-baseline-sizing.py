@@ -19,28 +19,28 @@ def finalize_one(
     resize_prefix: str,
     out_dir: Path,
     expected_groups: int,
+    quality_repair_plan: Path | None = None,
 ) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     ndjson = out_dir / "results.ndjson"
     manifest = out_dir / "manifest.json"
     summary = out_dir / "summary.json"
-    subprocess.run(
-        [
-            sys.executable,
-            str(repo / "scripts" / "select-baseline-sizing-results.py"),
-            str(stock_results),
-            str(audit),
-            str(repo / "results" / "runs"),
-            "--resize-prefix",
-            resize_prefix,
-            "--ndjson-out",
-            str(ndjson),
-            "--manifest-out",
-            str(manifest),
-        ],
-        cwd=repo,
-        check=True,
-    )
+    command = [
+        sys.executable,
+        str(repo / "scripts" / "select-baseline-sizing-results.py"),
+        str(stock_results),
+        str(audit),
+        str(repo / "results" / "runs"),
+        "--resize-prefix",
+        resize_prefix,
+        "--ndjson-out",
+        str(ndjson),
+        "--manifest-out",
+        str(manifest),
+    ]
+    if quality_repair_plan is not None:
+        command.extend(["--quality-repair-plan", str(quality_repair_plan)])
+    subprocess.run(command, cwd=repo, check=True)
     subprocess.run(
         [
             sys.executable,
@@ -82,6 +82,7 @@ def main() -> int:
         resize_prefix="20261006-kv-resize-v4",
         out_dir=Path("/srv/scratch/db-bench-work/kv-sizing-audit/selected-final-v4"),
         expected_groups=180,
+        quality_repair_plan=Path("/srv/scratch/db-bench-work/kv-sizing-audit/20261006-kv-stock-pressure-repairs-v1.json"),
     )
     finalize_one(
         repo,
