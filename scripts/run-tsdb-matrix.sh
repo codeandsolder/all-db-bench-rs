@@ -43,6 +43,11 @@ fi
 BIN_SHA=$(sha256sum "$BIN" | awk '{print $1}')
 
 RUN_ID=${RUN_ID:-"$(date -u +%Y%m%dT%H%M%SZ)-tsdb-$PROFILE"}
+if [[ "${TSDB_RESUME_SHUFFLE_REMAINING:-0}" == 1 ]]; then
+  RESUME_ORDER_POLICY=reshuffle-remaining
+else
+  RESUME_ORDER_POLICY=fixed-initial
+fi
 RUN_DIR="$ROOT/results/runs/$RUN_ID"
 DATA_DIR="$ROOT/data/runs/$RUN_ID"
 mkdir -p "$RUN_DIR"/{cases,client,server-before,server-after,stderr,server-logs,server-configs,noise} "$DATA_DIR"
@@ -220,6 +225,7 @@ cat > "$SUPPORT_NEW" <<EOF_SUPPORT
     "influxdb3_libpython": "$INFLUXDB3_PYTHON_SHA"
   },
   "trials": $TRIALS,
+  "resume_order_policy": "$RESUME_ORDER_POLICY",
   "selected_engines": "$SELECTED_ENGINES",
   "series": $SERIES,
   "samples_per_series": $SAMPLES,
@@ -275,6 +281,9 @@ if [[ -s "$RUN_DIR/jobs.txt" ]]; then
 else
   mapfile -t ORDERED < <(printf '%s\n' "${JOBS[@]}" | shuf)
   printf '%s\n' "${ORDERED[@]}" > "$RUN_DIR/jobs.txt"
+fi
+if [[ "$RESUME_ORDER_POLICY" == reshuffle-remaining ]]; then
+  mapfile -t ORDERED < <(printf '%s\n' "${ORDERED[@]}" | shuf)
 fi
 
 clear_failure() {
