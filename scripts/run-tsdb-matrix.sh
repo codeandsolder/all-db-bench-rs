@@ -17,7 +17,7 @@ case "$PROFILE" in
   *) echo "usage: $0 [smoke|quick|full]" >&2; exit 2 ;;
 esac
 
-for tool in curl sha256sum uv awk shuf du cmp sort findmnt hostname; do
+for tool in curl sha256sum uv awk shuf du cmp sort find findmnt hostname; do
   command -v "$tool" >/dev/null 2>&1 || { echo "missing required tool: $tool" >&2; exit 2; }
 done
 
@@ -55,7 +55,11 @@ GREPTIME_SHA=$(sha256sum "$GREPTIME" | awk '{print $1}')
 VICTORIA_SHA=$(sha256sum "$VICTORIA" | awk '{print $1}')
 PROMETHEUS_SHA=$(sha256sum "$PROMETHEUS" | awk '{print $1}')
 INFLUXDB3_SHA=$(sha256sum "$INFLUXDB3" | awk '{print $1}')
+INFLUXDB3_PYTHON_LIB=$(find "$DEPS/influxdb3-3.12.0/python/lib" -maxdepth 1 -type f -name 'libpython*.so.1.0' -print -quit)
+[[ -n "$INFLUXDB3_PYTHON_LIB" ]] || { echo "missing bundled InfluxDB libpython runtime" >&2; exit 2; }
+INFLUXDB3_PYTHON_SHA=$(sha256sum "$INFLUXDB3_PYTHON_LIB" | awk '{print $1}')
 RUNNER_SHA=$(sha256sum "$ROOT/scripts/run-tsdb-matrix.sh" | awk '{print $1}')
+INSTALLER_SHA=$(sha256sum "$ROOT/scripts/ensure-tsdb-binaries.sh" | awk '{print $1}')
 PROCESS_CAPTURE_SHA=$(sha256sum "$ROOT/scripts/capture-process-tree.py" | awk '{print $1}')
 MERGE_RESULT_SHA=$(sha256sum "$ROOT/scripts/merge-tsdb-result.py" | awk '{print $1}')
 SUMMARIZER_SHA=$(sha256sum "$ROOT/scripts/summarize-tsdb.py" | awk '{print $1}')
@@ -197,6 +201,7 @@ cat > "$SUPPORT_NEW" <<EOF_SUPPORT
   "benchmark_binary_sha256": "$BIN_SHA",
   "harness_sha256": {
     "runner": "$RUNNER_SHA",
+    "installer": "$INSTALLER_SHA",
     "process_capture": "$PROCESS_CAPTURE_SHA",
     "result_merge": "$MERGE_RESULT_SHA",
     "summarizer": "$SUMMARIZER_SHA"
@@ -210,6 +215,9 @@ cat > "$SUPPORT_NEW" <<EOF_SUPPORT
     "victoriametrics": "$VICTORIA_SHA",
     "prometheus": "$PROMETHEUS_SHA",
     "influxdb3": "$INFLUXDB3_SHA"
+  },
+  "server_runtime_sha256": {
+    "influxdb3_libpython": "$INFLUXDB3_PYTHON_SHA"
   },
   "trials": $TRIALS,
   "selected_engines": "$SELECTED_ENGINES",
