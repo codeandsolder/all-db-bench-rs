@@ -7,8 +7,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-SCRIPT = Path(__file__).with_name("select-kv-sizing-results.py")
-SPEC = importlib.util.spec_from_file_location("select_kv_sizing_results", SCRIPT)
+SCRIPT = Path(__file__).with_name("select-baseline-sizing-results.py")
+SPEC = importlib.util.spec_from_file_location("select_baseline_sizing_results", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 MODULE = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = MODULE
@@ -58,14 +58,21 @@ def audit_group(engine: str, workload: str, ops: int, status: str, suggested: in
     }
 
 
-class SelectKvSizingResultsTests(unittest.TestCase):
+class SelectBaselineSizingResultsTests(unittest.TestCase):
+    def test_run_id_accepts_record_prefix(self) -> None:
+        target = audit_group("sqlite", "tiny-txn", 5_000, "undersized", 30_000)
+        self.assertEqual(
+            run_id(target, "20261006-record-resize"),
+            "20261006-record-resize-sqlite-relaxed-tiny-txn-e30000",
+        )
+
     def test_replaces_only_undersized_group(self) -> None:
         stock = [row("a", "point-read", t, 100) for t in (1, 2, 3)] + [row("b", "tiny-txn", t, 100) for t in (1, 2, 3)]
         target = audit_group("b", "tiny-txn", 100, "undersized", 300)
         audit = {"group_count": 2, "groups": [audit_group("a", "point-read", 100, "accepted"), target]}
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            run = root / run_id(target)
+            run = root / run_id(target, "20261006-kv-resize")
             run.mkdir()
             resized = [row("b", "tiny-txn", t, 300) for t in (1, 2, 3)]
             (run / "results.ndjson").write_text("".join(json.dumps(item) + "\n" for item in resized))
@@ -94,7 +101,7 @@ class SelectKvSizingResultsTests(unittest.TestCase):
         audit = {"group_count": 1, "groups": [target]}
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            run = root / run_id(target)
+            run = root / run_id(target, "20261006-kv-resize")
             run.mkdir()
             resized = [row("b", "tiny-txn", t, 300) for t in (1, 2, 3)]
             resized[0]["configuration"] = "different"

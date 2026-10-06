@@ -38,9 +38,9 @@ def slug(value: str) -> str:
     return "".join(ch if ch.isalnum() or ch in "-_" else "-" for ch in value)
 
 
-def run_id(group: dict[str, Any]) -> str:
+def run_id(group: dict[str, Any], resize_prefix: str) -> str:
     return (
-        "20261006-kv-resize-"
+        f"{resize_prefix}-"
         f"{slug(str(group['engine']))}-{slug(str(group['durability']))}-"
         f"{slug(str(group['workload']))}-e{int(group['suggested_effective_ops'])}"
     )
@@ -69,6 +69,7 @@ def select_rows(
     audit: dict[str, Any],
     resize_root: Path,
     *,
+    resize_prefix: str = "20261006-kv-resize",
     allow_missing_resize: bool,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     stock_groups: dict[tuple[Any, ...], list[dict[str, Any]]] = defaultdict(list)
@@ -102,7 +103,7 @@ def select_rows(
             })
             continue
 
-        rid = run_id(group)
+        rid = run_id(group, resize_prefix)
         results_path = resize_root / rid / "results.ndjson"
         summary_path = resize_root / rid / "summary.json"
         if not results_path.is_file() or not summary_path.is_file():
@@ -156,12 +157,13 @@ def select_rows(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Select stock or resized raw-KV baseline groups without mixing op counts")
+    parser = argparse.ArgumentParser(description="Select stock or resized baseline groups without mixing op counts")
     parser.add_argument("stock_results", type=Path)
     parser.add_argument("audit", type=Path)
     parser.add_argument("resize_root", type=Path)
     parser.add_argument("--ndjson-out", type=Path, required=True)
     parser.add_argument("--manifest-out", type=Path, required=True)
+    parser.add_argument("--resize-prefix", default="20261006-kv-resize")
     parser.add_argument("--allow-missing-resize", action="store_true")
     args = parser.parse_args()
 
@@ -169,6 +171,7 @@ def main() -> int:
         read_ndjson(args.stock_results),
         json.loads(args.audit.read_text()),
         args.resize_root,
+        resize_prefix=args.resize_prefix,
         allow_missing_resize=args.allow_missing_resize,
     )
     args.ndjson_out.parent.mkdir(parents=True, exist_ok=True)

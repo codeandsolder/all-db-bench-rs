@@ -106,6 +106,12 @@ def main() -> int:
             "--calibration-max-seconds",
             "15.0",
         ],
+        [
+            sys.executable,
+            str(repo / "scripts" / "finalize-baseline-sizing.py"),
+            "--repo",
+            str(repo),
+        ],
     ]
     for stage in stages:
         rc = run_stage(stage, cwd=repo)
