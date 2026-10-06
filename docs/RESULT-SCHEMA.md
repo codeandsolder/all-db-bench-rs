@@ -17,7 +17,7 @@ Each isolated benchmark invocation appends exactly one JSON object to NDJSON.
 - `ops_completed`: logical workload operations completed.
 - `ops_per_s`: `ops_completed / elapsed_s`.
 
-For `range-scan`, one logical operation is one range query. `reads` records rows visited, while `ops_completed` records range queries, so row throughput can be derived as `reads / elapsed_s`.
+For `range-scan`, one logical operation is one range query. `reads` records rows visited, while `ops_completed` records range queries, so row throughput can be derived as `reads / elapsed_s`. The baseline matrix may intentionally use a lower `ops_requested` for `lsm-db` range scans because that crate's native bounded scan traverses from the beginning of each run; compare range-scan rates using the recorded per-case operation count rather than assuming the profile-wide default.
 
 ## Latency
 

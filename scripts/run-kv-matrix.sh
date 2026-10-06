@@ -13,6 +13,11 @@ RECORDS=${KV_RECORDS_OVERRIDE:-$RECORDS}
 OPS=${KV_OPS_OVERRIDE:-$OPS}
 
 ROOT=${ROOT:-"$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"}
+# shellcheck source=kv-matrix-policy.sh
+source "$ROOT/scripts/kv-matrix-policy.sh"
+KV_LSMDB_RANGE_TARGET_TRAVERSED_ENTRIES=${KV_LSMDB_RANGE_TARGET_TRAVERSED_ENTRIES:-50000000}
+KV_LSMDB_RANGE_MIN_OPS=${KV_LSMDB_RANGE_MIN_OPS:-50}
+LSMDB_RANGE_OPS=$(kv_effective_ops lsmdb range-scan "$OPS" "$RECORDS" "$KV_LSMDB_RANGE_TARGET_TRAVERSED_ENTRIES" "$KV_LSMDB_RANGE_MIN_OPS") || { echo "invalid KV range-scan policy" >&2; exit 2; }
 RUN_ID=${RUN_ID:-"$(date -u +%Y%m%dT%H%M%SZ)-kv-$PROFILE"}
 RUN_DIR="$ROOT/results/runs/$RUN_ID"
 DATA_DIR="$ROOT/data/runs/$RUN_ID"
@@ -39,6 +44,7 @@ else
 fi
 BIN_SHA=$(sha256sum "$BIN" | awk '{print $1}')
 RUNNER_SHA=$(sha256sum "$ROOT/scripts/run-kv-matrix.sh" | awk '{print $1}')
+POLICY_SHA=$(sha256sum "$ROOT/scripts/kv-matrix-policy.sh" | awk '{print $1}')
 NOISE_SHA=$(sha256sum "$ROOT/scripts/check-external-noise.py" | awk '{print $1}')
 HOST_NAME=$(hostname)
 MACHINE_ID_SHA256=$(sha256sum /etc/machine-id | awk '{print $1}')
@@ -96,9 +102,12 @@ import json, sys
 json.dump({
   "lane":"kv", "profile":"$PROFILE", "trials":$TRIALS,
   "records":$RECORDS, "ops":$OPS, "value_bytes":256, "txn_size":100, "scan_len":100,
+  "lsmdb_range_scan_ops":$LSMDB_RANGE_OPS,
+  "lsmdb_range_target_traversed_entries":$KV_LSMDB_RANGE_TARGET_TRAVERSED_ENTRIES,
+  "lsmdb_range_min_ops":$KV_LSMDB_RANGE_MIN_OPS,
   "engines":"${ENGINES[*]}", "workloads":"${WORKLOADS[*]}", "durabilities":"${DURABILITIES[*]}",
   "resume_order_policy":"$RESUME_ORDER_POLICY", "build_profile":"$BUILD_PROFILE",
-  "benchmark_binary_sha256":"$BIN_SHA", "runner_sha256":"$RUNNER_SHA", "noise_guard_sha256":"$NOISE_SHA",
+  "benchmark_binary_sha256":"$BIN_SHA", "runner_sha256":"$RUNNER_SHA", "kv_matrix_policy_sha256":"$POLICY_SHA", "noise_guard_sha256":"$NOISE_SHA",
   "hostname":"$HOST_NAME", "machine_id_sha256":"$MACHINE_ID_SHA256", "filesystem":"$FILESYSTEM", "source":"$SOURCE"
 }, open(sys.argv[1], "w"), sort_keys=True, separators=(",",":"))
 PY_SUPPORT
@@ -139,8 +148,9 @@ for job in "${ORDERED[@]}"; do
   check_io_quiet "before:$case_id" || exit $?
   check_external_noise "before:$case_id" "$noise_before" || exit $?
   rm -f "$out"
+  CASE_OPS=$(kv_effective_ops "$engine" "$workload" "$OPS" "$RECORDS" "$KV_LSMDB_RANGE_TARGET_TRAVERSED_ENTRIES" "$KV_LSMDB_RANGE_MIN_OPS") || { echo "invalid KV case policy for $case_id" >&2; exit 2; }
   "$BIN" --engine "$engine" --durability "$durability" --workload "$workload" \
-    --records "$RECORDS" --ops "$OPS" --value-bytes 256 --txn-size 100 --scan-len 100 \
+    --records "$RECORDS" --ops "$CASE_OPS" --value-bytes 256 --txn-size 100 --scan-len 100 \
     --trial "$trial" --seed 1592606758 --scenario baseline-core --root "$DATA_DIR" --output "$out" 2>"$err"
   rc=$?
   io_rc=0; check_io_quiet "after:$case_id" || io_rc=$?
