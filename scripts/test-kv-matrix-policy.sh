@@ -20,3 +20,8 @@ fi
 # Import provenance is runner-level, but the policy test also pins the expected
 # scaled counts that imported legacy cases must never impersonate.
 eq "$(kv_effective_ops lsmdb range-scan 50000 100000 50000000 50)" 1000
+
+eq "$(kv_effective_ops redb tiny-txn 100 100)" 100
+eq "$(kv_effective_ops redb tiny-txn 50000 100000)" 5000
+eq "$(kv_effective_ops redb tiny-txn 250000 1000000)" 25000
+eq "$(kv_effective_ops lsmdb tiny-txn 50000 100000)" 5000
