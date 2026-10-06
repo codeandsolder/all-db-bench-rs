@@ -124,11 +124,28 @@ class SizingAuditTests(unittest.TestCase):
 
     def test_stateful_trial_expansion_is_capped_and_odd(self) -> None:
         rows = [
-            row(engine="fast", elapsed=0.01, rate=500_000.0, trial=trial, workload="write-burst")
+            row(engine="fast", elapsed=0.02, rate=500_000.0, trial=trial, workload="write-burst")
             for trial in (1, 2, 3)
         ]
-        group = audit(rows)["groups"][0]
+        report = audit(rows)
+        group = report["groups"][0]
         self.assertEqual(group["suggested_trials"], 51)
+        self.assertEqual(group["minimum_required_trials"], 39)
+        self.assertFalse(group["sampling_cap_insufficient"])
+        self.assertEqual(report["problems"], [])
+
+    def test_stateful_cap_fails_closed_if_minimum_cannot_be_met(self) -> None:
+        rows = [
+            row(engine="too-fast", elapsed=0.01, rate=500_000.0, trial=trial, workload="write-burst")
+            for trial in (1, 2, 3)
+        ]
+        report = audit(rows)
+        group = report["groups"][0]
+        self.assertEqual(group["suggested_trials"], 51)
+        self.assertEqual(group["minimum_required_trials"], 75)
+        self.assertTrue(group["sampling_cap_insufficient"])
+        self.assertEqual(len(report["problems"]), 1)
+        self.assertIn("requires at least 75 trials", report["problems"][0])
 
     def test_missing_trial_is_problem(self) -> None:
         rows = [row(engine="missing", elapsed=3.0, rate=100.0, trial=trial) for trial in (1, 3)]

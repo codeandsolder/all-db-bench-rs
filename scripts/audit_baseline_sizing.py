@@ -51,14 +51,18 @@ def _round_up_ops(value: float) -> int:
     return ((requested + quantum - 1) // quantum) * quantum
 
 
-def _round_up_trials(value: float, *, maximum: int) -> int:
-    if maximum < 3:
-        raise ValueError("stateful maximum trials must be at least 3")
+def _round_up_odd_trials(value: float) -> int:
     requested = max(3, math.ceil(value))
     if requested % 2 == 0:
         requested += 1
+    return requested
+
+
+def _round_up_trials(value: float, *, maximum: int) -> int:
+    if maximum < 3:
+        raise ValueError("stateful maximum trials must be at least 3")
     cap = maximum if maximum % 2 == 1 else maximum - 1
-    return min(requested, cap)
+    return min(_round_up_odd_trials(value), cap)
 
 
 def _group_key(row: dict[str, Any]) -> tuple[Any, ...]:
@@ -138,6 +142,8 @@ def audit_rows(
         suggested_effective_ops = None
         runner_ops_override = None
         suggested_trials = None
+        minimum_required_trials = None
+        sampling_cap_insufficient = False
         resize_strategy = None
         if undersized and read_only:
             scaled = effective_ops * read_only_target_seconds / max(median_elapsed, 1e-9)
@@ -151,10 +157,23 @@ def audit_rows(
             # tombstone/compaction history, and therefore benchmark semantics.
             suggested_effective_ops = effective_ops
             runner_ops_override = _runner_ops_override(first, effective_ops)
+            minimum_required_trials = _round_up_odd_trials(
+                stateful_min_total_seconds / max(median_elapsed, 1e-9)
+            )
             suggested_trials = _round_up_trials(
                 stateful_target_total_seconds / max(median_elapsed, 1e-9),
                 maximum=stateful_max_trials,
             )
+            effective_cap = (
+                stateful_max_trials if stateful_max_trials % 2 == 1 else stateful_max_trials - 1
+            )
+            sampling_cap_insufficient = minimum_required_trials > effective_cap
+            if sampling_cap_insufficient:
+                problems.append(
+                    f"{first.get('engine')}/{first.get('durability')}/{workload}: "
+                    f"stateful sampling cap={effective_cap} trials cannot meet the "
+                    f"minimum floor; requires at least {minimum_required_trials} trials"
+                )
             resize_strategy = "more-trials"
 
         groups.append(
@@ -179,6 +198,8 @@ def audit_rows(
                 "suggested_effective_ops": suggested_effective_ops,
                 "runner_ops_override": runner_ops_override,
                 "suggested_trials": suggested_trials,
+                "minimum_required_trials": minimum_required_trials,
+                "sampling_cap_insufficient": sampling_cap_insufficient,
             }
         )
 
