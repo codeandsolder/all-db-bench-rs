@@ -41,8 +41,11 @@ class ExternalNoiseTests(unittest.TestCase):
     def test_ignores_small_daemon_activity(self) -> None:
         self.assertIsNone(classify_process(self.row(cpu=3, comm="tailscaled", args="/usr/sbin/tailscaled")))
 
-    def test_allows_benchmark_process(self) -> None:
-        self.assertIsNone(classify_process(self.row(cpu=100, comm="kvbench", args="/tmp/kvbench --engine redb")))
+    def test_flags_foreign_benchmark_process(self) -> None:
+        self.assertEqual(
+            classify_process(self.row(cpu=100, comm="kvbench", args="/tmp/kvbench --engine redb")),
+            "foreign-high-cpu",
+        )
 
     def test_excludes_helper_descendant_tree(self) -> None:
         rows = [
@@ -68,7 +71,7 @@ class ExternalNoiseTests(unittest.TestCase):
             ProcessRow(803, 1, 19, 95.0, "python", "python low-priority.py"),
             ProcessRow(804, 1, 0, 100.0, "kvbench", "/tmp/kvbench --engine redb"),
         ]
-        self.assertEqual(aggregate_foreign_cpu_percent(rows, excluded_pids=set()), 60.0)
+        self.assertEqual(aggregate_foreign_cpu_percent(rows, excluded_pids=set()), 160.0)
 
 
     def test_cpu_percent_uses_interval_delta_not_lifetime_average(self) -> None:

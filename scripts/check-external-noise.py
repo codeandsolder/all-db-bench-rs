@@ -12,7 +12,7 @@ from pathlib import Path
 
 BUILD_RE = re.compile(r"(?:^|[ /])(?:cargo(?:-[A-Za-z0-9_.-]+)?|rustc|clippy-driver|cc1plus|clang(?:\+\+)?|gcc|g\+\+|cmake|ninja|make)(?:\s|$)")
 WIDE_SCAN_RE = re.compile(r"(?:^|\s)(?:find|rg|ripgrep)\s+(?:/root\b|/srv\b|/opt\b|/home\b|/mnt\b)")
-ALLOWED_RE = re.compile(r"(?:run-io-contention-matrix\.sh|/kvbench(?:\s|$)|fio --name=pressure-(?:read|write))")
+ALLOWED_RE = re.compile(r"(?:run-io-contention-matrix\.sh|fio --name=pressure-(?:read|write))")
 SCCACHE_WORKER_RE = re.compile(r"(?:^|/)sccache-dist server(?:\s|$)")
 
 
