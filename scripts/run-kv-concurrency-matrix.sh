@@ -155,9 +155,9 @@ for job in "${ORDERED[@]}"; do
     (( ops < clients )) && ops=$clients
     ops=$(kv_effective_ops "$engine" "$workload" "$ops" "$RECORDS") || exit 2
   elif [[ "$workload" == tiny-txn ]]; then
-    # Keep transaction-serialization coverage without making full mode
-    # dominated by hundreds of thousands of one-key sync barriers per case.
-    ops=$(( OPS / 10 ))
+    # Shared policy applies the one-key-transaction sizing once; do not
+    # pre-divide here or the helper would scale this lane twice.
+    ops=$(kv_effective_ops "$engine" "$workload" "$OPS" "$RECORDS") || exit 2
     (( ops < clients )) && ops=$clients
   elif [[ "$workload" == delete-burst && "$ops" -gt "$RECORDS" ]]; then
     ops=$RECORDS
