@@ -11,6 +11,7 @@ import json
 import os
 import statistics
 import subprocess
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -129,6 +130,34 @@ def write_status(path: Path, **fields: Any) -> None:
     tmp.replace(path)
 
 
+def parse_io_full_avg10(raw: str) -> float:
+    for line in raw.splitlines():
+        parts = line.split()
+        if not parts or parts[0] != "full":
+            continue
+        for part in parts[1:]:
+            if part.startswith("avg10="):
+                return float(part.split("=", 1)[1])
+    raise ValueError("/proc/pressure/io did not contain full avg10")
+
+
+def preflight_host(repo: Path, *, max_io_full_avg10: float) -> int:
+    try:
+        io_full_avg10 = parse_io_full_avg10(Path("/proc/pressure/io").read_text())
+    except (OSError, ValueError):
+        return 2
+    if io_full_avg10 > max_io_full_avg10:
+        return 75
+    proc = subprocess.run(
+        [sys.executable, str(repo / "scripts" / "check-external-noise.py"), "--sample-ms", "250"],
+        cwd=repo,
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return proc.returncode
+
+
 def groups_from_plan(path: Path) -> list[dict[str, Any]]:
     plan = json.loads(path.read_text())
     groups = [group for group in plan["groups"] if group["status"] == "undersized"]
@@ -173,6 +202,7 @@ def main() -> int:
     parser.add_argument("--limit", type=int)
     parser.add_argument("--watch", action="store_true")
     parser.add_argument("--busy-sleep", type=float, default=2.0)
+    parser.add_argument("--max-io-full-avg10", type=float, default=5.0)
     parser.add_argument("--calibration-count", type=int, default=5)
     parser.add_argument("--calibration-min-seconds", type=float, default=1.5)
     parser.add_argument("--calibration-max-seconds", type=float, default=6.0)
@@ -253,6 +283,43 @@ def main() -> int:
                 continue
 
             while True:
+                preflight_rc = preflight_host(args.repo, max_io_full_avg10=args.max_io_full_avg10)
+                if preflight_rc == 75:
+                    busy_events += 1
+                    write_status(
+                        args.status_file,
+                        state="waiting-for-idle",
+                        campaign="raw-kv-sizing-followups",
+                        current_index=index,
+                        total=total,
+                        current_run_id=rid,
+                        completed_now=completed_now,
+                        skipped=skipped,
+                        busy_events=busy_events,
+                    )
+                    if not args.watch:
+                        return 75
+                    if busy_events == 1 or busy_events % 30 == 0:
+                        print(f"waiting for idle: run={rid} busy_events={busy_events}", flush=True)
+                    time.sleep(max(args.busy_sleep, 0.1))
+                    continue
+                if preflight_rc != 0:
+                    write_status(
+                        args.status_file,
+                        state="failed",
+                        campaign="raw-kv-sizing-followups",
+                        current_index=index,
+                        total=total,
+                        current_run_id=rid,
+                        returncode=preflight_rc,
+                        error="host preflight failed",
+                        completed_now=completed_now,
+                        skipped=skipped,
+                        busy_events=busy_events,
+                    )
+                    print(f"host preflight failed rc={preflight_rc} run={rid}", flush=True)
+                    return preflight_rc
+
                 write_status(
                     args.status_file,
                     state="running",

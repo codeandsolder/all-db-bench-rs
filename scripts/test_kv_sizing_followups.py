@@ -140,6 +140,12 @@ class KvSizingFollowupsTests(unittest.TestCase):
                 )
             )
 
+    def test_parse_io_full_avg10(self) -> None:
+        sample = "some avg10=1.00 avg60=2.00 avg300=3.00 total=4\nfull avg10=4.75 avg60=2.00 avg300=1.00 total=9\n"
+        self.assertEqual(MODULE.parse_io_full_avg10(sample), 4.75)
+        with self.assertRaises(ValueError):
+            MODULE.parse_io_full_avg10("some avg10=1.00\n")
+
     def test_lock_is_exclusive(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "lock"
