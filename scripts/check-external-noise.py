@@ -90,15 +90,17 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Reject normal-priority foreign CPU/build work during performance benchmarks")
     parser.add_argument("--ignore-nice-at-least", type=int, default=15)
     parser.add_argument("--json-out")
+    parser.add_argument("--exclude-pid", type=int, action="append", default=[])
     args = parser.parse_args()
 
     ancestors = ancestor_pids(os.getpid())
     rows = process_rows()
     own_tree = descendant_pids(rows, {os.getpid()})
     sccache_worker_tree = low_priority_sccache_tree(rows)
+    explicit_excluded_tree = descendant_pids(rows, set(args.exclude_pid)) if args.exclude_pid else set()
     offenders = []
     for row in rows:
-        if row.pid in ancestors or row.pid in own_tree or row.pid in sccache_worker_tree:
+        if row.pid in ancestors or row.pid in own_tree or row.pid in sccache_worker_tree or row.pid in explicit_excluded_tree:
             continue
         reason = classify_process(row, ignore_nice_at_least=args.ignore_nice_at_least)
         if reason is not None:
@@ -107,6 +109,7 @@ def main() -> int:
     result = {
         "quiet": not offenders,
         "ignore_nice_at_least": args.ignore_nice_at_least,
+        "excluded_pids": sorted(explicit_excluded_tree),
         "offenders": offenders,
     }
     encoded = json.dumps(result, sort_keys=True, separators=(",", ":"))

@@ -58,6 +58,14 @@ class ExternalNoiseTests(unittest.TestCase):
         ]
         self.assertEqual(low_priority_sccache_tree(rows), {400, 401})
 
+    def test_explicit_exclusion_can_cover_a_server_process_tree(self) -> None:
+        rows = [
+            ProcessRow(600, 100, 0, 75.0, "prometheus", "/tmp/prometheus --web.enable-remote-write-receiver"),
+            ProcessRow(601, 600, 0, 80.0, "worker", "server helper"),
+            ProcessRow(700, 1, 0, 75.0, "python3", "python3 foreign.py"),
+        ]
+        self.assertEqual(descendant_pids(rows, {600}), {600, 601})
+
 
 if __name__ == "__main__":
     unittest.main()

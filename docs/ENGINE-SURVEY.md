@@ -85,3 +85,6 @@ Transactional on-disk data structures and a useful historical pure-Rust referenc
 ### Concurrency note
 
 Manifold's advertised advantage is parallel writes across column families. Shared-database concurrency is now measured separately on the 8-logical-CPU laptop using the same primary no-WAL Immediate configuration; the broken default-WAL diagnostic is not used as the concurrency baseline.
+## External TSDB/server lane (2026-10-05)
+
+These are intentionally outside the embedded-engine candidate table. Current stable pins used by the benchmark are GreptimeDB 1.2.1, VictoriaMetrics 1.153.0, Prometheus 3.14.0 and InfluxDB 3 Core 3.12.0. The first three expose Prometheus Remote Write + PromQL-compatible APIs; InfluxDB 3 uses native line protocol + SQL, so the benchmark standardizes logical samples/query semantics rather than pretending the wire protocols are identical.

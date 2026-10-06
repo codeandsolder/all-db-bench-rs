@@ -11,6 +11,7 @@ A replacement for the earlier redb/Turso/Fjall growth-loop benchmark, designed a
     CARGO_TARGET_DIR=/tmp/rust-db-realistic-bench-target ./scripts/cargo-local-1.99.sh build --release --locked --features kv-all --bin kvbench
     CARGO_TARGET_DIR=/tmp/rust-db-realistic-bench-target ./scripts/cargo-local-1.99.sh build --release --locked --features record --bin recordbench
     ./scripts/cargo-local-1.99.sh build --release --locked --manifest-path engines/surrealdb-rocksdb/Cargo.toml --target-dir /tmp/rust-db-surreal-rocks-target
+    ./scripts/cargo-local-1.99.sh build --release --locked --manifest-path engines/tsdb-server/Cargo.toml --target-dir /tmp/rust-db-tsdb-target
 
 ## Smoke matrices
 
@@ -128,6 +129,15 @@ Explicit cgroup memory-budget dependence is root-only by design; build the KV bi
     sudo ./scripts/run-memory-limit-matrix.sh quick
 
 Do not merge warm reopen, root cold-cache, SIGKILL recovery, simulated power-loss recovery, sustained-write/compaction-cliff, raw fio, controlled CPU pressure, calibrated I/O pressure, memory-limit, out-of-core, relaxed durability, sync durability, raw-KV and record-layer results into one leaderboard. They answer different questions.
+
+## Time-series/server database lane
+
+GreptimeDB, VictoriaMetrics, Prometheus and InfluxDB 3 Core are benchmarked in a separate external-server lane:
+
+    ./scripts/run-tsdb-matrix.sh smoke
+    ./scripts/run-tsdb-matrix.sh quick
+
+The runner installs pinned official Linux/amd64 binaries under `.deps/tsdb`, starts one fresh local server per case, uses a logically identical step-aligned `bench_metric{host,region}` dataset, and records server-process CPU/runqueue/I/O/RSS plus on-disk bytes. GreptimeDB, VictoriaMetrics and Prometheus ingest through Prometheus Remote Write v1 and query with PromQL. InfluxDB 3 ingests the same samples through its native v3 line-protocol endpoint and queries equivalent semantics with SQL. Transport/query language are explicit result fields and are **not** normalized away. This lane must not be merged into the embedded-KV or record-product leaderboards.
 
 
 ## Latest engine set
