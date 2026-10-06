@@ -105,10 +105,16 @@ class SelectBaselineSizingResultsTests(unittest.TestCase):
             resized = [row("b", "tiny-txn", t, 100) for t in range(1, 6)]
             (run / "results.ndjson").write_text("".join(json.dumps(item) + "\n" for item in resized))
             (run / "summary.json").write_text(json.dumps({"row_count": 5, "group_count": 1, "problems": []}))
+            rejected = run / "rejected-pressure" / "t4-b-relaxed-tiny-txn" / "attempt-001"
+            rejected.mkdir(parents=True)
+            (rejected / "rejection.json").write_text("{}")
             selected, manifest = select_rows(stock, plan, root, allow_missing_resize=False)
         self.assertEqual(len(selected), 8)
         self.assertEqual([item["trial"] for item in selected if item["engine"] == "b"], [1, 2, 3, 4, 5])
         self.assertEqual({int(item["ops_requested"]) for item in selected if item["engine"] == "b"}, {100})
+        source = next(item for item in manifest["sources"] if item["engine"] == "b")
+        self.assertEqual(source["rejected_pressure_attempts"], 1)
+        self.assertEqual(manifest["selected_resize_rejected_pressure_attempts"], 1)
         self.assertTrue(manifest["complete"])
 
     def test_replaces_read_only_group_with_more_ops(self) -> None:

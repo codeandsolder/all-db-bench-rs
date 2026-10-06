@@ -60,6 +60,11 @@ def read_ndjson(path: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
+def rejected_pressure_attempts(run_dir: Path) -> int:
+    root = run_dir / "rejected-pressure"
+    return sum(1 for _ in root.glob("*/attempt-*/rejection.json")) if root.is_dir() else 0
+
+
 def validate_trials(rows: list[dict[str, Any]], *, label: str, expected_count: int) -> None:
     trials = sorted(int(row["trial"]) for row in rows)
     expected = list(range(1, expected_count + 1))
@@ -196,6 +201,7 @@ def select_rows(
                 "run_id": rid,
                 "ops_requested": expected_ops,
                 "trials": expected_resize_trials,
+                "rejected_pressure_attempts": rejected_pressure_attempts(resize_root / rid),
                 **quality,
             }
         )
@@ -222,6 +228,9 @@ def select_rows(
         "pending_run_ids": pending,
         "complete": not pending,
         "final_status_counts": status_counts,
+        "selected_resize_rejected_pressure_attempts": sum(
+            int(source.get("rejected_pressure_attempts", 0)) for source in sources
+        ),
         "sources": sources,
     }
     return output, manifest
@@ -245,6 +254,7 @@ def main() -> int:
         resize_prefix=args.resize_prefix,
         allow_missing_resize=args.allow_missing_resize,
     )
+    manifest["stock_rejected_pressure_attempts"] = rejected_pressure_attempts(args.stock_results.parent)
     args.ndjson_out.parent.mkdir(parents=True, exist_ok=True)
     args.ndjson_out.write_text("".join(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n" for row in rows))
     args.manifest_out.parent.mkdir(parents=True, exist_ok=True)
