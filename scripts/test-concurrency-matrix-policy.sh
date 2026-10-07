@@ -3,6 +3,10 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 source "$ROOT/scripts/concurrency-matrix-policy.sh"
 
+[[ $(concurrency_case_timeout_s smoke) == 60 ]]
+[[ $(concurrency_case_timeout_s quick) == 180 ]]
+[[ $(concurrency_case_timeout_s full) == 1800 ]]
+
 [[ $(kv_concurrency_ops smoke tiny-txn 3000 100 5000) == 300 ]]
 [[ $(kv_concurrency_ops quick tiny-txn 50000 100 100000) == 1000 ]]
 [[ $(kv_concurrency_ops full tiny-txn 250000 100 1000000) == 2500 ]]

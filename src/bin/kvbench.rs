@@ -583,19 +583,23 @@ impl Engine {
             }
             #[cfg(feature = "kv-external")]
             EngineKind::Persy => {
-                let db = Persy::open_or_create_with(
-                    path.join("bench.persy"),
-                    PersyConfig::new(),
-                    |db| {
-                        let mut tx = db.begin()?;
-                        tx.create_index::<PersyByteVec, PersyByteVec>(
-                            "kv",
-                            PersyValueMode::Replace,
-                        )?;
-                        tx.prepare()?.commit()?;
-                        Ok(())
-                    },
-                )?;
+                let mut config = PersyConfig::new();
+                if let Some(raw) = std::env::var_os("DBBENCH_PERSY_LOCK_TIMEOUT_MS") {
+                    let raw = raw.to_string_lossy();
+                    let timeout_ms: u64 = raw.parse().with_context(|| {
+                        format!("invalid DBBENCH_PERSY_LOCK_TIMEOUT_MS={raw:?}")
+                    })?;
+                    if timeout_ms == 0 {
+                        bail!("DBBENCH_PERSY_LOCK_TIMEOUT_MS must be greater than zero");
+                    }
+                    config.change_transaction_lock_timeout(Duration::from_millis(timeout_ms));
+                }
+                let db = Persy::open_or_create_with(path.join("bench.persy"), config, |db| {
+                    let mut tx = db.begin()?;
+                    tx.create_index::<PersyByteVec, PersyByteVec>("kv", PersyValueMode::Replace)?;
+                    tx.prepare()?.commit()?;
+                    Ok(())
+                })?;
                 Ok(Self::Persy(db))
             }
             #[cfg(feature = "kv-experimental")]

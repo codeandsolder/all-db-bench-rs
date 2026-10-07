@@ -19,7 +19,7 @@ from typing import Any, TextIO
 DEFAULT_LOCK = Path("/run/lock/all-db-bench-performance.lock")
 DEFAULT_STATUS = Path("/srv/scratch/db-bench-work/concurrency-quick/idle-status.json")
 DEFAULT_MANIFEST = Path("/srv/scratch/db-bench-work/concurrency-quick/bin/manifest.json")
-KV_RUN_ID = "20261007-kv-concurrency-quick-v1"
+KV_RUN_ID = "20261007-kv-concurrency-quick-v2"
 RECORD_RUN_ID = "20261007-record-concurrency-quick-v1"
 
 
