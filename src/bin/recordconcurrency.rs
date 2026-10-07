@@ -7,7 +7,7 @@ mod base;
 
 use anyhow::{Context, Result, bail};
 use base::{Durability, Engine, EngineKind, RecordData, Workload};
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use hdrhistogram::Histogram;
 use rand::{Rng, SeedableRng, rngs::SmallRng};
 use rusqlite::Connection as SqliteConnection;
@@ -21,6 +21,13 @@ use std::{
 };
 use surrealdb::{Error as SurrealError, types::QueryError};
 
+#[derive(Clone, Copy, Debug, Serialize, ValueEnum, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+enum StateEvolution {
+    Growth,
+    Bounded,
+}
+
 #[derive(Clone, Debug, Parser)]
 #[command(about = "Shared-database multi-client record/document DB scaling benchmark")]
 struct Args {
@@ -30,6 +37,8 @@ struct Args {
     durability: Durability,
     #[arg(long, value_enum)]
     workload: Workload,
+    #[arg(long, value_enum, default_value_t = StateEvolution::Growth)]
+    state_evolution: StateEvolution,
     #[arg(long, default_value_t = 10_000)]
     records: u64,
     /// Total logical operations across all clients, not operations per client.
@@ -95,6 +104,7 @@ struct Measurement {
     durability: Durability,
     durability_mapping: &'static str,
     workload: Workload,
+    state_evolution: StateEvolution,
     records: u64,
     ops_requested: u64,
     ops_completed: u64,
@@ -196,6 +206,10 @@ fn partition_ops(args: &Args) -> Result<Vec<(u64, u64)>> {
             out
         })
         .collect())
+}
+
+fn bounded_record_id(records: u64, logical_op: u64) -> u64 {
+    logical_op % records
 }
 
 const MAX_CONFLICT_RETRIES: u64 = 10_000;
@@ -320,15 +334,22 @@ async fn run_client(
         }
         Workload::TinyTxn => {
             while done < ops {
-                let id = next_id;
-                next_id += 1;
+                let logical = global_offset.saturating_add(done);
+                let id = if args.state_evolution == StateEvolution::Bounded {
+                    bounded_record_id(args.records, logical)
+                } else {
+                    let id = next_id;
+                    next_id += 1;
+                    id
+                };
+                let payload_seed = if args.state_evolution == StateEvolution::Bounded {
+                    args.seed ^ logical
+                } else {
+                    args.seed ^ global_offset ^ done
+                };
                 let data = RecordData {
                     bucket: (id % 100) as u32,
-                    payload: base::payload(
-                        id,
-                        args.payload_bytes,
-                        args.seed ^ global_offset ^ done,
-                    ),
+                    payload: base::payload(id, args.payload_bytes, payload_seed),
                 };
                 let t = Instant::now();
                 write_conflict_retries += upsert_one_with_retry(engine, id, &data).await?;
@@ -342,18 +363,25 @@ async fn run_client(
             let batch = args.txn_size as u64;
             while done < ops {
                 let mut rows = Vec::with_capacity(args.txn_size);
-                for _ in 0..batch {
-                    let id = next_id;
-                    next_id += 1;
+                for local in 0..batch {
+                    let logical = global_offset.saturating_add(done).saturating_add(local);
+                    let id = if args.state_evolution == StateEvolution::Bounded {
+                        bounded_record_id(args.records, logical)
+                    } else {
+                        let id = next_id;
+                        next_id += 1;
+                        id
+                    };
+                    let payload_seed = if args.state_evolution == StateEvolution::Bounded {
+                        args.seed ^ logical
+                    } else {
+                        args.seed ^ global_offset ^ done
+                    };
                     rows.push((
                         id,
                         RecordData {
                             bucket: (id % 100) as u32,
-                            payload: base::payload(
-                                id,
-                                args.payload_bytes,
-                                args.seed ^ global_offset ^ done,
-                            ),
+                            payload: base::payload(id, args.payload_bytes, payload_seed),
                         },
                     ));
                 }
@@ -572,6 +600,41 @@ async fn make_clients(
     }
 }
 
+#[cfg(test)]
+mod bounded_tests {
+    use super::bounded_record_id;
+
+    fn partition(total: u64, clients: usize) -> Vec<(u64, u64)> {
+        let base = total / clients as u64;
+        let extra = total % clients as u64;
+        let mut offset = 0;
+        (0..clients)
+            .map(|client| {
+                let count = base + u64::from((client as u64) < extra);
+                let out = (count, offset);
+                offset += count;
+                out
+            })
+            .collect()
+    }
+
+    #[test]
+    fn bounded_stream_is_identical_across_client_counts() {
+        let records = 64;
+        let total = 513;
+        let serial: Vec<_> = (0..total)
+            .map(|op| bounded_record_id(records, op))
+            .collect();
+        for clients in [1, 2, 4, 8] {
+            let mut parallel = Vec::new();
+            for (count, offset) in partition(total, clients) {
+                parallel.extend((0..count).map(|local| bounded_record_id(records, offset + local)));
+            }
+            assert_eq!(parallel, serial);
+        }
+    }
+}
+
 fn median(mut values: Vec<f64>) -> f64 {
     values.sort_by(f64::total_cmp);
     let n = values.len();
@@ -594,13 +657,25 @@ async fn main() -> Result<()> {
     if args.txn_size == 0 {
         bail!("--txn-size must be greater than zero");
     }
+    if args.state_evolution == StateEvolution::Bounded
+        && !matches!(args.workload, Workload::TinyTxn | Workload::WriteBurst)
+    {
+        bail!("bounded state evolution is supported only for tiny-txn and write-burst");
+    }
+    if args.state_evolution == StateEvolution::Bounded
+        && matches!(args.workload, Workload::WriteBurst)
+        && args.txn_size as u64 > args.records
+    {
+        bail!("bounded write-burst requires txn-size <= records");
+    }
     let _ = partition_ops(&args)?;
 
     let run_name = format!(
-        "{:?}-{:?}-{:?}-c{}-n{}-p{}-tx{}-trial{}",
+        "{:?}-{:?}-{:?}-se{:?}-c{}-n{}-p{}-tx{}-trial{}",
         args.engine,
         args.durability,
         args.workload,
+        args.state_evolution,
         args.clients,
         args.records,
         args.payload_bytes,
@@ -671,13 +746,14 @@ async fn main() -> Result<()> {
     let rate_max = client_rates.iter().copied().fold(0.0, f64::max);
 
     let result = Measurement {
-        format_version: 6,
+        format_version: 7,
         lane: "record-concurrency",
         engine: args.engine,
         engine_version: args.engine.version(),
         durability: args.durability,
         durability_mapping: args.engine.mapping(args.durability),
         workload: args.workload,
+        state_evolution: args.state_evolution,
         records: args.records,
         ops_requested: args.ops,
         ops_completed: run.completed,

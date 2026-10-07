@@ -186,19 +186,19 @@ The summarizer keeps client count separate and, when a matching 1-client row exi
 A 1-client concurrency result is the baseline for these ratios. It is not silently substituted with a row from the ordinary kv lane because the concurrency binary has different thread/barrier/runtime mechanics.
 
 
-## Record concurrency lane — schema v6
+## Record concurrency lane — schema v7
 
-`recordconcurrency` emits `format_version: 6` with `lane: "record-concurrency"`. It is grouped separately from raw KV and from ordinary single-client record rows.
+`recordconcurrency` emits `format_version: 7` with `lane: "record-concurrency"`. It is grouped separately from raw KV and from ordinary single-client record rows. Historical schema-v6 rows remain valid growth-mode evidence but cannot aggregate with v7 because `format_version` is part of the exact identity.
 
-Identity/configuration fields are `engine`, `engine_version`, `durability`, `workload`, `records`, fixed-total `ops_requested`, `clients`, `payload_bytes`, `txn_size`, trial/seed/scenario and the exact durability mapping. The result also records `concurrency_handle`, describing the native product surface used: cloned SurrealDB clients over either embedded SurrealKV or isolated embedded RocksDB, independent Turso `Database::connect()` connections, or independent SQLite WAL connections.
+Identity/configuration fields are `engine`, `engine_version`, `durability`, `workload`, `state_evolution`, `records`, fixed-total `ops_requested`, `clients`, `payload_bytes`, `txn_size`, trial/seed/scenario and the exact durability mapping. `state_evolution = growth` preserves the historical append semantics for `tiny-txn` and `write-burst`. `state_evolution = bounded` is the steady-state scaling semantic for those two write workloads: the global logical operation stream maps deterministically onto the already-prefilled record universe, so increasing the timing window does not increase database cardinality. Point/index/read-heavy workloads already operate on the fixed prefilled universe and remain growth-labelled for backward-compatible identity.
 
-`client_setup_s` measures native client fan-out after prefill/warmup and before the synchronized start barrier. It is excluded from foreground `elapsed_s`/`ops_per_s` but retained as a separate connection/handle setup cost.
+The result also records `concurrency_handle`, describing the native product surface used: cloned SurrealDB clients over either embedded SurrealKV or isolated embedded RocksDB, independent Turso `Database::connect()` connections, or independent SQLite WAL connections. `client_setup_s` measures native client fan-out after prefill/warmup and before the synchronized start barrier. It is excluded from foreground `elapsed_s`/`ops_per_s` but retained as a separate connection/handle setup cost.
 
 Aggregate and per-client records include logical operations, read/write counts, transaction count, `write_conflict_retries`, elapsed time/throughput, operation-latency HDR quantiles and write-transaction HDR quantiles. SurrealDB retries are limited to typed `QueryError::TransactionConflict`; retry time remains inside the measured latency. The usual measured-process and system deltas bracket the synchronized multi-client foreground interval; client threads remain alive until the process-after snapshot so their scheduler accounting is retained.
 
-`client_elapsed_s_*`, `client_ops_per_s_*` and `client_throughput_max_min_ratio` have the same fairness meanings as the raw-KV concurrency lane. `scripts/summarize.py` uses a matching `record-concurrency` c1 row to derive `speedup_vs_c1`, `parallel_efficiency_vs_c1`, and p99 multipliers; it never substitutes a single-client `record` row.
+`client_elapsed_s_*`, `client_ops_per_s_*` and `client_throughput_max_min_ratio` have the same fairness meanings as the raw-KV concurrency lane. `scripts/summarize.py` uses a matching `record-concurrency` c1 row to derive `speedup_vs_c1`, `parallel_efficiency_vs_c1`, and p99 multipliers; it never substitutes a single-client `record` row. `state_evolution` is part of generic and scaling-family identity, so bounded steady-state rows cannot silently merge with append-growth diagnostics.
 
-For write-burst, `ops_requested` must be divisible by `txn_size` and work is partitioned as whole transactions. Native Turso/SQLite busy waits are inside measured transaction latency rather than represented as benchmark retry counters.
+For write-burst, `ops_requested` must be divisible by `txn_size` and work is partitioned as whole transactions. In bounded mode `txn_size <= records` is required so one atomic batch cannot wrap onto the same logical record twice. Native Turso/SQLite busy waits are inside measured transaction latency rather than represented as benchmark retry counters.
 
 
 ## Schema v5 CPU-accounting precision correction — 2026-10-04
