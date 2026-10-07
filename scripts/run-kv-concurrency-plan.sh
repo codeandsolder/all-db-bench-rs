@@ -69,6 +69,8 @@ else
 fi
 PLAN_VERSION=$(jq -r .plan_version "$RUN_DIR/plan-meta.json")
 EXPECT_TRIALS=$(jq -r .expect_trials "$RUN_DIR/plan-meta.json")
+PLAN_KIND=$(jq -r '.kind // "stock-client-group-coverage"' "$PLAN")
+if (( PLAN_VERSION >= 2 )); then SUPPORT_LANE=kv-concurrency; else SUPPORT_LANE=kv-concurrency-probe; fi
 mapfile -t JOBS < "$RUN_DIR/plan.tsv"
 TOTAL=${#JOBS[@]}
 (( TOTAL > 0 )) || { echo "empty plan" >&2; exit 2; }
@@ -78,7 +80,8 @@ SUPPORT_NEW="$RUN_DIR/support.json.new"
 python3 - "$SUPPORT_NEW" <<PY_SUPPORT
 import json
 json.dump({
- "lane":"kv-concurrency-probe","profile":"quick","case_count":$TOTAL,"expect_trials":$EXPECT_TRIALS,"plan_version":$PLAN_VERSION,
+ "lane":"$SUPPORT_LANE","profile":"quick","case_count":$TOTAL,"trials":$EXPECT_TRIALS,"expect_trials":$EXPECT_TRIALS,"plan_version":$PLAN_VERSION,"plan_kind":"$PLAN_KIND",
+ "clients":"1 2 4 8","range_clients":"1 4 8","delete_clients":"1 4 8","relaxed_clients":"1 4 8",
  "plan_path":"$PLAN","plan_sha256":"$PLAN_SHA","build_profile":"$BUILD_PROFILE","benchmark_binary_sha256":"$BIN_SHA",
  "runner_sha256":"$RUNNER_SHA","concurrency_policy_sha256":"$CONCURRENCY_POLICY_SHA","noise_guard_sha256":"$NOISE_SHA","short_pressure_guard_sha256":"$PRESSURE_SHA",
  "case_timeout_s":$CASE_TIMEOUT_S,"persy_lock_timeout_ms":$PERSY_LOCK_TIMEOUT_MS,
