@@ -13,3 +13,10 @@ echo kv-concurrency-plan-ok
 
 # v1 plans must remain runnable by historical binaries that predate state-evolution flags.
 rg -q 'PLAN_VERSION >= 2' "$ROOT/scripts/run-kv-concurrency-plan.sh"
+
+# v2 plans prepare and cleanly close case-private DBs before the fresh timing gate.
+rg -q -- '--prepare-only' "$ROOT/scripts/run-kv-concurrency-plan.sh"
+rg -q -- '--reuse-db' "$ROOT/scripts/run-kv-concurrency-plan.sh"
+rg -q 'case-private-clean-close-v1' "$ROOT/scripts/run-kv-concurrency-plan.sh"
+rg -q 'runner_sha256' "$ROOT/scripts/run-kv-concurrency-plan.sh"
+rg -q 'BENCH_BIN_PREVERIFIED' "$ROOT/scripts/run-kv-concurrency-plan.sh"

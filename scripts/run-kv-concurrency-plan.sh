@@ -13,6 +13,7 @@ CASE_TIMEOUT_S=$(concurrency_case_timeout_s "$PROFILE") || exit 2
 PERSY_LOCK_TIMEOUT_MS=${PERSY_LOCK_TIMEOUT_MS:-250}
 [[ "$PERSY_LOCK_TIMEOUT_MS" =~ ^[1-9][0-9]*$ ]] || { echo "invalid PERSY_LOCK_TIMEOUT_MS=$PERSY_LOCK_TIMEOUT_MS" >&2; exit 2; }
 command -v timeout >/dev/null || { echo "GNU timeout is required" >&2; exit 2; }
+command -v ionice >/dev/null || { echo "ionice is required for low-priority database preparation" >&2; exit 2; }
 [[ -s "$PLAN" ]] || { echo "plan not found: $PLAN" >&2; exit 2; }
 PLAN=$(readlink -f "$PLAN")
 PLAN_SHA=$(sha256sum "$PLAN" | awk '{print $1}')
@@ -35,8 +36,10 @@ else
 fi
 if [[ -n "${BENCH_BIN_SHA256:-}" ]]; then
   BIN_SHA="$BENCH_BIN_SHA256"
-  actual=$(sha256sum "$BIN" | awk '{print $1}')
-  [[ "$actual" == "$BIN_SHA" ]] || { echo "BENCH_BIN SHA mismatch: $actual != $BIN_SHA" >&2; exit 2; }
+  if [[ "${BENCH_BIN_PREVERIFIED:-0}" != 1 ]]; then
+    actual=$(sha256sum "$BIN" | awk '{print $1}')
+    [[ "$actual" == "$BIN_SHA" ]] || { echo "BENCH_BIN SHA mismatch: $actual != $BIN_SHA" >&2; exit 2; }
+  fi
 else
   BIN_SHA=$(sha256sum "$BIN" | awk '{print $1}')
 fi
@@ -72,7 +75,13 @@ fi
 PLAN_VERSION=$(jq -r .plan_version "$RUN_DIR/plan-meta.json")
 EXPECT_TRIALS=$(jq -r .expect_trials "$RUN_DIR/plan-meta.json")
 PLAN_KIND=$(jq -r '.kind // "stock-client-group-coverage"' "$PLAN")
-if (( PLAN_VERSION >= 2 )); then SUPPORT_LANE=kv-concurrency; else SUPPORT_LANE=kv-concurrency-probe; fi
+if (( PLAN_VERSION >= 2 )); then
+  SUPPORT_LANE=kv-concurrency
+  PREPARED_DB_PROTOCOL=case-private-clean-close-v1
+else
+  SUPPORT_LANE=kv-concurrency-probe
+  PREPARED_DB_PROTOCOL=legacy-in-process
+fi
 mapfile -t JOBS < "$RUN_DIR/plan.tsv"
 TOTAL=${#JOBS[@]}
 (( TOTAL > 0 )) || { echo "empty plan" >&2; exit 2; }
@@ -87,6 +96,7 @@ json.dump({
  "plan_path":"$PLAN","plan_sha256":"$PLAN_SHA","build_profile":"$BUILD_PROFILE","benchmark_binary_sha256":"$BIN_SHA","benchmark_source_commit":"$BENCH_SOURCE_COMMIT","harness_commit":"$HARNESS_COMMIT",
  "runner_sha256":"$RUNNER_SHA","concurrency_policy_sha256":"$CONCURRENCY_POLICY_SHA","noise_guard_sha256":"$NOISE_SHA","short_pressure_guard_sha256":"$PRESSURE_SHA",
  "case_timeout_s":$CASE_TIMEOUT_S,"persy_lock_timeout_ms":$PERSY_LOCK_TIMEOUT_MS,
+ "prepared_db_protocol":"$PREPARED_DB_PROTOCOL",
  "hostname":"$HOST_NAME","machine_id_sha256":"$MACHINE_ID_SHA256","filesystem":"$FILESYSTEM","source":"$SOURCE",
  "total_work_semantics":"each planned family keeps identical records and total ops across client counts"
 },open("$SUPPORT_NEW","w"),sort_keys=True,separators=(",",":"))
@@ -120,14 +130,65 @@ for job in "${ORDERED[@]}"; do
   noise_before="$RUN_DIR/noise/$case_id.before.json"; noise_after="$RUN_DIR/noise/$case_id.after.json"
   if [[ -s "$out" ]]; then clear_failure "$case_id"; continue; fi
   echo "[$INDEX/$TOTAL] $case_id" >&2
-  concurrency_check_io_quiet "$PROFILE" "before:$case_id" || exit $?
-  concurrency_check_external_noise "$ROOT" "$PROFILE" "before:$case_id" "$noise_before" || exit $?
-  rm -f "$out"
-  cmd=("$BIN" --engine "$engine" --durability "$durability" --workload "$workload" --records "$records" --ops "$ops" --clients "$clients" --value-bytes 256 --value-pattern pseudo-random --key-bytes 8 --key-shape sequential --access-pattern auto --write-pattern "$write_pattern")
+
   if (( PLAN_VERSION >= 2 )); then
-    cmd+=(--state-evolution "$state_evolution" --bounded-churn-slots "$bounded_churn_slots")
+    case_root="$DATA_DIR/$case_id"
+    prepared_marker="$case_root/.dbbench-prepared-v1.json"
+    marker_ok=0
+    if [[ -s "$prepared_marker" ]] && jq -e \
+      --arg case_id "$case_id" \
+      --arg plan_sha256 "$PLAN_SHA" \
+      --arg binary_sha256 "$BIN_SHA" \
+      --arg harness_commit "$HARNESS_COMMIT" \
+      --arg runner_sha256 "$RUNNER_SHA" \
+      '.case_id == $case_id and .plan_sha256 == $plan_sha256 and .binary_sha256 == $binary_sha256 and .harness_commit == $harness_commit and .runner_sha256 == $runner_sha256' \
+      "$prepared_marker" >/dev/null 2>&1; then
+      marker_ok=1
+    fi
+    if (( marker_ok == 0 )); then
+      rm -rf "$case_root" || exit 2
+      mkdir -p "$case_root" || exit 2
+      rm -f "$out"
+      prep_cmd=("$BIN" --engine "$engine" --durability "$durability" --workload "$workload" --records "$records" --ops "$ops" --clients "$clients" --value-bytes 256 --value-pattern pseudo-random --key-bytes 8 --key-shape sequential --access-pattern auto --write-pattern "$write_pattern" --state-evolution "$state_evolution" --bounded-churn-slots "$bounded_churn_slots" --txn-size 100 --scan-len 100 --warmup-reads 5000 --trial "$trial" --seed 1592606758 --scenario "$scenario" --root "$case_root" --output "$out" --prepare-only)
+      if [[ "$engine" == persy ]]; then
+        DBBENCH_PERSY_LOCK_TIMEOUT_MS="$PERSY_LOCK_TIMEOUT_MS" ionice -c2 -n7 nice -n15 timeout --signal=TERM --kill-after=5s "${CASE_TIMEOUT_S}s" "${prep_cmd[@]}" 2>"$err"
+      else
+        ionice -c2 -n7 nice -n15 timeout --signal=TERM --kill-after=5s "${CASE_TIMEOUT_S}s" "${prep_cmd[@]}" 2>"$err"
+      fi
+      prep_rc=$?
+      if (( prep_rc != 0 )); then
+        rm -rf "$case_root"; rm -f "$out"; clear_failure "$case_id"
+        failure_kind=prepare-error; (( prep_rc == 124 || prep_rc == 137 )) && failure_kind=prepare-timeout
+        jq -cn --arg case_id "$case_id" --arg stderr "$err" --arg failure_kind "$failure_kind" --argjson rc "$prep_rc" '{case_id:$case_id,returncode:$rc,failure_kind:$failure_kind,stderr:$stderr}' >> "$RUN_DIR/failures.ndjson"
+        continue
+      fi
+      marker_tmp="$prepared_marker.tmp.$$"
+      if ! jq -cn --arg case_id "$case_id" --arg plan_sha256 "$PLAN_SHA" --arg binary_sha256 "$BIN_SHA" --arg harness_commit "$HARNESS_COMMIT" --arg runner_sha256 "$RUNNER_SHA" \
+        '{version:1,case_id:$case_id,plan_sha256:$plan_sha256,binary_sha256:$binary_sha256,harness_commit:$harness_commit,runner_sha256:$runner_sha256}' > "$marker_tmp"; then
+        rm -rf "$case_root"; exit 2
+      fi
+      if ! mv "$marker_tmp" "$prepared_marker"; then
+        rm -rf "$case_root"; exit 2
+      fi
+      [[ -s "$err" ]] || rm -f "$err"
+    fi
+
+    # Preparation is intentionally outside the performance admission window. It is
+    # low CPU/I/O priority and cleanly closed. A fresh gate below admits only reopen,
+    # warmup and the measured client interval.
+    concurrency_check_io_quiet "$PROFILE" "before:$case_id" || exit $?
+    concurrency_check_external_noise "$ROOT" "$PROFILE" "before:$case_id" "$noise_before" || exit $?
+    rm -f "$out"
+    cmd=("$BIN" --engine "$engine" --durability "$durability" --workload "$workload" --records "$records" --ops "$ops" --clients "$clients" --value-bytes 256 --value-pattern pseudo-random --key-bytes 8 --key-shape sequential --access-pattern auto --write-pattern "$write_pattern" --state-evolution "$state_evolution" --bounded-churn-slots "$bounded_churn_slots" --txn-size 100 --scan-len 100 --warmup-reads 5000 --trial "$trial" --seed 1592606758 --scenario "$scenario" --root "$case_root" --output "$out" --reuse-db)
+  else
+    # Historical v1 probe semantics remain unchanged for pinned pre-v6 binaries.
+    concurrency_check_io_quiet "$PROFILE" "before:$case_id" || exit $?
+    concurrency_check_external_noise "$ROOT" "$PROFILE" "before:$case_id" "$noise_before" || exit $?
+    rm -f "$out"
+    case_root=""
+    cmd=("$BIN" --engine "$engine" --durability "$durability" --workload "$workload" --records "$records" --ops "$ops" --clients "$clients" --value-bytes 256 --value-pattern pseudo-random --key-bytes 8 --key-shape sequential --access-pattern auto --write-pattern "$write_pattern" --txn-size 100 --scan-len 100 --warmup-reads 5000 --trial "$trial" --seed 1592606758 --scenario "$scenario" --root "$DATA_DIR" --output "$out")
   fi
-  cmd+=(--txn-size 100 --scan-len 100 --warmup-reads 5000 --trial "$trial" --seed 1592606758 --scenario "$scenario" --root "$DATA_DIR" --output "$out")
+
   if [[ "$engine" == persy ]]; then
     DBBENCH_PERSY_LOCK_TIMEOUT_MS="$PERSY_LOCK_TIMEOUT_MS" timeout --signal=TERM --kill-after=5s "${CASE_TIMEOUT_S}s" "${cmd[@]}" 2>"$err"
   else
@@ -138,10 +199,12 @@ for job in "${ORDERED[@]}"; do
   noise_rc=0; concurrency_check_external_noise "$ROOT" "$PROFILE" "after:$case_id" "$noise_after" || noise_rc=$?
   if (( io_rc != 0 || noise_rc != 0 )); then
     rm -f "$out"; clear_failure "$case_id"
+    (( PLAN_VERSION >= 2 )) && rm -rf "$case_root"
     if (( io_rc != 0 )); then exit "$io_rc"; else exit "$noise_rc"; fi
   fi
   if (( rc != 0 )) || [[ ! -s "$out" ]] || [[ $(wc -l < "$out") -ne 1 ]]; then
     rm -f "$out"; clear_failure "$case_id"
+    (( PLAN_VERSION >= 2 )) && rm -rf "$case_root"
     failure_kind=benchmark-error; (( rc == 124 || rc == 137 )) && failure_kind=case-timeout
     jq -cn --arg case_id "$case_id" --arg stderr "$err" --arg failure_kind "$failure_kind" --argjson rc "$rc" '{case_id:$case_id,returncode:$rc,failure_kind:$failure_kind,stderr:$stderr}' >> "$RUN_DIR/failures.ndjson"
     continue
@@ -150,7 +213,12 @@ for job in "${ORDERED[@]}"; do
   pressure_rc=0
   concurrency_scrub_case_pressure "$ROOT" "$PROFILE" "$RUN_DIR" "$case_id" "$pressure_report" || pressure_rc=$?
   rm -f "$pressure_report"
-  if (( pressure_rc != 0 )); then clear_failure "$case_id"; exit "$pressure_rc"; fi
+  if (( pressure_rc != 0 )); then
+    clear_failure "$case_id"
+    (( PLAN_VERSION >= 2 )) && rm -rf "$case_root"
+    exit "$pressure_rc"
+  fi
+  (( PLAN_VERSION >= 2 )) && rm -rf "$case_root"
   clear_failure "$case_id"; [[ -s "$err" ]] || rm -f "$err"
 done
 

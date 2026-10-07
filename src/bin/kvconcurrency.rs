@@ -121,6 +121,12 @@ struct Args {
     output: String,
     #[arg(long, default_value_t = false)]
     keep_db: bool,
+    /// Create and prefill a fresh database, close it cleanly, and exit without measuring.
+    #[arg(long, default_value_t = false, conflicts_with = "reuse_db")]
+    prepare_only: bool,
+    /// Reopen an already prepared database and skip prefill.
+    #[arg(long, default_value_t = false, conflicts_with = "prepare_only")]
+    reuse_db: bool,
     #[arg(long, default_value_t = 5_000)]
     warmup_reads: u64,
 }
@@ -1722,8 +1728,14 @@ async fn main() -> Result<()> {
     .to_lowercase()
     .replace('_', "-");
     let path = args.root.join(run_name);
-    if path.exists() {
+    if path.exists() && !args.reuse_db {
         fs::remove_dir_all(&path).context("remove stale concurrency run directory")?;
+    }
+    if args.reuse_db && !path.exists() {
+        bail!(
+            "--reuse-db requested but prepared database path does not exist: {}",
+            path.display()
+        );
     }
     fs::create_dir_all(&path)?;
 
@@ -1731,9 +1743,18 @@ async fn main() -> Result<()> {
     let mut engine = Engine::open(args.engine, args.durability, &path).await?;
     let open_s = open_started.elapsed().as_secs_f64();
 
-    let prefill_started = Instant::now();
-    prefill(&mut engine, &args).await?;
-    let prefill_s = prefill_started.elapsed().as_secs_f64();
+    let prefill_s = if args.reuse_db {
+        0.0
+    } else {
+        let prefill_started = Instant::now();
+        prefill(&mut engine, &args).await?;
+        prefill_started.elapsed().as_secs_f64()
+    };
+
+    if args.prepare_only {
+        engine.close().await?;
+        return Ok(());
+    }
 
     let warmup_started = Instant::now();
     warm_reads(&mut engine, &args).await?;

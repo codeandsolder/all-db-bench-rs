@@ -26,6 +26,20 @@ class PlanIdleTests(unittest.TestCase):
             sha=hashlib.sha256(b"abc").hexdigest(); M.verify_binary(path,sha)
             with self.assertRaisesRegex(RuntimeError,"mismatch"): M.verify_binary(path,"bad")
 
+    def test_plan_version(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "plan.json"
+            path.write_text(json.dumps({"concurrency_probe_plan_version": 2}))
+            self.assertEqual(M.plan_version(path), 2)
+            path.write_text(json.dumps({"concurrency_probe_plan_version": 3}))
+            with self.assertRaisesRegex(RuntimeError, "unsupported"):
+                M.plan_version(path)
+
+    def test_preverified_env_is_forwarded(self) -> None:
+        source = SCRIPT.read_text()
+        self.assertIn('"BENCH_BIN_PREVERIFIED": "1"', source)
+        self.assertIn('preflight = 0 if version >= 2 else preflight_host(args.repo)', source)
+
     def test_run_complete(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo=Path(tmp); run=repo/"results"/"runs"/"r"; run.mkdir(parents=True)

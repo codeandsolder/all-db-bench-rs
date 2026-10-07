@@ -77,6 +77,16 @@ def verify_binary(path: Path, expected_sha256: str) -> None:
         raise RuntimeError(f"pinned binary SHA-256 mismatch: expected {expected_sha256}, got {actual}")
 
 
+def plan_version(path: Path) -> int:
+    try:
+        value = int(json.loads(path.read_text()).get("concurrency_probe_plan_version", -1))
+    except (OSError, json.JSONDecodeError, TypeError, ValueError) as error:
+        raise RuntimeError(f"cannot read concurrency plan version: {error}") from error
+    if value not in (1, 2):
+        raise RuntimeError(f"unsupported concurrency plan version: {value}")
+    return value
+
+
 def run_complete(repo: Path, run_id: str) -> bool:
     run = repo / "results" / "runs" / run_id
     try:
@@ -118,6 +128,7 @@ def main() -> int:
     with lock_handle:
         try:
             verify_binary(args.bench_bin, args.bench_bin_sha256)
+            version = plan_version(args.plan)
         except RuntimeError as error:
             write_status(args.status_file, state="failed", error=str(error)); print(error, flush=True); return 2
         if run_complete(args.repo, args.run_id):
@@ -131,10 +142,13 @@ def main() -> int:
             "ROOT": str(args.repo),
             "BENCH_BIN": str(args.bench_bin),
             "BENCH_BIN_SHA256": args.bench_bin_sha256,
+            "BENCH_BIN_PREVERIFIED": "1",
             "MATRIX_RESUME_SHUFFLE_REMAINING": "1",
         })
         while True:
-            preflight = preflight_host(args.repo)
+            # v2 runners prepare databases at low priority before their own fresh
+            # per-case admission gate. Historical v1 runners retain the outer gate.
+            preflight = 0 if version >= 2 else preflight_host(args.repo)
             if preflight == 75:
                 busy_events += 1
                 write_status(args.status_file, state="waiting-for-idle", run_id=args.run_id, busy_events=busy_events)
