@@ -21,6 +21,15 @@ GEN = load("record_plan_gen", "make-record-concurrency-calibration-plan.py")
 VAL = load("record_plan_val", "validate-record-concurrency-plan.py")
 
 
+class RunnerRegressionTests(unittest.TestCase):
+    def test_pinned_hashes_are_not_rehashed_by_inner_runner(self):
+        runner=(ROOT / "scripts" / "run-record-concurrency-plan.sh").read_text()
+        self.assertNotIn('actual=$(sha256sum "$BIN"', runner)
+        self.assertNotIn('actual=$(sha256sum "$ROCKS_BIN"', runner)
+        self.assertIn('BIN_SHA="$BENCH_BIN_SHA256"', runner)
+        self.assertIn('ROCKS_BIN_SHA="$ROCKS_BENCH_BIN_SHA256"', runner)
+
+
 class RecordConcurrencyPlanTests(unittest.TestCase):
     def test_calibration_cardinality_and_semantics(self):
         plan = GEN.build_plan(ROOT)

@@ -34,8 +34,6 @@ else
 fi
 if [[ -n "${BENCH_BIN_SHA256:-}" ]]; then
   BIN_SHA="$BENCH_BIN_SHA256"
-  actual=$(sha256sum "$BIN" | awk '{print $1}')
-  [[ "$actual" == "$BIN_SHA" ]] || { echo "BENCH_BIN SHA mismatch: $actual != $BIN_SHA" >&2; exit 2; }
 else
   BIN_SHA=$(sha256sum "$BIN" | awk '{print $1}')
 fi
@@ -52,8 +50,6 @@ else
 fi
 if [[ -n "${ROCKS_BENCH_BIN_SHA256:-}" ]]; then
   ROCKS_BIN_SHA="$ROCKS_BENCH_BIN_SHA256"
-  actual=$(sha256sum "$ROCKS_BIN" | awk '{print $1}')
-  [[ "$actual" == "$ROCKS_BIN_SHA" ]] || { echo "ROCKS_BENCH_BIN SHA mismatch: $actual != $ROCKS_BIN_SHA" >&2; exit 2; }
 else
   ROCKS_BIN_SHA=$(sha256sum "$ROCKS_BIN" | awk '{print $1}')
 fi
