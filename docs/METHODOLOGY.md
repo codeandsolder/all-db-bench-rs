@@ -225,6 +225,8 @@ Database open time is recorded separately as open_s.
 
 run-reopen-matrix.sh ... warm prepares a database, exits the creating process, then reopens it in a new process with no benchmark warmup. Linux page cache remains intact. This isolates engine reopen/recovery/application-cache behavior without calling the result a physical cold read.
 
+Warm quick reopen is a 150-case performance-grade lane (50 engine/durability/workload groups × 3 trials) at 100k records and 5k requested reads/scans; the shared LSMDB range cap reduces its native range work to 1k scans. Finished baseline rates project a median prepare+measured interval well below one second and a roughly 15 s long edge for the intentionally slow Sled/LSMDB range cases. Quick/full warm reopen uses immutable job/support identity, a pinned `kvbench`, and the common fragmented-idle gates before preparation, again immediately before the measured reopen, and after measurement. Raw-KV schema v7 brackets `Engine::open()` with process/system telemetry; the short-pressure scrubber is explicitly asked to inspect both foreground and `open` intervals so scheduler/CPU-PSI contamination during a short reopen cannot hide between outer snapshots.
+
 run-reopen-matrix.sh ... cold performs the same sequence but requires a real root-owned:
 
     sync

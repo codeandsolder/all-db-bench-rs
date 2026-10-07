@@ -264,3 +264,9 @@ Recursive on-disk-size measurement is deliberately absent from window boundaries
 Identity/configuration replaces raw-KV key/value-shape fields with `payload_bytes`; otherwise it carries the same `pattern`, record count, requested operations, window size, transaction size, durability mapping, scenario, trial and seed identities. The analyzer includes `lane` and `payload_bytes` in exact-match grouping so record and raw-KV trials cannot aggregate accidentally.
 
 `windows[]`, foreground timing, aggregate database-size bracketing and `post_workload_settle` have the same meanings as in `kv-sustained`. Record churn uses one mixed transaction per logical batch for the 40/30/30 update/insert/delete mix. `logical_mutated_bytes` is explicitly estimated as 8-byte ID + 4-byte bucket + configured payload for each upsert and 8-byte ID per delete; it exists only to normalize the process-visible write-byte proxy and is not a serialized-row-size or physical-media accounting claim.
+
+## Schema v7 open-interval accounting — 2026-10-07
+
+New `kvbench` raw-KV results use `format_version: 7`. The additive change brackets database open/recovery separately from prefill and foreground work: `open_s` is accompanied by `open_process` and `open_system_delta`, using the same task-level CPU/runqueue and system-PSI accounting model as the measured foreground interval. This lets reopen lanes reject short open attempts that were contaminated inside the open interval even when outer host snapshots were quiet.
+
+Older v6 rows remain valid and continue to summarize; `scripts/summarize.py` now emits `open_s_median` when `open_s` is present and includes open time in Markdown as milliseconds. Because `format_version` is part of the grouping identity, v6 and v7 rows are never silently aggregated together. Record-product and sustained-specific schemas remain at their existing versions until they independently adopt this additive accounting.
