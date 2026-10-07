@@ -103,6 +103,7 @@ def scrub(
     max_benchmark_cpu_share: float = 0.5,
     dry_run: bool = False,
     cpu_count: int | None = None,
+    case_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     cpu_count = available_cpus() if cpu_count is None else max(1, cpu_count)
     cases_dir = run_dir / "cases"
@@ -110,6 +111,8 @@ def scrub(
     examined = 0
     if cases_dir.is_dir():
         for case_path in sorted(cases_dir.glob("*.json")):
+            if case_ids is not None and case_path.stem not in case_ids:
+                continue
             row = json.loads(case_path.read_text())
             examined += 1
             evidence = pressure_evidence(
@@ -176,6 +179,7 @@ def main() -> int:
     parser.add_argument("--max-runqueue-fraction", type=float, default=0.03)
     parser.add_argument("--max-cpu-psi-fraction", type=float, default=0.05)
     parser.add_argument("--max-benchmark-cpu-share", type=float, default=0.5)
+    parser.add_argument("--case-id", action="append", default=[])
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     report = scrub(
@@ -185,6 +189,7 @@ def main() -> int:
         max_cpu_psi_fraction=args.max_cpu_psi_fraction,
         max_benchmark_cpu_share=args.max_benchmark_cpu_share,
         dry_run=args.dry_run,
+        case_ids=set(args.case_id) if args.case_id else None,
     )
     print(json.dumps(report, sort_keys=True))
     return 0
