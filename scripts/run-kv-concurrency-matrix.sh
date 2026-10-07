@@ -48,7 +48,7 @@ else
   BIN="$TARGET_DIR/release/kvconcurrency"; BUILD_PROFILE=release
   CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" build --release --locked --features kv-all --bin kvconcurrency || exit $?
 fi
-BIN_SHA=$(sha256sum "$BIN" | awk '{print $1}')
+if [[ -n "${BENCH_BIN_SHA256:-}" ]]; then BIN_SHA="$BENCH_BIN_SHA256"; else BIN_SHA=$(sha256sum "$BIN" | awk '{print $1}'); fi
 RUNNER_SHA=$(sha256sum "$ROOT/scripts/run-kv-concurrency-matrix.sh" | awk '{print $1}')
 KV_POLICY_SHA=$(sha256sum "$ROOT/scripts/kv-matrix-policy.sh" | awk '{print $1}')
 CONCURRENCY_POLICY_SHA=$(sha256sum "$ROOT/scripts/concurrency-matrix-policy.sh" | awk '{print $1}')
@@ -152,8 +152,10 @@ for job in "${ORDERED[@]}"; do
     continue
   fi
   pressure_report=$(mktemp)
-  if ! concurrency_scrub_case_pressure "$ROOT" "$PROFILE" "$RUN_DIR" "$case_id" "$pressure_report"; then
-    pressure_rc=$?; rm -f "$pressure_report"; clear_failure "$case_id"; exit "$pressure_rc"
+  pressure_rc=0
+  concurrency_scrub_case_pressure "$ROOT" "$PROFILE" "$RUN_DIR" "$case_id" "$pressure_report" || pressure_rc=$?
+  if (( pressure_rc != 0 )); then
+    rm -f "$pressure_report"; clear_failure "$case_id"; exit "$pressure_rc"
   fi
   rm -f "$pressure_report"; clear_failure "$case_id"; [[ -s "$err" ]] || rm -f "$err"
 done
