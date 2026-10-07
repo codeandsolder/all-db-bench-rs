@@ -49,6 +49,19 @@ class RecordSizingFollowupsTests(unittest.TestCase):
         self.assertEqual(env["WORKLOADS_OVERRIDE"], "tiny-txn")
         self.assertEqual(env["ROCKS_BENCH_BIN"], "/tmp/rocks-recordbench")
 
+    def test_groups_from_plan_appends_quality_repairs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            plan = root / "plan.json"
+            quality = root / "quality.json"
+            plan.write_text(json.dumps({"sizing_policy_version": 2, "groups": []}))
+            repair = group(engine="sqlite", workload="write-burst", resize_strategy="quality-repair", suggested_trials=3)
+            repair["status"] = "variable"
+            quality.write_text(json.dumps({"quality_policy_version": 1, "groups": [repair]}))
+            groups = MODULE.groups_from_plan(plan, quality)
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0]["resize_strategy"], "quality-repair")
+
     def test_groups_from_plan_puts_more_ops_first(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             plan = Path(tmp) / "plan.json"

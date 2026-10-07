@@ -60,7 +60,7 @@ def main() -> int:
             "--plan",
             "/srv/scratch/db-bench-work/kv-sizing-audit/20261006-kv-quick-67228ce-v4.json",
             "--quality-plan",
-            "/srv/scratch/db-bench-work/kv-sizing-audit/20261006-kv-stock-pressure-repairs-v1.json",
+            "/srv/scratch/db-bench-work/kv-sizing-audit/20261006-kv-stock-pressure-repairs-refined-v1.json",
             "--bench-bin",
             "/srv/scratch/db-bench-work/kv-sizing-audit/bin/kvbench-v3-360c3b398babd4710",
             "--lock-file",

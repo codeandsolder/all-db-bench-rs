@@ -185,14 +185,20 @@ def scrub_short_pressure(repo: Path, run_dir: Path) -> int:
     return rejected
 
 
-def groups_from_plan(path: Path) -> list[dict[str, Any]]:
+def groups_from_plan(path: Path, quality_plan_path: Path | None = None) -> list[dict[str, Any]]:
     plan = json.loads(path.read_text())
     if plan.get("sizing_policy_version") != 2:
         raise ValueError(f"unsupported sizing policy: {plan.get('sizing_policy_version')!r}")
     groups = [group for group in plan["groups"] if group["status"] == "undersized"]
+    if quality_plan_path is not None:
+        quality = json.loads(quality_plan_path.read_text())
+        if quality.get("quality_policy_version") != 1:
+            raise ValueError(f"unsupported stock quality policy: {quality.get('quality_policy_version')!r}")
+        groups.extend(quality.get("groups", []))
+    order = {"more-ops": 0, "more-trials": 1, "quality-repair": 2}
     groups.sort(
         key=lambda group: (
-            0 if group.get("resize_strategy") == "more-ops" else 1,
+            order.get(str(group.get("resize_strategy")), 99),
             float(group["median_elapsed_s"]),
             str(group["engine"]),
             str(group["durability"]),
@@ -224,6 +230,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Opportunistically resize undersized record-product quick groups")
     parser.add_argument("--repo", type=Path, default=DEFAULT_REPO)
     parser.add_argument("--plan", type=Path, default=DEFAULT_PLAN)
+    parser.add_argument("--quality-plan", type=Path)
     parser.add_argument("--bench-bin", type=Path, default=DEFAULT_BIN)
     parser.add_argument("--rocks-bench-bin", type=Path, default=DEFAULT_ROCKS_BIN)
     parser.add_argument("--expected-bench-sha256")
@@ -241,6 +248,8 @@ def main() -> int:
 
     if not args.plan.is_file():
         parser.error(f"plan does not exist: {args.plan}")
+    if args.quality_plan is not None and not args.quality_plan.is_file():
+        parser.error(f"quality plan does not exist: {args.quality_plan}")
     for path, expected in (
         (args.bench_bin, args.expected_bench_sha256),
         (args.rocks_bench_bin, args.expected_rocks_bench_sha256),
@@ -255,7 +264,7 @@ def main() -> int:
         return 73
 
     with lock_handle:
-        groups = groups_from_plan(args.plan)
+        groups = groups_from_plan(args.plan, args.quality_plan)
         if args.limit is not None:
             groups = groups[: args.limit]
         total = len(groups)
@@ -268,7 +277,7 @@ def main() -> int:
         for index, group in enumerate(groups, 1):
             rid = run_id(group)
             run_dir = args.repo / "results" / "runs" / rid
-            if group.get("resize_strategy") == "more-trials":
+            if group.get("resize_strategy") in {"more-trials", "quality-repair"}:
                 try:
                     scrub_short_pressure(args.repo, run_dir)
                 except RuntimeError as error:
@@ -348,7 +357,7 @@ def main() -> int:
                     text=True,
                 )
                 scrubbed = 0
-                if group.get("resize_strategy") == "more-trials":
+                if group.get("resize_strategy") in {"more-trials", "quality-repair"}:
                     try:
                         scrubbed = scrub_short_pressure(args.repo, run_dir)
                     except RuntimeError as error:

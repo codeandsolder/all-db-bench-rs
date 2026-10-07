@@ -82,7 +82,7 @@ def main() -> int:
         resize_prefix="20261006-kv-resize-v4",
         out_dir=Path("/srv/scratch/db-bench-work/kv-sizing-audit/selected-final-v4"),
         expected_groups=180,
-        quality_repair_plan=Path("/srv/scratch/db-bench-work/kv-sizing-audit/20261006-kv-stock-pressure-repairs-v1.json"),
+        quality_repair_plan=Path("/srv/scratch/db-bench-work/kv-sizing-audit/20261006-kv-stock-pressure-repairs-refined-v1.json"),
     )
     finalize_one(
         repo,
@@ -91,6 +91,7 @@ def main() -> int:
         resize_prefix="20261006-record-resize-v4",
         out_dir=Path("/srv/scratch/db-bench-work/record-sizing-audit/selected-final-v4"),
         expected_groups=40,
+        quality_repair_plan=Path("/srv/scratch/db-bench-work/record-sizing-audit/20261006-record-stock-pressure-repairs-refined-v1.json"),
     )
     print("final baseline corpora validated: kv=180 groups record=40 groups", flush=True)
     return 0
