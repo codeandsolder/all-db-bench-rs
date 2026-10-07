@@ -20,4 +20,11 @@ source "$ROOT/scripts/concurrency-matrix-policy.sh"
 [[ $(record_concurrency_ops full record-concurrency-txn-1000 write-burst 80000) == 16000 ]]
 [[ $(record_concurrency_ops smoke record-concurrency-txn-1 write-burst 2000) == 2000 ]]
 
+# Quick matrix cardinalities are deliberate: changing these should require an
+# explicit campaign-size review rather than silently expanding the idle queue.
+KV_QUICK_CASES=$((3 * (15 * 6 * 4 + 14 * 3 + 15 * 3 + 10 * 2 * 3)))
+RECORD_QUICK_CASES=$((3 * 4 * (4 * 5 + 3 * 2 + 3 * 2 + 3 + 3 * 2)))
+[[ $KV_QUICK_CASES == 1521 ]]
+[[ $RECORD_QUICK_CASES == 492 ]]
+
 echo concurrency-matrix-policy-ok
