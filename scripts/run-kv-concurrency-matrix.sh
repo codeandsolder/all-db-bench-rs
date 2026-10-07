@@ -28,6 +28,10 @@ source "$ROOT/scripts/kv-matrix-policy.sh"
 source "$ROOT/scripts/concurrency-matrix-policy.sh"
 # shellcheck source=concurrency-runner-common.sh
 source "$ROOT/scripts/concurrency-runner-common.sh"
+CASE_TIMEOUT_S=$(concurrency_case_timeout_s "$PROFILE") || exit 2
+PERSY_LOCK_TIMEOUT_MS=${PERSY_LOCK_TIMEOUT_MS:-250}
+[[ "$PERSY_LOCK_TIMEOUT_MS" =~ ^[1-9][0-9]*$ ]] || { echo "invalid PERSY_LOCK_TIMEOUT_MS=$PERSY_LOCK_TIMEOUT_MS" >&2; exit 2; }
+command -v timeout >/dev/null || { echo "GNU timeout is required" >&2; exit 2; }
 
 RUN_ID=${RUN_ID:-"$(date -u +%Y%m%dT%H%M%SZ)-kv-concurrency-$PROFILE"}
 RUN_DIR="$ROOT/results/runs/$RUN_ID"; DATA_DIR="$ROOT/data/runs/$RUN_ID"
@@ -56,6 +60,9 @@ NOISE_SHA=$(sha256sum "$ROOT/scripts/check-external-noise.py" | awk '{print $1}'
 PRESSURE_SHA=$(sha256sum "$ROOT/scripts/scrub-short-trial-pressure.py" | awk '{print $1}')
 HOST_NAME=$(hostname); MACHINE_ID_SHA256=$(sha256sum /etc/machine-id | awk '{print $1}')
 FILESYSTEM=$(findmnt -n -o FSTYPE --target "$DATA_DIR"); SOURCE=$(findmnt -n -o SOURCE --target "$DATA_DIR")
+IMPORT_MANIFEST="$RUN_DIR/import-manifest.json"
+IMPORT_MANIFEST_SHA=""
+[[ -s "$IMPORT_MANIFEST" ]] && IMPORT_MANIFEST_SHA=$(sha256sum "$IMPORT_MANIFEST" | awk '{print $1}')
 
 ENGINES=(redb fjall surrealkv heed sled manifold turbokv paritydb-hash paritydb-btree rocksdb mdbx persy roughdb jammdb lsmdb)
 [[ -n "${ENGINES_OVERRIDE:-}" ]] && read -r -a ENGINES <<< "$ENGINES_OVERRIDE"
@@ -102,6 +109,9 @@ json.dump({
  "resume_order_policy":"$RESUME_ORDER_POLICY","build_profile":"$BUILD_PROFILE","benchmark_binary_sha256":"$BIN_SHA",
  "runner_sha256":"$RUNNER_SHA","kv_matrix_policy_sha256":"$KV_POLICY_SHA","concurrency_policy_sha256":"$CONCURRENCY_POLICY_SHA",
  "noise_guard_sha256":"$NOISE_SHA","short_pressure_guard_sha256":"$PRESSURE_SHA",
+ "case_timeout_s":$CASE_TIMEOUT_S,"persy_lock_timeout_ms":$PERSY_LOCK_TIMEOUT_MS,
+ "persy_timeout_retry_policy":"typed PrepareError::TransactionTimeout only; max 100 retries; deterministic micro-backoff; retry cost is timed",
+ "import_manifest_sha256":("$IMPORT_MANIFEST_SHA" or None),
  "hostname":"$HOST_NAME","machine_id_sha256":"$MACHINE_ID_SHA256","filesystem":"$FILESYSTEM","source":"$SOURCE",
  "unsupported":[
    {"engine":"lkv","scope":"all concurrency workloads","reason":"no native clone/shared writer handle"},
@@ -135,10 +145,19 @@ for job in "${ORDERED[@]}"; do
   concurrency_check_io_quiet "$PROFILE" "before:$case_id" || exit $?
   concurrency_check_external_noise "$ROOT" "$PROFILE" "before:$case_id" "$noise_before" || exit $?
   rm -f "$out"
-  "$BIN" --engine "$engine" --durability "$durability" --workload "$workload" \
-    --records "$RECORDS" --ops "$ops" --clients "$clients" --value-bytes 256 --value-pattern pseudo-random \
-    --key-bytes 8 --key-shape sequential --access-pattern auto --txn-size 100 --scan-len "$scan" --warmup-reads 5000 \
-    --trial "$trial" --seed 1592606758 --scenario "concurrency-$scenario" --root "$DATA_DIR" --output "$out" 2>"$err"
+  if [[ "$engine" == persy ]]; then
+    DBBENCH_PERSY_LOCK_TIMEOUT_MS="$PERSY_LOCK_TIMEOUT_MS" timeout --signal=TERM --kill-after=5s "${CASE_TIMEOUT_S}s" \
+      "$BIN" --engine "$engine" --durability "$durability" --workload "$workload" \
+      --records "$RECORDS" --ops "$ops" --clients "$clients" --value-bytes 256 --value-pattern pseudo-random \
+      --key-bytes 8 --key-shape sequential --access-pattern auto --txn-size 100 --scan-len "$scan" --warmup-reads 5000 \
+      --trial "$trial" --seed 1592606758 --scenario "concurrency-$scenario" --root "$DATA_DIR" --output "$out" 2>"$err"
+  else
+    timeout --signal=TERM --kill-after=5s "${CASE_TIMEOUT_S}s" \
+      "$BIN" --engine "$engine" --durability "$durability" --workload "$workload" \
+      --records "$RECORDS" --ops "$ops" --clients "$clients" --value-bytes 256 --value-pattern pseudo-random \
+      --key-bytes 8 --key-shape sequential --access-pattern auto --txn-size 100 --scan-len "$scan" --warmup-reads 5000 \
+      --trial "$trial" --seed 1592606758 --scenario "concurrency-$scenario" --root "$DATA_DIR" --output "$out" 2>"$err"
+  fi
   rc=$?
   io_rc=0; concurrency_check_io_quiet "$PROFILE" "after:$case_id" || io_rc=$?
   noise_rc=0; concurrency_check_external_noise "$ROOT" "$PROFILE" "after:$case_id" "$noise_after" || noise_rc=$?
@@ -148,7 +167,8 @@ for job in "${ORDERED[@]}"; do
   fi
   if (( rc != 0 )) || [[ ! -s "$out" ]] || [[ $(wc -l < "$out") -ne 1 ]]; then
     rm -f "$out"; clear_failure "$case_id"
-    jq -cn --arg case_id "$case_id" --arg stderr "$err" --argjson rc "$rc" '{case_id:$case_id,returncode:$rc,stderr:$stderr}' >> "$RUN_DIR/failures.ndjson"
+    failure_kind=benchmark-error; (( rc == 124 || rc == 137 )) && failure_kind=case-timeout
+    jq -cn --arg case_id "$case_id" --arg stderr "$err" --arg failure_kind "$failure_kind" --argjson rc "$rc" '{case_id:$case_id,returncode:$rc,failure_kind:$failure_kind,stderr:$stderr}' >> "$RUN_DIR/failures.ndjson"
     continue
   fi
   pressure_report=$(mktemp)

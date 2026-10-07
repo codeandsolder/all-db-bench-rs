@@ -39,7 +39,10 @@ use libmdbx::{
     Database as MdbxDb, NoWriteMap, TableFlags as MdbxTableFlags, WriteFlags as MdbxWriteFlags,
 };
 #[cfg(feature = "kv-external")]
-use persy::{ByteVec as PersyByteVec, Persy, TransactionConfig as PersyTxConfig};
+use persy::{
+    ByteVec as PersyByteVec, Persy, PrepareError as PersyPrepareError,
+    TransactionConfig as PersyTxConfig,
+};
 #[cfg(feature = "kv-external")]
 use rocksdb::{
     DB as RocksDb, Direction as RocksDirection, IteratorMode as RocksIteratorMode,
@@ -670,24 +673,54 @@ impl ClientOps for PersyClient {
         puts: &[(Vec<u8>, Vec<u8>)],
         deletes: &[Vec<u8>],
     ) -> Result<u64> {
-        let mut tx = match durability {
-            Durability::Relaxed => self
-                .0
-                .begin_with(PersyTxConfig::new().set_background_sync(true))?,
-            Durability::Sync => self.0.begin()?,
-        };
-        for (k, v) in puts {
-            tx.put::<PersyByteVec, PersyByteVec>(
-                "kv",
-                PersyByteVec::from(k.clone()),
-                PersyByteVec::from(v.clone()),
-            )?;
+        const MAX_LOCK_TIMEOUT_RETRIES: u64 = 100;
+        let jitter_seed = puts
+            .first()
+            .map(|(key, _)| key.as_slice())
+            .or_else(|| deletes.first().map(Vec::as_slice))
+            .and_then(|key| key.last().copied())
+            .unwrap_or(0) as u64;
+        let mut retries = 0u64;
+        loop {
+            let mut tx = match durability {
+                Durability::Relaxed => self
+                    .0
+                    .begin_with(PersyTxConfig::new().set_background_sync(true))?,
+                Durability::Sync => self.0.begin()?,
+            };
+            for (k, v) in puts {
+                tx.put::<PersyByteVec, PersyByteVec>(
+                    "kv",
+                    PersyByteVec::from(k.clone()),
+                    PersyByteVec::from(v.clone()),
+                )?;
+            }
+            for k in deletes {
+                tx.remove::<PersyByteVec, PersyByteVec>("kv", PersyByteVec::from(k.clone()), None)?;
+            }
+            match tx.prepare() {
+                Ok(prepared) => {
+                    prepared.commit()?;
+                    return Ok(retries);
+                }
+                Err(error) => match error.error() {
+                    PersyPrepareError::TransactionTimeout => {
+                        retries = retries.saturating_add(1);
+                        if retries > MAX_LOCK_TIMEOUT_RETRIES {
+                            bail!(
+                                "Persy transaction lock timeout exceeded {MAX_LOCK_TIMEOUT_RETRIES} retries"
+                            );
+                        }
+                        // Transactions that collided tend to time out together. A tiny,
+                        // deterministic per-key/retry skew prevents immediate lock-step
+                        // reacquisition while keeping all retry time inside measured latency.
+                        let backoff_us = 100 + ((jitter_seed + retries * 17) % 40) * 50;
+                        std::thread::sleep(std::time::Duration::from_micros(backoff_us));
+                    }
+                    other => return Err(anyhow::Error::new(other)),
+                },
+            }
         }
-        for k in deletes {
-            tx.remove::<PersyByteVec, PersyByteVec>("kv", PersyByteVec::from(k.clone()), None)?;
-        }
-        tx.prepare()?.commit()?;
-        Ok(0)
     }
 
     async fn scan_count(&mut self, start: &[u8], end: &[u8]) -> Result<usize> {

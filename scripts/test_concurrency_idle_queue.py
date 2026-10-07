@@ -18,6 +18,10 @@ SPEC.loader.exec_module(MODULE)
 
 
 class ConcurrencyIdleQueueTests(unittest.TestCase):
+    def test_v2_kv_run_identity(self) -> None:
+        self.assertEqual(MODULE.KV_RUN_ID, "20261007-kv-concurrency-quick-v2")
+        self.assertEqual(MODULE.RECORD_RUN_ID, "20261007-record-concurrency-quick-v1")
+
     def test_parse_io_full_avg10(self) -> None:
         self.assertEqual(MODULE.parse_io_full_avg10("some avg10=1.0\nfull avg10=4.25 avg60=1\n"), 4.25)
         with self.assertRaises(ValueError):

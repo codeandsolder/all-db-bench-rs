@@ -164,7 +164,7 @@ kvconcurrency writes the same schema-v5 process/system resource objects as the r
 - client_elapsed_s_min/median/max.
 - client_ops_per_s_min/median/max.
 - client_throughput_max_min_ratio: a simple fairness/straggler indicator; 1.0 is perfectly even, larger is less even.
-- write_conflict_retries: total transparent optimistic-write retries across all clients. SurrealKV TransactionWriteConflict/TransactionRetry are retried with the same logical write set; successful-operation and latency accounting includes those attempts.
+- write_conflict_retries: total transparent engine-contention retries across all clients. SurrealKV TransactionWriteConflict/TransactionRetry and Persy typed transaction-lock timeouts are retried with the same logical write set; successful-operation and latency accounting includes every failed attempt.
 - client_measurements[].write_conflict_retries: the corresponding per-client retry count.
 
 The coordinator records foreground wall time from the synchronized start barrier until all clients report completion. Client threads are kept alive until the process-after snapshot is captured so per-thread scheduler accounting does not lose completed-client TIDs.

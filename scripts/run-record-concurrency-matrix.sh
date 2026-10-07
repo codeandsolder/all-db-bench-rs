@@ -29,6 +29,8 @@ ROOT=${ROOT:-"$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"}
 source "$ROOT/scripts/concurrency-matrix-policy.sh"
 # shellcheck source=concurrency-runner-common.sh
 source "$ROOT/scripts/concurrency-runner-common.sh"
+CASE_TIMEOUT_S=$(concurrency_case_timeout_s "$PROFILE") || exit 2
+command -v timeout >/dev/null || { echo "GNU timeout is required" >&2; exit 2; }
 RUN_ID=${RUN_ID:-"$(date -u +%Y%m%dT%H%M%SZ)-record-concurrency-$PROFILE"}
 RUN_DIR="$ROOT/results/runs/$RUN_ID"; DATA_DIR="$ROOT/data/runs/$RUN_ID"
 mkdir -p "$RUN_DIR"/{cases,stderr,noise} "$DATA_DIR"
@@ -122,7 +124,7 @@ json.dump({
  "relaxed_clients":"${RELAXED_CLIENTS[*]}","stress_clients":"${STRESS_CLIENTS[*]}","tx_clients":"${TX_CLIENTS[*]}",
  "stress_payload":$STRESS_PAYLOAD,"hot_records":$HOT_RECORDS,"resume_order_policy":"$RESUME_ORDER_POLICY",
  "build_profile":"$BUILD_PROFILE","benchmark_binary_sha256":"$BIN_SHA","rocks_build_profile":"$ROCKS_BUILD_PROFILE","surrealdb_rocksdb_binary_sha256":"$ROCKS_BIN_SHA",
- "runner_sha256":"$RUNNER_SHA","concurrency_policy_sha256":"$CONCURRENCY_POLICY_SHA","noise_guard_sha256":"$NOISE_SHA","short_pressure_guard_sha256":"$PRESSURE_SHA",
+ "runner_sha256":"$RUNNER_SHA","concurrency_policy_sha256":"$CONCURRENCY_POLICY_SHA","noise_guard_sha256":"$NOISE_SHA","short_pressure_guard_sha256":"$PRESSURE_SHA","case_timeout_s":$CASE_TIMEOUT_S,
  "hostname":"$HOST_NAME","machine_id_sha256":"$MACHINE_ID_SHA256","filesystem":"$FILESYSTEM","source":"$SOURCE",
  "total_work_semantics":"ops is total logical work across all clients; it is not multiplied by client count",
  "writer_semantics":"write-burst partitions whole transactions only; clients never receive a benchmark-manufactured partial transaction",
@@ -150,7 +152,8 @@ for job in "${ORDERED[@]}"; do
   concurrency_check_external_noise "$ROOT" "$PROFILE" "before:$case_id" "$noise_before" || exit $?
   CASE_BIN="$BIN"; [[ "$engine" == surrealdb-rocksdb ]] && CASE_BIN="$ROCKS_BIN"
   rm -f "$out"
-  "$CASE_BIN" --engine "$engine" --durability "$dur" --workload "$workload" --clients "$clients" --records "$records" --ops "$ops" \
+  timeout --signal=TERM --kill-after=5s "${CASE_TIMEOUT_S}s" \
+    "$CASE_BIN" --engine "$engine" --durability "$dur" --workload "$workload" --clients "$clients" --records "$records" --ops "$ops" \
     --payload-bytes "$payload" --txn-size "$txn" --trial "$trial" --seed 1592606758 --scenario "$scenario" --warmup-reads 5000 --root "$DATA_DIR" --output "$out" 2>"$err"
   rc=$?
   io_rc=0; concurrency_check_io_quiet "$PROFILE" "after:$case_id" || io_rc=$?
@@ -161,7 +164,8 @@ for job in "${ORDERED[@]}"; do
   fi
   if (( rc != 0 )) || [[ ! -s "$out" ]] || [[ $(wc -l < "$out") -ne 1 ]]; then
     rm -f "$out"; clear_failure "$case_id"
-    jq -cn --arg case_id "$case_id" --arg stderr "$err" --argjson rc "$rc" '{case_id:$case_id,returncode:$rc,stderr:$stderr}' >> "$RUN_DIR/failures.ndjson"
+    failure_kind=benchmark-error; (( rc == 124 || rc == 137 )) && failure_kind=case-timeout
+    jq -cn --arg case_id "$case_id" --arg stderr "$err" --arg failure_kind "$failure_kind" --argjson rc "$rc" '{case_id:$case_id,returncode:$rc,failure_kind:$failure_kind,stderr:$stderr}' >> "$RUN_DIR/failures.ndjson"
     continue
   fi
   pressure_report=$(mktemp)
