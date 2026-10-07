@@ -273,6 +273,8 @@ struct Measurement {
     seed: u64,
     scenario: String,
     open_s: f64,
+    open_process: ProcDelta,
+    open_system_delta: SystemDelta,
     prefill_s: f64,
     warmup_s: f64,
     elapsed_s: f64,
@@ -1728,9 +1730,16 @@ async fn main() -> Result<()> {
     }
     fs::create_dir_all(&path)?;
 
+    let open_system_before = SystemSnapshot::capture();
+    let open_process_before = ProcSnapshot::capture();
     let open_started = Instant::now();
     let mut engine = Engine::open(args.engine, args.durability, &path).await?;
-    let open_s = open_started.elapsed().as_secs_f64();
+    let open_elapsed = open_started.elapsed();
+    let open_process_after = ProcSnapshot::capture();
+    let open_system_after = SystemSnapshot::capture();
+    let open_s = open_elapsed.as_secs_f64();
+    let open_process = open_process_before.delta(&open_process_after, open_elapsed);
+    let open_system_delta = open_system_before.delta(&open_system_after);
     let prefill_s = if args.skip_prefill {
         0.0
     } else {
@@ -1774,7 +1783,7 @@ async fn main() -> Result<()> {
     let db_bytes = dir_size(&path);
 
     let result = Measurement {
-        format_version: 6,
+        format_version: 7,
         engine: args.engine,
         engine_version: args.engine.version(),
         durability: args.durability,
@@ -1796,6 +1805,8 @@ async fn main() -> Result<()> {
         seed: args.seed,
         scenario: args.scenario.clone(),
         open_s,
+        open_process,
+        open_system_delta,
         prefill_s,
         warmup_s,
         elapsed_s: elapsed.as_secs_f64(),

@@ -182,6 +182,7 @@ def main() -> None:
                 "p99_write_txn_us_median": statistics.median(p99_tx) if p99_tx else None,
                 "db_bytes_median": statistics.median([int(r["db_bytes"]) for r in rs]),
                 "peak_rss_kib_median": statistics.median([int(r["peak_rss_kib"]) for r in rs if "peak_rss_kib" in r]) if any("peak_rss_kib" in r for r in rs) else None,
+                "open_s_median": statistics.median([float(r["open_s"]) for r in rs if "open_s" in r]) if any("open_s" in r for r in rs) else None,
                 "prefill_s_median": statistics.median([float(r["prefill_s"]) for r in rs if "prefill_s" in r]) if any("prefill_s" in r for r in rs) else None,
                 "client_setup_s_median": statistics.median([float(r["client_setup_s"]) for r in rs if "client_setup_s" in r]) if any("client_setup_s" in r for r in rs) else None,
                 "cpu_ns_per_op_median": statistics.median([
@@ -322,8 +323,8 @@ def main() -> None:
         for durability in sorted({s["durability"] for s in summary if s["lane"] == lane}):
             md += [f"## {durability}", ""]
             md += [
-                "| schema | scenario | workload | config | engine | trials | median ops/s | IQR ops/s | speedup vs c1 | efficiency | p99 read/op ×c1 | p99 write-txn ×c1 | CPU cores | client max/min | client setup ms | conflict retries/k write ops | median p99 read/op us | median p99 write-txn us | DB MiB | peak RSS MiB | prefill s | CPU ns/op | rq wait %wall | CPU PSI some %wall | read B/op | write B/op | IO PSI full %wall | swap pages |",
-                "|---:|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+                "| schema | scenario | workload | config | engine | trials | median ops/s | IQR ops/s | speedup vs c1 | efficiency | p99 read/op ×c1 | p99 write-txn ×c1 | CPU cores | client max/min | client setup ms | conflict retries/k write ops | median p99 read/op us | median p99 write-txn us | DB MiB | peak RSS MiB | open ms | prefill s | CPU ns/op | rq wait %wall | CPU PSI some %wall | read B/op | write B/op | IO PSI full %wall | swap pages |",
+                "|---:|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
             ]
             block = [
                 s for s in summary
@@ -335,7 +336,7 @@ def main() -> None:
                 if p99 is None:
                     p99 = s["p99_operation_us_median"]
                 md.append(
-                    "| {schema} | {scenario} | {workload} | {config} | {engine} {version} | {trials} | {median} | {q1}–{q3} | {speedup} | {efficiency} | {p99mult} | {txmult} | {cpucores} | {fairness} | {setup} | {conflicts} | {p99} | {tx} | {mib} | {rss} | {prefill} | {cpu} | {rq} | {cpupsi} | {readb} | {writeb} | {iopsi} | {swap} |".format(
+                    "| {schema} | {scenario} | {workload} | {config} | {engine} {version} | {trials} | {median} | {q1}–{q3} | {speedup} | {efficiency} | {p99mult} | {txmult} | {cpucores} | {fairness} | {setup} | {conflicts} | {p99} | {tx} | {mib} | {rss} | {openms} | {prefill} | {cpu} | {rq} | {cpupsi} | {readb} | {writeb} | {iopsi} | {swap} |".format(
                         schema=s["format_version"],
                         scenario=s["scenario"],
                         workload=s["workload"],
@@ -358,6 +359,7 @@ def main() -> None:
                         tx=fmt(s["p99_write_txn_us_median"]) if s["p99_write_txn_us_median"] is not None else "—",
                         mib=fmt(s["db_bytes_median"] / (1024 * 1024)),
                         rss=fmt(s["peak_rss_kib_median"] / 1024) if s["peak_rss_kib_median"] is not None else "—",
+                        openms=fmt(1000.0 * s["open_s_median"]) if s["open_s_median"] is not None else "—",
                         prefill=fmt(s["prefill_s_median"]) if s["prefill_s_median"] is not None else "—",
                         cpu=fmt(s["cpu_ns_per_op_median"]) if s["cpu_ns_per_op_median"] is not None else "—",
                         rq=fmt(100.0 * s["runqueue_wait_fraction_median"]) if s["runqueue_wait_fraction_median"] is not None else "—",

@@ -47,6 +47,8 @@ Identity now includes scenario, allowing the core matrix, size sweeps, reopen la
 Open/reopen fields:
 
 - open_s: database open/recovery time before prefill.
+- open_process: process CPU/runqueue/I/O delta covering only the database open/recovery interval (format v7+).
+- open_system_delta: system PSI/paging/swap delta covering only the database open/recovery interval (format v7+).
 - reused_db: this invocation opened a pre-existing benchmark database.
 - prefill_skipped: no population phase ran in this invocation.
 - warmup_reads: requested deterministic benchmark warmup count.

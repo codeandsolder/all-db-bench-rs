@@ -22,18 +22,25 @@ def available_cpus() -> int:
 def pressure_evidence(
     row: dict[str, Any],
     *,
+    interval: str = "measured",
     max_elapsed_s: float,
     max_runqueue_fraction: float,
     max_cpu_psi_fraction: float,
     max_benchmark_cpu_share: float,
     cpu_count: int,
 ) -> dict[str, Any] | None:
-    elapsed = float(row.get("elapsed_s", 0.0))
+    if interval == "measured":
+        elapsed = float(row.get("elapsed_s", 0.0))
+        measured_process = row.get("measured_process") or {}
+        measured_system = row.get("measured_system_delta") or {}
+    elif interval == "open":
+        elapsed = float(row.get("open_s", 0.0))
+        measured_process = row.get("open_process") or {}
+        measured_system = row.get("open_system_delta") or {}
+    else:
+        raise ValueError(f"unknown pressure interval: {interval}")
     if elapsed <= 0.0 or elapsed > max_elapsed_s:
         return None
-
-    measured_process = row.get("measured_process") or {}
-    measured_system = row.get("measured_system_delta") or {}
     cpu_fraction = float(measured_process.get("cpu_runtime_fraction_of_wall", 0.0))
     max_benchmark_cpu_fraction = max(1.0, cpu_count * max_benchmark_cpu_share)
     # If the benchmark itself occupies most of the host, CPU PSI/runqueue wait
@@ -56,6 +63,7 @@ def pressure_evidence(
     if not reasons:
         return None
     return {
+        "interval": interval,
         "reasons": reasons,
         "elapsed_s": elapsed,
         "runqueue_wait_fraction_of_wall": runqueue_fraction,
@@ -84,7 +92,9 @@ def archive_case(run_dir: Path, case_path: Path, evidence: dict[str, Any]) -> Pa
     shutil.move(str(case_path), target / "case.json")
     companions = (
         (run_dir / "noise" / f"{case_id}.before.json", "noise-before.json"),
+        (run_dir / "noise" / f"{case_id}.ready.json", "noise-ready.json"),
         (run_dir / "noise" / f"{case_id}.after.json", "noise-after.json"),
+        (run_dir / "stderr" / f"{case_id}.prepare.log", "prepare-stderr.log"),
         (run_dir / "stderr" / f"{case_id}.log", "stderr.log"),
     )
     for source, name in companions:
@@ -104,6 +114,7 @@ def scrub(
     dry_run: bool = False,
     cpu_count: int | None = None,
     case_ids: set[str] | None = None,
+    intervals: tuple[str, ...] = ("measured",),
 ) -> dict[str, Any]:
     cpu_count = available_cpus() if cpu_count is None else max(1, cpu_count)
     cases_dir = run_dir / "cases"
@@ -115,14 +126,19 @@ def scrub(
                 continue
             row = json.loads(case_path.read_text())
             examined += 1
-            evidence = pressure_evidence(
-                row,
-                max_elapsed_s=max_elapsed_s,
-                max_runqueue_fraction=max_runqueue_fraction,
-                max_cpu_psi_fraction=max_cpu_psi_fraction,
-                max_benchmark_cpu_share=max_benchmark_cpu_share,
-                cpu_count=cpu_count,
-            )
+            evidence = None
+            for interval in intervals:
+                evidence = pressure_evidence(
+                    row,
+                    interval=interval,
+                    max_elapsed_s=max_elapsed_s,
+                    max_runqueue_fraction=max_runqueue_fraction,
+                    max_cpu_psi_fraction=max_cpu_psi_fraction,
+                    max_benchmark_cpu_share=max_benchmark_cpu_share,
+                    cpu_count=cpu_count,
+                )
+                if evidence is not None:
+                    break
             if evidence is None:
                 continue
             evidence = {
@@ -160,6 +176,7 @@ def scrub(
         "rejected": len(rejected),
         "dry_run": dry_run,
         "available_cpus": cpu_count,
+        "intervals": list(intervals),
         "thresholds": {
             "max_elapsed_s": max_elapsed_s,
             "max_runqueue_fraction": max_runqueue_fraction,
@@ -180,6 +197,7 @@ def main() -> int:
     parser.add_argument("--max-cpu-psi-fraction", type=float, default=0.05)
     parser.add_argument("--max-benchmark-cpu-share", type=float, default=0.5)
     parser.add_argument("--case-id", action="append", default=[])
+    parser.add_argument("--interval", action="append", choices=("measured", "open"), default=[])
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     report = scrub(
@@ -190,6 +208,7 @@ def main() -> int:
         max_benchmark_cpu_share=args.max_benchmark_cpu_share,
         dry_run=args.dry_run,
         case_ids=set(args.case_id) if args.case_id else None,
+        intervals=tuple(args.interval) if args.interval else ("measured",),
     )
     print(json.dumps(report, sort_keys=True))
     return 0

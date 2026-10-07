@@ -42,6 +42,49 @@ class ShortTrialPressureTests(unittest.TestCase):
         self.assertIsNotNone(MODULE.pressure_evidence(row(trial=1, rq=0.031), max_elapsed_s=0.5, max_runqueue_fraction=0.03, max_cpu_psi_fraction=0.05, max_benchmark_cpu_share=0.5, cpu_count=8))
         self.assertIsNotNone(MODULE.pressure_evidence(row(trial=2, psi=0.051), max_elapsed_s=0.5, max_runqueue_fraction=0.03, max_cpu_psi_fraction=0.05, max_benchmark_cpu_share=0.5, cpu_count=8))
 
+    def test_can_flag_open_interval_without_changing_default(self) -> None:
+        sample = row(trial=9)
+        open_elapsed = 0.02
+        wall_ns = int(open_elapsed * 1_000_000_000)
+        sample.update({
+            "open_s": open_elapsed,
+            "open_process": {
+                "cpu_runtime_fraction_of_wall": 0.8,
+                "runqueue_wait_fraction_of_wall": 0.2,
+                "write_bytes": 0,
+            },
+            "open_system_delta": {
+                "accounting_wall_ns": wall_ns,
+                "psi_cpu_some_us": 0,
+            },
+        })
+        kwargs = dict(max_elapsed_s=0.5, max_runqueue_fraction=0.03, max_cpu_psi_fraction=0.05, max_benchmark_cpu_share=0.5, cpu_count=8)
+        self.assertIsNone(MODULE.pressure_evidence(sample, **kwargs))
+        evidence = MODULE.pressure_evidence(sample, interval="open", **kwargs)
+        self.assertIsNotNone(evidence)
+        self.assertEqual(evidence["interval"], "open")
+
+    def test_scrub_can_target_open_interval(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run = Path(tmp)
+            (run / "cases").mkdir()
+            sample = row(trial=10)
+            open_elapsed = 0.02
+            wall_ns = int(open_elapsed * 1_000_000_000)
+            sample["open_s"] = open_elapsed
+            sample["open_process"] = {
+                "cpu_runtime_fraction_of_wall": 0.7,
+                "runqueue_wait_fraction_of_wall": 0.08,
+                "write_bytes": 0,
+            }
+            sample["open_system_delta"] = {"accounting_wall_ns": wall_ns, "psi_cpu_some_us": 0}
+            case = run / "cases" / "t10-reopen.json"
+            case.write_text(json.dumps(sample))
+            report = MODULE.scrub(run, cpu_count=8, intervals=("open",))
+            self.assertEqual(report["rejected"], 1)
+            self.assertEqual(report["cases"][0]["interval"], "open")
+            self.assertFalse(case.exists())
+
     def test_does_not_flag_long_or_high_parallel_or_io_only(self) -> None:
         kwargs = dict(max_elapsed_s=0.5, max_runqueue_fraction=0.03, max_cpu_psi_fraction=0.05, max_benchmark_cpu_share=0.5, cpu_count=8)
         self.assertIsNone(MODULE.pressure_evidence(row(trial=1, elapsed=0.6, rq=0.5, psi=0.5), **kwargs))
@@ -58,7 +101,9 @@ class ShortTrialPressureTests(unittest.TestCase):
             good.write_text(json.dumps(row(trial=1)))
             bad.write_text(json.dumps(row(trial=2, psi=0.2)))
             (run / "noise" / f"{bad.stem}.before.json").write_text("{}")
+            (run / "noise" / f"{bad.stem}.ready.json").write_text("{}")
             (run / "noise" / f"{bad.stem}.after.json").write_text("{}")
+            (run / "stderr" / f"{bad.stem}.prepare.log").write_text("prepare diagnostic")
             (run / "stderr" / f"{bad.stem}.log").write_text("diagnostic")
             for name in ("results.ndjson", "summary.json", "summary.md", "host-end.txt"):
                 (run / name).write_text("stale")
@@ -69,7 +114,9 @@ class ShortTrialPressureTests(unittest.TestCase):
             archive = Path(report["cases"][0]["archive"])
             self.assertTrue((archive / "case.json").is_file())
             self.assertTrue((archive / "noise-before.json").is_file())
+            self.assertTrue((archive / "noise-ready.json").is_file())
             self.assertTrue((archive / "noise-after.json").is_file())
+            self.assertTrue((archive / "prepare-stderr.log").is_file())
             self.assertTrue((archive / "stderr.log").is_file())
             self.assertTrue((archive / "rejection.json").is_file())
             for name in ("results.ndjson", "summary.json", "summary.md", "host-end.txt"):
