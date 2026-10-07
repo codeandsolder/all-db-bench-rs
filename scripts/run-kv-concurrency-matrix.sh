@@ -4,209 +4,164 @@ set -u -o pipefail
 PROFILE=${1:-quick}
 case "$PROFILE" in
   smoke)
-    TRIALS=1; RECORDS=5000; OPS=3000
-    CLIENTS=(1 4 8)
-    CORE_WORKLOADS=(point-read read-heavy tiny-txn write-burst)
-    RANGE_CLIENTS=(1 8)
-    DELETE_CLIENTS=(1 8)
-    RELAXED_CLIENTS=(1 8)
+    TRIALS=1; RECORDS=5000; OPS=3000; MIN_FREE_GIB=2
+    CLIENTS=(1 4 8); CORE_WORKLOADS=(point-read read-heavy tiny-txn write-burst)
+    RANGE_CLIENTS=(1 8); DELETE_CLIENTS=(1 8); RELAXED_CLIENTS=(1 8)
     ;;
   quick)
-    TRIALS=3; RECORDS=100000; OPS=50000
-    CLIENTS=(1 2 4 8)
-    CORE_WORKLOADS=(point-read read-heavy balanced tiny-txn write-burst churn)
-    RANGE_CLIENTS=(1 4 8)
-    DELETE_CLIENTS=(1 4 8)
-    RELAXED_CLIENTS=(1 4 8)
+    TRIALS=3; RECORDS=100000; OPS=50000; MIN_FREE_GIB=10
+    CLIENTS=(1 2 4 8); CORE_WORKLOADS=(point-read read-heavy balanced tiny-txn write-burst churn)
+    RANGE_CLIENTS=(1 4 8); DELETE_CLIENTS=(1 4 8); RELAXED_CLIENTS=(1 4 8)
     ;;
   full)
-    TRIALS=7; RECORDS=1000000; OPS=250000
-    CLIENTS=(1 2 4 8 16)
-    CORE_WORKLOADS=(point-read read-heavy balanced tiny-txn write-burst churn)
-    RANGE_CLIENTS=(1 2 4 8 16)
-    DELETE_CLIENTS=(1 2 4 8 16)
-    RELAXED_CLIENTS=(1 2 4 8 16)
+    TRIALS=7; RECORDS=1000000; OPS=250000; MIN_FREE_GIB=30
+    CLIENTS=(1 2 4 8 16); CORE_WORKLOADS=(point-read read-heavy balanced tiny-txn write-burst churn)
+    RANGE_CLIENTS=(1 2 4 8 16); DELETE_CLIENTS=(1 2 4 8 16); RELAXED_CLIENTS=(1 2 4 8 16)
     ;;
   *) echo "usage: $0 [smoke|quick|full]" >&2; exit 2 ;;
 esac
 
-ROOT=${ROOT:-/srv/scratch/db-bench-2026-09-27}
+ROOT=${ROOT:-"$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"}
 # shellcheck source=kv-matrix-policy.sh
 source "$ROOT/scripts/kv-matrix-policy.sh"
 # shellcheck source=concurrency-matrix-policy.sh
 source "$ROOT/scripts/concurrency-matrix-policy.sh"
-CPUS=$(getconf _NPROCESSORS_ONLN)
-LOAD1=$(awk '{print $1}' /proc/loadavg)
-if [[ "${ALLOW_BUSY:-0}" != 1 ]] && ! awk -v l="$LOAD1" -v c="$CPUS" 'BEGIN { exit !(l <= c * 1.5) }'; then
-  echo "refusing concurrency benchmark on busy host: load1=$LOAD1 visible_cpus=$CPUS" >&2
-  exit 75
-fi
+# shellcheck source=concurrency-runner-common.sh
+source "$ROOT/scripts/concurrency-runner-common.sh"
 
 RUN_ID=${RUN_ID:-"$(date -u +%Y%m%dT%H%M%SZ)-kv-concurrency-$PROFILE"}
-RUN_DIR="$ROOT/results/runs/$RUN_ID"
-DATA_DIR="$ROOT/data/runs/$RUN_ID"
-mkdir -p "$RUN_DIR"/{cases,stderr} "$DATA_DIR"
-"$ROOT/scripts/capture-host-metadata.sh" "$RUN_DIR/host-start.txt" "$ROOT"
-cat > "$RUN_DIR/support.json" <<'JSON'
-{
-  "lane": "kv-concurrency",
-  "shared_database": true,
-  "total_ops_fixed_across_client_counts": true,
-  "lsmdb_range_policy": "cap native lsm-db 1.0.0 bounded scans at about 50M expected pre-range entries using kv-matrix-policy.sh; never increase an existing lane budget",
-  "unsupported": [
-    {
-      "engine": "lkv",
-      "scope": "all concurrency workloads",
-      "reason": "lkv 0.2.1 write transactions require mutable Database access and expose no cloneable/shared writer handle; an external mutex would benchmark harness serialization rather than engine concurrency"
-    },
-    {
-      "engine": "paritydb-hash",
-      "scope": "range-scan",
-      "reason": "hash-column mode is intentionally unordered; paritydb-btree is the ordered ParityDB configuration"
-    }
-  ]
-}
-JSON
+RUN_DIR="$ROOT/results/runs/$RUN_ID"; DATA_DIR="$ROOT/data/runs/$RUN_ID"
+mkdir -p "$RUN_DIR"/{cases,stderr,noise} "$DATA_DIR"
+free_bytes=$(df -B1 --output=avail "$DATA_DIR" | tail -n1 | tr -d ' ')
+min_free_bytes=$((MIN_FREE_GIB * 1024 * 1024 * 1024))
+(( free_bytes >= min_free_bytes )) || { echo "refusing KV concurrency run: free=$free_bytes required=$min_free_bytes" >&2; exit 75; }
+[[ -s "$RUN_DIR/host-start.txt" ]] || "$ROOT/scripts/capture-host-metadata.sh" "$RUN_DIR/host-start.txt" "$ROOT"
 
 TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target}
-BIN="$TARGET_DIR/release/kvconcurrency"
-CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" \
-  build --release --features kv-all --bin kvconcurrency || exit $?
+if [[ -n "${BENCH_BIN:-}" ]]; then
+  BIN="$BENCH_BIN"; BUILD_PROFILE=external
+  [[ -x "$BIN" ]] || { echo "BENCH_BIN is not executable: $BIN" >&2; exit 2; }
+elif [[ "$PROFILE" == smoke ]]; then
+  BIN="$TARGET_DIR/debug/kvconcurrency"; BUILD_PROFILE=debug
+  CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" build --locked --features kv-all --bin kvconcurrency || exit $?
+else
+  BIN="$TARGET_DIR/release/kvconcurrency"; BUILD_PROFILE=release
+  CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" build --release --locked --features kv-all --bin kvconcurrency || exit $?
+fi
+BIN_SHA=$(sha256sum "$BIN" | awk '{print $1}')
+RUNNER_SHA=$(sha256sum "$ROOT/scripts/run-kv-concurrency-matrix.sh" | awk '{print $1}')
+KV_POLICY_SHA=$(sha256sum "$ROOT/scripts/kv-matrix-policy.sh" | awk '{print $1}')
+CONCURRENCY_POLICY_SHA=$(sha256sum "$ROOT/scripts/concurrency-matrix-policy.sh" | awk '{print $1}')
+NOISE_SHA=$(sha256sum "$ROOT/scripts/check-external-noise.py" | awk '{print $1}')
+PRESSURE_SHA=$(sha256sum "$ROOT/scripts/scrub-short-trial-pressure.py" | awk '{print $1}')
+HOST_NAME=$(hostname); MACHINE_ID_SHA256=$(sha256sum /etc/machine-id | awk '{print $1}')
+FILESYSTEM=$(findmnt -n -o FSTYPE --target "$DATA_DIR"); SOURCE=$(findmnt -n -o SOURCE --target "$DATA_DIR")
 
-# lkv is deliberately absent: 0.2.1 has no native clone/shared writer handle.
 ENGINES=(redb fjall surrealkv heed sled manifold turbokv paritydb-hash paritydb-btree rocksdb mdbx persy roughdb jammdb lsmdb)
-ORDERED_ENGINES=(redb fjall surrealkv heed sled manifold turbokv paritydb-btree rocksdb mdbx persy roughdb jammdb lsmdb)
+[[ -n "${ENGINES_OVERRIDE:-}" ]] && read -r -a ENGINES <<< "$ENGINES_OVERRIDE"
+ORDERED_ENGINES=(); for engine in "${ENGINES[@]}"; do [[ "$engine" == paritydb-hash ]] || ORDERED_ENGINES+=("$engine"); done
 JOBS=()
-
-primary_durability() {
-  case "$1" in
-    paritydb-hash|paritydb-btree) echo relaxed ;;
-    *) echo sync ;;
-  esac
-}
-
-relaxed_supported() {
-  case "$1" in
-    manifold|jammdb|lsmdb) return 1 ;;
-    *) return 0 ;;
-  esac
-}
-
-add_job() {
-  local scenario=$1 engine=$2 durability=$3 workload=$4 clients=$5 trial=$6
-  JOBS+=("$scenario|$engine|$durability|$workload|$clients|$trial")
-}
-
+primary_durability() { case "$1" in paritydb-hash|paritydb-btree) echo relaxed ;; *) echo sync ;; esac; }
+relaxed_supported() { case "$1" in manifold|jammdb|lsmdb) return 1 ;; *) return 0 ;; esac; }
+add_job() { JOBS+=("$1|$2|$3|$4|$5|$6"); }
 clear_failure() {
-  local case_id=$1
-  local failures="$RUN_DIR/failures.ndjson"
+  local case_id=$1 failures="$RUN_DIR/failures.ndjson" tmp
   [[ -f "$failures" ]] || return 0
-  local tmp="${failures}.tmp"
-  jq -c --arg case_id "$case_id" 'select(.case_id != $case_id)' "$failures" > "$tmp"
-  mv "$tmp" "$failures"
+  tmp="${failures}.tmp"; jq -c --arg case_id "$case_id" 'select(.case_id != $case_id)' "$failures" > "$tmp"; mv "$tmp" "$failures"
   [[ -s "$failures" ]] || rm -f "$failures"
 }
 
 for trial in $(seq 1 "$TRIALS"); do
   for engine in "${ENGINES[@]}"; do
     dur=$(primary_durability "$engine")
-    for workload in "${CORE_WORKLOADS[@]}"; do
-      for clients in "${CLIENTS[@]}"; do
-        add_job primary "$engine" "$dur" "$workload" "$clients" "$trial"
-      done
-    done
+    for workload in "${CORE_WORKLOADS[@]}"; do for clients in "${CLIENTS[@]}"; do add_job primary "$engine" "$dur" "$workload" "$clients" "$trial"; done; done
   done
-
   for engine in "${ORDERED_ENGINES[@]}"; do
-    dur=$(primary_durability "$engine")
-    for clients in "${RANGE_CLIENTS[@]}"; do
-      add_job range "$engine" "$dur" range-scan "$clients" "$trial"
-    done
+    dur=$(primary_durability "$engine"); for clients in "${RANGE_CLIENTS[@]}"; do add_job range "$engine" "$dur" range-scan "$clients" "$trial"; done
   done
-
   for engine in "${ENGINES[@]}"; do
-    dur=$(primary_durability "$engine")
-    for clients in "${DELETE_CLIENTS[@]}"; do
-      add_job delete "$engine" "$dur" delete-burst "$clients" "$trial"
-    done
+    dur=$(primary_durability "$engine"); for clients in "${DELETE_CLIENTS[@]}"; do add_job delete "$engine" "$dur" delete-burst "$clients" "$trial"; done
   done
-
   for engine in "${ENGINES[@]}"; do
     [[ "$(primary_durability "$engine")" == relaxed ]] && continue
     relaxed_supported "$engine" || continue
-    for workload in read-heavy write-burst; do
-      for clients in "${RELAXED_CLIENTS[@]}"; do
-        add_job relaxed "$engine" relaxed "$workload" "$clients" "$trial"
-      done
-    done
+    for workload in read-heavy write-burst; do for clients in "${RELAXED_CLIENTS[@]}"; do add_job relaxed "$engine" relaxed "$workload" "$clients" "$trial"; done; done
   done
 done
 
-mapfile -t ORDERED < <(printf '%s\n' "${JOBS[@]}" | shuf)
-TOTAL=${#ORDERED[@]}
-FAILURES=0
+RESUME_ORDER_POLICY=fixed-initial; [[ "${MATRIX_RESUME_SHUFFLE_REMAINING:-0}" == 1 ]] && RESUME_ORDER_POLICY=reshuffle-remaining
+TOTAL=${#JOBS[@]}
+SUPPORT_NEW="$RUN_DIR/support.json.new"
+python3 - "$SUPPORT_NEW" <<PY_SUPPORT
+import json,sys
+json.dump({
+ "lane":"kv-concurrency","profile":"$PROFILE","trials":$TRIALS,"records":$RECORDS,"default_ops":$OPS,
+ "case_count":$TOTAL,"shared_database":True,"total_ops_fixed_across_client_counts":True,
+ "engines":"${ENGINES[*]}","clients":"${CLIENTS[*]}","core_workloads":"${CORE_WORKLOADS[*]}",
+ "range_clients":"${RANGE_CLIENTS[*]}","delete_clients":"${DELETE_CLIENTS[*]}","relaxed_clients":"${RELAXED_CLIENTS[*]}",
+ "resume_order_policy":"$RESUME_ORDER_POLICY","build_profile":"$BUILD_PROFILE","benchmark_binary_sha256":"$BIN_SHA",
+ "runner_sha256":"$RUNNER_SHA","kv_matrix_policy_sha256":"$KV_POLICY_SHA","concurrency_policy_sha256":"$CONCURRENCY_POLICY_SHA",
+ "noise_guard_sha256":"$NOISE_SHA","short_pressure_guard_sha256":"$PRESSURE_SHA",
+ "hostname":"$HOST_NAME","machine_id_sha256":"$MACHINE_ID_SHA256","filesystem":"$FILESYSTEM","source":"$SOURCE",
+ "unsupported":[
+   {"engine":"lkv","scope":"all concurrency workloads","reason":"no native clone/shared writer handle"},
+   {"engine":"paritydb-hash","scope":"range-scan","reason":"hash-column mode is unordered"}
+ ]
+},open(sys.argv[1],"w"),sort_keys=True,separators=(",",":"))
+PY_SUPPORT
+EXISTING_CASES=$(find "$RUN_DIR/cases" -type f -name '*.json' | wc -l)
+if [[ -s "$RUN_DIR/support.json" ]]; then
+  if ! cmp -s "$RUN_DIR/support.json" "$SUPPORT_NEW"; then
+    if (( EXISTING_CASES > 0 )); then rm -f "$SUPPORT_NEW"; echo "refusing KV concurrency resume: support identity changed" >&2; exit 2; fi
+    mv "$SUPPORT_NEW" "$RUN_DIR/support.json"
+  else rm -f "$SUPPORT_NEW"; fi
+else mv "$SUPPORT_NEW" "$RUN_DIR/support.json"; fi
+concurrency_prepare_order "$RUN_DIR" "$RESUME_ORDER_POLICY" "${JOBS[@]}" || exit $?
+
 INDEX=0
 for job in "${ORDERED[@]}"; do
-  INDEX=$((INDEX + 1))
-  IFS='|' read -r scenario engine durability workload clients trial <<< "$job"
-
-  scan=100
-  ops=$(kv_concurrency_ops "$PROFILE" "$workload" "$OPS" "$scan" "$RECORDS") || exit 2
+  INDEX=$((INDEX + 1)); IFS='|' read -r scenario engine durability workload clients trial <<< "$job"
+  scan=100; ops=$(kv_concurrency_ops "$PROFILE" "$workload" "$OPS" "$scan" "$RECORDS") || exit 2
   if [[ "$workload" == range-scan ]]; then
-    (( ops < clients )) && ops=$clients
-    ops=$(kv_effective_ops "$engine" "$workload" "$ops" "$RECORDS") || exit 2
+    (( ops < clients )) && ops=$clients; ops=$(kv_effective_ops "$engine" "$workload" "$ops" "$RECORDS") || exit 2
   elif [[ "$workload" == tiny-txn ]]; then
     (( ops < clients )) && ops=$clients
-  elif [[ "$workload" == delete-burst && "$ops" -gt "$RECORDS" ]]; then
-    ops=$RECORDS
-  fi
-
+  elif [[ "$workload" == delete-burst && "$ops" -gt "$RECORDS" ]]; then ops=$RECORDS; fi
   case_id="t${trial}-${scenario}-${engine}-${durability}-${workload}-c${clients}-n${RECORDS}-o${ops}"
-  out="$RUN_DIR/cases/$case_id.json"
-  [[ -s "$out" ]] && continue
-  err="$RUN_DIR/stderr/$case_id.log"
+  out="$RUN_DIR/cases/$case_id.json"; err="$RUN_DIR/stderr/$case_id.log"
+  noise_before="$RUN_DIR/noise/$case_id.before.json"; noise_after="$RUN_DIR/noise/$case_id.after.json"
+  if [[ -s "$out" ]]; then clear_failure "$case_id"; continue; fi
   echo "[$INDEX/$TOTAL] $case_id" >&2
-
-  "$BIN" \
-    --engine "$engine" --durability "$durability" --workload "$workload" \
-    --records "$RECORDS" --ops "$ops" --clients "$clients" \
-    --value-bytes 256 --value-pattern pseudo-random \
-    --key-bytes 8 --key-shape sequential --access-pattern auto \
-    --txn-size 100 --scan-len "$scan" --warmup-reads 5000 \
-    --trial "$trial" --seed 1592606758 \
-    --scenario "concurrency-$scenario" \
-    --root "$DATA_DIR" --output "$out" 2>"$err"
+  concurrency_check_io_quiet "$PROFILE" "before:$case_id" || exit $?
+  concurrency_check_external_noise "$ROOT" "$PROFILE" "before:$case_id" "$noise_before" || exit $?
+  rm -f "$out"
+  "$BIN" --engine "$engine" --durability "$durability" --workload "$workload" \
+    --records "$RECORDS" --ops "$ops" --clients "$clients" --value-bytes 256 --value-pattern pseudo-random \
+    --key-bytes 8 --key-shape sequential --access-pattern auto --txn-size 100 --scan-len "$scan" --warmup-reads 5000 \
+    --trial "$trial" --seed 1592606758 --scenario "concurrency-$scenario" --root "$DATA_DIR" --output "$out" 2>"$err"
   rc=$?
-
-  if (( rc != 0 )) || [[ ! -s "$out" ]]; then
-    rm -f "$out"
-    clear_failure "$case_id"
-    jq -cn \
-      --arg case_id "$case_id" --arg stderr "$err" --argjson rc "$rc" \
-      '{case_id:$case_id, returncode:$rc, stderr:$stderr}' \
-      >> "$RUN_DIR/failures.ndjson"
-  else
-    clear_failure "$case_id"
-    if [[ ! -s "$err" ]]; then
-      rm -f "$err"
-    fi
+  io_rc=0; concurrency_check_io_quiet "$PROFILE" "after:$case_id" || io_rc=$?
+  noise_rc=0; concurrency_check_external_noise "$ROOT" "$PROFILE" "after:$case_id" "$noise_after" || noise_rc=$?
+  if (( io_rc != 0 || noise_rc != 0 )); then
+    rm -f "$out"; clear_failure "$case_id"
+    if (( io_rc != 0 )); then exit "$io_rc"; else exit "$noise_rc"; fi
   fi
+  if (( rc != 0 )) || [[ ! -s "$out" ]] || [[ $(wc -l < "$out") -ne 1 ]]; then
+    rm -f "$out"; clear_failure "$case_id"
+    jq -cn --arg case_id "$case_id" --arg stderr "$err" --argjson rc "$rc" '{case_id:$case_id,returncode:$rc,stderr:$stderr}' >> "$RUN_DIR/failures.ndjson"
+    continue
+  fi
+  pressure_report=$(mktemp)
+  if ! concurrency_scrub_case_pressure "$ROOT" "$PROFILE" "$RUN_DIR" "$case_id" "$pressure_report"; then
+    pressure_rc=$?; rm -f "$pressure_report"; clear_failure "$case_id"; exit "$pressure_rc"
+  fi
+  rm -f "$pressure_report"; clear_failure "$case_id"; [[ -s "$err" ]] || rm -f "$err"
 done
 
-find "$RUN_DIR/cases" -type f -name '*.json' -print0 |
-  sort -z | xargs -0 -r cat > "$RUN_DIR/results.ndjson"
+find "$RUN_DIR/cases" -type f -name '*.json' -print0 | sort -z | xargs -0 -r cat > "$RUN_DIR/results.ndjson"
 "$ROOT/scripts/capture-host-metadata.sh" "$RUN_DIR/host-end.txt" "$ROOT"
-
-uv run --script "$ROOT/scripts/summarize.py" "$RUN_DIR/results.ndjson" \
-  --expect-trials "$TRIALS" \
-  --json-out "$RUN_DIR/summary.json" \
-  --markdown-out "$RUN_DIR/summary.md" || true
-
-if [[ -s "$RUN_DIR/failures.ndjson" ]]; then
-  FAILURES=$(wc -l < "$RUN_DIR/failures.ndjson")
-else
-  FAILURES=0
-fi
-printf 'run=%s cpus=%s total=%s failures=%s results=%s\n' \
-  "$RUN_ID" "$CPUS" "$TOTAL" "$FAILURES" "$RUN_DIR/results.ndjson"
-exit $(( FAILURES > 0 ? 1 : 0 ))
+if uv run --script "$ROOT/scripts/summarize.py" "$RUN_DIR/results.ndjson" --expect-trials "$TRIALS" --json-out "$RUN_DIR/summary.json" --markdown-out "$RUN_DIR/summary.md"; then summary_rc=0; else summary_rc=$?; fi
+if [[ -s "$RUN_DIR/failures.ndjson" ]]; then FAILURES=$(wc -l < "$RUN_DIR/failures.ndjson"); else FAILURES=0; fi
+COMPLETED=$(find "$RUN_DIR/cases" -type f -name '*.json' | wc -l)
+printf 'run=%s total=%s completed=%s failures=%s summary_rc=%s results=%s\n' "$RUN_ID" "$TOTAL" "$COMPLETED" "$FAILURES" "$summary_rc" "$RUN_DIR/results.ndjson"
+exit $(( FAILURES > 0 || summary_rc != 0 || COMPLETED != TOTAL ? 1 : 0 ))
