@@ -58,6 +58,18 @@ class ImportConcurrencyResultsTests(unittest.TestCase):
             self.assertFalse((dest / "cases" / "persy-case.json").exists())
             self.assertTrue((dest / "import-manifest.json").is_file())
 
+    def test_verify_detects_tampered_import(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = self.make_source(root)
+            write_case(source, "ok", engine="redb")
+            dest = root / "v2"
+            MODULE.import_results(source, dest, {"persy"})
+            MODULE.verify_import(dest)
+            (dest / "cases" / "ok.json").write_text("{}\n")
+            with self.assertRaises(RuntimeError):
+                MODULE.verify_import(dest)
+
     def test_rejects_nonquiet_source(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

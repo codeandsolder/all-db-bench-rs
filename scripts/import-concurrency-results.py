@@ -105,12 +105,66 @@ def import_results(source: Path, dest: Path, excluded_engines: set[str]) -> dict
     return manifest
 
 
+def verify_import(run_dir: Path) -> dict[str, Any]:
+    manifest_path = run_dir / "import-manifest.json"
+    if not manifest_path.is_file():
+        raise RuntimeError(f"missing import manifest: {manifest_path}")
+    manifest = load_json(manifest_path)
+    expected_importer = manifest.get("importer_sha256")
+    actual_importer = sha256(Path(__file__))
+    if expected_importer != actual_importer:
+        raise RuntimeError(
+            f"importer SHA-256 mismatch: manifest={expected_importer} current={actual_importer}"
+        )
+    entries = manifest.get("cases")
+    if not isinstance(entries, list):
+        raise RuntimeError("import manifest cases must be a list")
+    if manifest.get("imported_case_count") != len(entries):
+        raise RuntimeError("imported_case_count does not match manifest case list")
+    excluded = set(manifest.get("excluded_engines", []))
+    seen: set[str] = set()
+    for entry in entries:
+        case_id = entry.get("case_id")
+        engine = entry.get("engine")
+        if not isinstance(case_id, str) or not case_id or case_id in seen:
+            raise RuntimeError(f"invalid or duplicate imported case_id: {case_id!r}")
+        seen.add(case_id)
+        if engine in excluded:
+            raise RuntimeError(f"excluded engine appears in imported cases: {engine}")
+        paths = {
+            "result_sha256": run_dir / "cases" / f"{case_id}.json",
+            "noise_before_sha256": run_dir / "noise" / f"{case_id}.before.json",
+            "noise_after_sha256": run_dir / "noise" / f"{case_id}.after.json",
+        }
+        for field, path in paths.items():
+            if not path.is_file():
+                raise RuntimeError(f"missing imported artifact: {path}")
+            actual = sha256(path)
+            if actual != entry.get(field):
+                raise RuntimeError(
+                    f"imported artifact SHA-256 mismatch for {case_id} {field}: "
+                    f"manifest={entry.get(field)} actual={actual}"
+                )
+        require_quiet(paths["noise_before_sha256"])
+        require_quiet(paths["noise_after_sha256"])
+    return manifest
+
+
 def main() -> int:
-    p = argparse.ArgumentParser(description="Import accepted non-Persy concurrency v1 cases into a v2 run with explicit provenance")
-    p.add_argument("source", type=Path)
-    p.add_argument("dest", type=Path)
+    p = argparse.ArgumentParser(description="Import or verify accepted concurrency results with explicit provenance")
+    p.add_argument("source", type=Path, nargs="?")
+    p.add_argument("dest", type=Path, nargs="?")
     p.add_argument("--exclude-engine", action="append", default=["persy"])
+    p.add_argument("--verify-run", type=Path)
     args = p.parse_args()
+    if args.verify_run is not None:
+        if args.source is not None or args.dest is not None:
+            p.error("--verify-run cannot be combined with source/dest")
+        manifest = verify_import(args.verify_run)
+        print(json.dumps({"verified": True, "imported_case_count": manifest["imported_case_count"]}, sort_keys=True))
+        return 0
+    if args.source is None or args.dest is None:
+        p.error("source and dest are required unless --verify-run is used")
     manifest = import_results(args.source, args.dest, set(args.exclude_engine))
     print(json.dumps({k: v for k, v in manifest.items() if k != "cases"}, indent=2, sort_keys=True))
     return 0
