@@ -123,7 +123,11 @@ for job in "${ORDERED[@]}"; do
   concurrency_check_io_quiet "$PROFILE" "before:$case_id" || exit $?
   concurrency_check_external_noise "$ROOT" "$PROFILE" "before:$case_id" "$noise_before" || exit $?
   rm -f "$out"
-  cmd=("$BIN" --engine "$engine" --durability "$durability" --workload "$workload" --records "$records" --ops "$ops" --clients "$clients" --value-bytes 256 --value-pattern pseudo-random --key-bytes 8 --key-shape sequential --access-pattern auto --write-pattern "$write_pattern" --state-evolution "$state_evolution" --bounded-churn-slots "$bounded_churn_slots" --txn-size 100 --scan-len 100 --warmup-reads 5000 --trial "$trial" --seed 1592606758 --scenario "$scenario" --root "$DATA_DIR" --output "$out")
+  cmd=("$BIN" --engine "$engine" --durability "$durability" --workload "$workload" --records "$records" --ops "$ops" --clients "$clients" --value-bytes 256 --value-pattern pseudo-random --key-bytes 8 --key-shape sequential --access-pattern auto --write-pattern "$write_pattern")
+  if (( PLAN_VERSION >= 2 )); then
+    cmd+=(--state-evolution "$state_evolution" --bounded-churn-slots "$bounded_churn_slots")
+  fi
+  cmd+=(--txn-size 100 --scan-len 100 --warmup-reads 5000 --trial "$trial" --seed 1592606758 --scenario "$scenario" --root "$DATA_DIR" --output "$out")
   if [[ "$engine" == persy ]]; then
     DBBENCH_PERSY_LOCK_TIMEOUT_MS="$PERSY_LOCK_TIMEOUT_MS" timeout --signal=TERM --kill-after=5s "${CASE_TIMEOUT_S}s" "${cmd[@]}" 2>"$err"
   else

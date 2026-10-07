@@ -10,3 +10,6 @@ if [[ -s "$PLAN" ]]; then
   jq -e '.plan_version == 1 and .expect_trials == 1 and .case_count == 297' "$tmp/meta.json" >/dev/null
 fi
 echo kv-concurrency-plan-ok
+
+# v1 plans must remain runnable by historical binaries that predate state-evolution flags.
+rg -q 'PLAN_VERSION >= 2' "$ROOT/scripts/run-kv-concurrency-plan.sh"
