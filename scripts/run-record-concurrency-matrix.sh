@@ -25,6 +25,8 @@ case "$PROFILE" in
 esac
 
 ROOT=${ROOT:-/srv/scratch/db-bench-2026-09-27}
+# shellcheck source=concurrency-matrix-policy.sh
+source "$ROOT/scripts/concurrency-matrix-policy.sh"
 CPUS=$(getconf _NPROCESSORS_ONLN)
 check_quiet_host() {
   local phase=${1:-start} load1 io_psi10
@@ -104,29 +106,35 @@ for trial in $(seq 1 "$TRIALS"); do
   for engine in "${ENGINES[@]}"; do
     for clients in "${CLIENTS[@]}"; do
       for workload in "${WORKLOADS[@]}"; do
-        add record-concurrency-core "$engine" sync "$workload" "$clients" "$RECORDS" "$OPS" "$PAYLOAD" "$TXN" "$trial"
+        case_ops=$(record_concurrency_ops "$PROFILE" record-concurrency-core "$workload" "$OPS") || exit 2
+        add record-concurrency-core "$engine" sync "$workload" "$clients" "$RECORDS" "$case_ops" "$PAYLOAD" "$TXN" "$trial"
       done
     done
 
     for clients in "${RELAXED_CLIENTS[@]}"; do
       for workload in read-heavy write-burst; do
-        add record-concurrency-relaxed "$engine" relaxed "$workload" "$clients" "$RECORDS" "$OPS" "$PAYLOAD" "$TXN" "$trial"
+        case_ops=$(record_concurrency_ops "$PROFILE" record-concurrency-relaxed "$workload" "$OPS") || exit 2
+        add record-concurrency-relaxed "$engine" relaxed "$workload" "$clients" "$RECORDS" "$case_ops" "$PAYLOAD" "$TXN" "$trial"
       done
     done
 
     for clients in "${STRESS_CLIENTS[@]}"; do
       for workload in read-heavy write-burst; do
-        add record-concurrency-large-payload "$engine" sync "$workload" "$clients" "$RECORDS" "$OPS" "$STRESS_PAYLOAD" "$TXN" "$trial"
+        case_ops=$(record_concurrency_ops "$PROFILE" record-concurrency-large-payload "$workload" "$OPS") || exit 2
+        add record-concurrency-large-payload "$engine" sync "$workload" "$clients" "$RECORDS" "$case_ops" "$STRESS_PAYLOAD" "$TXN" "$trial"
       done
     done
 
     for clients in "${STRESS_CLIENTS[@]}"; do
-      add record-concurrency-hotset "$engine" sync read-heavy "$clients" "$HOT_RECORDS" "$HOT_OPS" "$PAYLOAD" "$TXN" "$trial"
+      case_ops=$(record_concurrency_ops "$PROFILE" record-concurrency-hotset read-heavy "$HOT_OPS") || exit 2
+      add record-concurrency-hotset "$engine" sync read-heavy "$clients" "$HOT_RECORDS" "$case_ops" "$PAYLOAD" "$TXN" "$trial"
     done
 
     for clients in "${TX_CLIENTS[@]}"; do
-      add record-concurrency-txn-1 "$engine" sync write-burst "$clients" "$RECORDS" "$TX1_OPS" "$PAYLOAD" 1 "$trial"
-      add record-concurrency-txn-1000 "$engine" sync write-burst "$clients" "$RECORDS" "$TX1000_OPS" "$PAYLOAD" 1000 "$trial"
+      case_ops=$(record_concurrency_ops "$PROFILE" record-concurrency-txn-1 write-burst "$TX1_OPS") || exit 2
+      add record-concurrency-txn-1 "$engine" sync write-burst "$clients" "$RECORDS" "$case_ops" "$PAYLOAD" 1 "$trial"
+      case_ops=$(record_concurrency_ops "$PROFILE" record-concurrency-txn-1000 write-burst "$TX1000_OPS") || exit 2
+      add record-concurrency-txn-1000 "$engine" sync write-burst "$clients" "$RECORDS" "$case_ops" "$PAYLOAD" 1000 "$trial"
     done
   done
 done
