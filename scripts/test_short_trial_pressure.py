@@ -75,6 +75,20 @@ class ShortTrialPressureTests(unittest.TestCase):
             for name in ("results.ndjson", "summary.json", "summary.md", "host-end.txt"):
                 self.assertFalse((run / name).exists())
 
+    def test_targeted_scrub_only_examines_named_case(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run = Path(tmp)
+            (run / "cases").mkdir()
+            first = run / "cases" / "t1-rocksdb-relaxed-write-burst.json"
+            second = run / "cases" / "t2-rocksdb-relaxed-write-burst.json"
+            first.write_text(json.dumps(row(trial=1, psi=0.2)))
+            second.write_text(json.dumps(row(trial=2, psi=0.2)))
+            report = MODULE.scrub(run, cpu_count=8, case_ids={first.stem})
+            self.assertEqual(report["examined"], 1)
+            self.assertEqual(report["rejected"], 1)
+            self.assertFalse(first.exists())
+            self.assertTrue(second.exists())
+
     def test_dry_run_preserves_case(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             run = Path(tmp)
