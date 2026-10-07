@@ -17,7 +17,8 @@ fio --version
 rustfmt +1.99.0 --edition 2024 \
   engines/surrealdb-rocksdb/src/main.rs \
   engines/surrealdb-rocksdb/src/metrics.rs \
-  engines/surrealdb-rocksdb/src/bin/surrealdb-rocksdb-recordconcurrency.rs --check
+  engines/surrealdb-rocksdb/src/bin/surrealdb-rocksdb-recordconcurrency.rs \
+  engines/surrealdb-rocksdb/src/bin/surrealdb-rocksdb-recordsustained.rs --check
 bash -n scripts/*.sh
 uv run python -m py_compile scripts/*.py
 uv run python -m unittest discover -s scripts -p 'test_*.py'
@@ -48,5 +49,8 @@ CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target} \
 "$ROOT/scripts/cargo-local-1.99.sh" check --locked \
   --manifest-path "$ROOT/engines/surrealdb-rocksdb/Cargo.toml" \
   --target-dir "${SURREAL_ROCKS_TARGET_DIR:-/tmp/rust-db-surreal-rocks-target}"
+"$ROOT/scripts/cargo-local-1.99.sh" clippy --locked \
+  --manifest-path "$ROOT/engines/surrealdb-rocksdb/Cargo.toml" \
+  --target-dir "${SURREAL_ROCKS_TARGET_DIR:-/tmp/rust-db-surreal-rocks-target}" -- -D warnings
 
 echo "static validation passed"

@@ -1,10 +1,9 @@
-#![cfg(feature = "record")]
 #![allow(clippy::too_many_lines)]
 
 #[allow(dead_code)]
-#[path = "recordbench.rs"]
+#[path = "../main.rs"]
 mod base;
-#[path = "../record_sustained_driver.rs"]
+#[path = "../../../../src/record_sustained_driver.rs"]
 mod driver;
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 1)]

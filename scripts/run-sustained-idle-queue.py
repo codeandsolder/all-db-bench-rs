@@ -83,7 +83,7 @@ def preflight_host(repo: Path, *, max_io_full_avg10: float = 5.0) -> int:
 
 def load_and_verify_binaries(path: Path) -> dict[str, Any]:
     data = json.loads(path.read_text())
-    for key in ("kv", "record"):
+    for key in ("kv", "record", "record_rocksdb"):
         item = data[key]
         binary = Path(item["path"])
         if not binary.is_file() or not os.access(binary, os.X_OK):
@@ -133,6 +133,10 @@ def stage_env(repo: Path, binaries: dict[str, Any], *, lane: str, run_id: str) -
             "BENCH_BIN_SHA256": item["sha256"],
         }
     )
+    if lane == "record":
+        rocks = binaries["record_rocksdb"]
+        env["BENCH_ROCKS_BIN"] = rocks["path"]
+        env["BENCH_ROCKS_BIN_SHA256"] = rocks["sha256"]
     return env
 
 

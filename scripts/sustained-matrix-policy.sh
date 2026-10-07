@@ -46,5 +46,5 @@ kv_sustained_expected_cases() {
   case "$1" in smoke) echo 86 ;; quick) echo 354 ;; full) echo 590 ;; *) return 2 ;; esac
 }
 record_sustained_expected_cases() {
-  case "$1" in smoke) echo 24 ;; quick) echo 90 ;; full) echo 150 ;; *) return 2 ;; esac
+  case "$1" in smoke) echo 32 ;; quick) echo 120 ;; full) echo 200 ;; *) return 2 ;; esac
 }

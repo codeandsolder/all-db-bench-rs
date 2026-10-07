@@ -278,7 +278,11 @@ impl Engine {
         Ok(())
     }
 
-    pub(crate) async fn upsert_batch(&self, rows: &[(u64, RecordData)]) -> Result<()> {
+    pub(crate) async fn write_batch(
+        &self,
+        rows: &[(u64, RecordData)],
+        deletes: &[u64],
+    ) -> Result<()> {
         match self {
             Self::SurrealRocksdb(db) => {
                 let mut sql = String::from("BEGIN TRANSACTION;\n");
@@ -288,11 +292,18 @@ impl Engine {
                         id, data.bucket, data.payload
                     ));
                 }
+                for id in deletes {
+                    sql.push_str(&format!("DELETE item:{id};\n"));
+                }
                 sql.push_str("COMMIT TRANSACTION;");
                 db.query(sql).await?.check()?;
             }
         }
         Ok(())
+    }
+
+    pub(crate) async fn upsert_batch(&self, rows: &[(u64, RecordData)]) -> Result<()> {
+        self.write_batch(rows, &[]).await
     }
 }
 

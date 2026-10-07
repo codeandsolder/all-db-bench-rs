@@ -259,7 +259,7 @@ Recursive on-disk-size measurement is deliberately absent from window boundaries
 
 ## Record sustained-write lane — schema v6
 
-`recordsustained` uses `format_version: 6` and `lane: "record-sustained"`. It intentionally remains distinct from `kv-sustained` because record/SQL/document/index overhead is part of the product-level measurement, while reusing the same fixed-window timing and process/system accounting model.
+The shared record-sustained driver uses `format_version: 6` and `lane: "record-sustained"` across SurrealDB/SurrealKV, isolated SurrealDB/RocksDB, Turso and SQLite. The RocksDB build is a separate binary/package because the SurrealDB storage features are mutually exclusive, but it emits the same schema and semantics. The lane intentionally remains distinct from `kv-sustained` because record/SQL/document/index overhead is part of the product-level measurement, while reusing the same fixed-window timing and process/system accounting model.
 
 Identity/configuration replaces raw-KV key/value-shape fields with `payload_bytes`; otherwise it carries the same `pattern`, record count, requested operations, window size, transaction size, durability mapping, scenario, trial and seed identities. The analyzer includes `lane` and `payload_bytes` in exact-match grouping so record and raw-KV trials cannot aggregate accidentally.
 

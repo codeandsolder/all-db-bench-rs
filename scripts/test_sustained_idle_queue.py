@@ -26,7 +26,7 @@ class SustainedIdleQueueTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             manifest = {"repo_commit": "abc"}
-            for key in ("kv", "record"):
+            for key in ("kv", "record", "record_rocksdb"):
                 path = root / key
                 path.write_bytes(key.encode())
                 path.chmod(0o755)
@@ -57,12 +57,15 @@ class SustainedIdleQueueTests(unittest.TestCase):
         binaries = {
             "kv": {"path": "/kv", "sha256": "k"},
             "record": {"path": "/record", "sha256": "r"},
+            "record_rocksdb": {"path": "/record-rocksdb", "sha256": "rr"},
         }
         kv = MODULE.stage_env(Path("/repo"), binaries, lane="kv", run_id="kv-run")
         self.assertEqual(kv["BENCH_BIN_SHA256"], "k")
         self.assertEqual(kv["MATRIX_RESUME_SHUFFLE_REMAINING"], "1")
         record = MODULE.stage_env(Path("/repo"), binaries, lane="record", run_id="record-run")
         self.assertEqual(record["BENCH_BIN_SHA256"], "r")
+        self.assertEqual(record["BENCH_ROCKS_BIN"], "/record-rocksdb")
+        self.assertEqual(record["BENCH_ROCKS_BIN_SHA256"], "rr")
 
 
 if __name__ == "__main__":

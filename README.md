@@ -103,7 +103,7 @@ Windowed sustained-write / compaction-cliff campaigns:
     ./scripts/run-kv-sustained-matrix.sh quick
     ./scripts/run-record-sustained-matrix.sh quick
 
-The raw-KV and record-product sustained lanes remain separate result classes, but share the same fixed-op window analysis: p99 transaction latency, process/resource deltas, write-amplification proxies and post-foreground settle debt. Their 75/50/25% baseline-relative cliff thresholds are diagnostics, not pass/fail criteria. Record `smoke` uses a debug build for functional coverage; `quick` and `full` use release builds and are the only record-sustained profiles intended for performance interpretation.
+The raw-KV and four-product record sustained lanes (SurrealDB/SurrealKV, isolated SurrealDB/RocksDB, Turso, SQLite) remain separate result classes, but share the same fixed-op window analysis: p99 transaction latency, process/resource deltas, write-amplification proxies and post-foreground settle debt. Their 75/50/25% baseline-relative cliff thresholds are diagnostics, not pass/fail criteria. Record `smoke` uses a debug build for functional coverage; `quick` and `full` use release builds and are the only record-sustained profiles intended for performance interpretation.
 
 Shared-database concurrency scaling on a multi-core host (fixed total work at 1/2/4/8 clients in quick mode; full mode also includes 16-client oversubscription):
 
