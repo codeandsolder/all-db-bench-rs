@@ -113,6 +113,7 @@ json.dump({
  "runner_sha256":"$RUNNER_SHA","kv_matrix_policy_sha256":"$KV_POLICY_SHA","concurrency_policy_sha256":"$CONCURRENCY_POLICY_SHA",
  "noise_guard_sha256":"$NOISE_SHA","short_pressure_guard_sha256":"$PRESSURE_SHA",
  "case_timeout_s":$CASE_TIMEOUT_S,"persy_lock_timeout_ms":$PERSY_LOCK_TIMEOUT_MS,
+ "state_evolution":"growth","write_pattern":"append",
  "persy_timeout_retry_policy":"typed PrepareError::TransactionTimeout only; max 100 retries; deterministic micro-backoff; retry cost is timed",
  "import_manifest_sha256":("$IMPORT_MANIFEST_SHA" or None),
  "hostname":"$HOST_NAME","machine_id_sha256":"$MACHINE_ID_SHA256","filesystem":"$FILESYSTEM","source":"$SOURCE",
@@ -152,13 +153,13 @@ for job in "${ORDERED[@]}"; do
     DBBENCH_PERSY_LOCK_TIMEOUT_MS="$PERSY_LOCK_TIMEOUT_MS" timeout --signal=TERM --kill-after=5s "${CASE_TIMEOUT_S}s" \
       "$BIN" --engine "$engine" --durability "$durability" --workload "$workload" \
       --records "$RECORDS" --ops "$ops" --clients "$clients" --value-bytes 256 --value-pattern pseudo-random \
-      --key-bytes 8 --key-shape sequential --access-pattern auto --txn-size 100 --scan-len "$scan" --warmup-reads 5000 \
+      --key-bytes 8 --key-shape sequential --access-pattern auto --write-pattern append --state-evolution growth --bounded-churn-slots 0 --txn-size 100 --scan-len "$scan" --warmup-reads 5000 \
       --trial "$trial" --seed 1592606758 --scenario "concurrency-$scenario" --root "$DATA_DIR" --output "$out" 2>"$err"
   else
     timeout --signal=TERM --kill-after=5s "${CASE_TIMEOUT_S}s" \
       "$BIN" --engine "$engine" --durability "$durability" --workload "$workload" \
       --records "$RECORDS" --ops "$ops" --clients "$clients" --value-bytes 256 --value-pattern pseudo-random \
-      --key-bytes 8 --key-shape sequential --access-pattern auto --txn-size 100 --scan-len "$scan" --warmup-reads 5000 \
+      --key-bytes 8 --key-shape sequential --access-pattern auto --write-pattern append --state-evolution growth --bounded-churn-slots 0 --txn-size 100 --scan-len "$scan" --warmup-reads 5000 \
       --trial "$trial" --seed 1592606758 --scenario "concurrency-$scenario" --root "$DATA_DIR" --output "$out" 2>"$err"
   fi
   rc=$?

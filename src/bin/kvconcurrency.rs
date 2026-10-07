@@ -8,7 +8,7 @@ use anyhow::{Context, Result, bail};
 use base::{
     AccessPattern, Durability, Engine, EngineKind, KeyShape, ValuePattern, Workload, WritePattern,
 };
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use hdrhistogram::Histogram;
 use rand::{Rng, SeedableRng, rngs::SmallRng, seq::SliceRandom};
 use serde::Serialize;
@@ -62,6 +62,13 @@ use roughdb::{
 const REDB_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("kv");
 const MANIFOLD_TABLE: ManifoldTableDefinition<&[u8], &[u8]> = ManifoldTableDefinition::new("kv");
 
+#[derive(Clone, Copy, Debug, Serialize, ValueEnum, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+enum StateEvolution {
+    Growth,
+    Bounded,
+}
+
 #[derive(Clone, Debug, Parser)]
 #[command(about = "Shared-database multi-client scaling benchmark")]
 struct Args {
@@ -90,6 +97,12 @@ struct Args {
     miss_percent: u8,
     #[arg(long, value_enum, default_value_t = WritePattern::Append)]
     write_pattern: WritePattern,
+    #[arg(long, value_enum, default_value_t = StateEvolution::Growth)]
+    state_evolution: StateEvolution,
+    #[arg(long, default_value_t = 8_192)]
+    bounded_churn_slots: u64,
+    #[arg(long, default_value_t = false)]
+    verify_bounded_state: bool,
     #[arg(long, default_value_t = 100)]
     txn_size: usize,
     #[arg(long, default_value_t = 100)]
@@ -161,6 +174,10 @@ struct Measurement {
     access_pattern: AccessPattern,
     miss_percent: u8,
     write_pattern: WritePattern,
+    state_evolution: StateEvolution,
+    bounded_churn_slots: u64,
+    verify_bounded_state: bool,
+    bounded_state_verified: bool,
     txn_size: usize,
     scan_len: u64,
     trial: u32,
@@ -879,6 +896,38 @@ impl ClientOps for LsmClient {
     }
 }
 
+fn bounded_churn_ids(records: u64, total_slots: u64, slot: u64, active_a: bool) -> (u64, u64) {
+    let a_id = records.saturating_add(slot);
+    let b_id = records.saturating_add(total_slots).saturating_add(slot);
+    if active_a { (a_id, b_id) } else { (b_id, a_id) }
+}
+
+fn mixed_epoch_targets(workload: Workload, epoch: u64, bounded: bool) -> (u64, u64, u64, u64) {
+    match workload {
+        Workload::ReadHeavy => {
+            let u = epoch * 5 / 100;
+            (epoch - u, u, 0, 0)
+        }
+        Workload::Balanced => {
+            let u = epoch * 30 / 100;
+            let i = epoch * 10 / 100;
+            let d = i;
+            (epoch - u - i - d, u, i, d)
+        }
+        Workload::Churn if bounded => {
+            let i = epoch * 30 / 100;
+            let d = i;
+            (0, epoch - i - d, i, d)
+        }
+        Workload::Churn => {
+            let u = epoch * 40 / 100;
+            let i = epoch * 30 / 100;
+            (0, u, i, epoch - u - i)
+        }
+        _ => unreachable!("mixed_epoch_targets called for non-mixed workload"),
+    }
+}
+
 fn sample_read_id(rng: &mut SmallRng, args: &Args) -> (u64, bool) {
     let miss = args.miss_percent > 0 && rng.random_range(0..100u32) < u32::from(args.miss_percent);
     if miss {
@@ -909,6 +958,21 @@ async fn prefill(engine: &mut Engine, args: &Args) -> Result<()> {
             puts.clear();
         }
     }
+    if args.state_evolution == StateEvolution::Bounded
+        && matches!(args.workload, Workload::Balanced | Workload::Churn)
+    {
+        for slot in 0..args.bounded_churn_slots {
+            let id = args.records.saturating_add(slot);
+            puts.push((
+                base::key(id, args.key_bytes, args.key_shape, args.seed),
+                base::value(id, args.value_bytes, args.seed, args.value_pattern),
+            ));
+            if puts.len() == BATCH {
+                engine.write_batch(args.durability, &puts, &[]).await?;
+                puts.clear();
+            }
+        }
+    }
     if !puts.is_empty() {
         engine.write_batch(args.durability, &puts, &[]).await?;
     }
@@ -933,6 +997,8 @@ async fn run_client<C: ClientOps>(
     client: usize,
     ops: u64,
     offset: u64,
+    churn_slot_start: u64,
+    churn_slot_count: u64,
 ) -> Result<ClientRun> {
     let salt = base::mix_u64((client as u64).wrapping_add(0x636c_6965_6e74_0001));
     let mut rng = SmallRng::seed_from_u64(args.seed ^ u64::from(args.trial) ^ salt);
@@ -945,6 +1011,8 @@ async fn run_client<C: ClientOps>(
     let mut done = 0u64;
     let txn_size = args.txn_size.max(1);
     let mut next_id = args.records.saturating_add(offset);
+    let mut churn_active_a = vec![true; churn_slot_count as usize];
+    let mut churn_cursor = 0u64;
     let make_key = |id| base::key(id, args.key_bytes, args.key_shape, args.seed);
     let make_value = |id, salt| base::value(id, args.value_bytes, salt, args.value_pattern);
 
@@ -1060,6 +1128,10 @@ async fn run_client<C: ClientOps>(
             enum WriteSpec {
                 Put(Vec<u8>, Vec<u8>),
                 Delete(Vec<u8>),
+                Toggle {
+                    put: (Vec<u8>, Vec<u8>),
+                    delete: Vec<u8>,
+                },
             }
             enum Unit {
                 Read(Vec<u8>),
@@ -1071,24 +1143,11 @@ async fn run_client<C: ClientOps>(
 
             while done < ops {
                 let epoch = (ops - done).min(1_000);
-                let (r_target, u_target, i_target, d_target) = match args.workload {
-                    Workload::ReadHeavy => {
-                        let u = epoch * 5 / 100;
-                        (epoch - u, u, 0, 0)
-                    }
-                    Workload::Balanced => {
-                        let u = epoch * 30 / 100;
-                        let i = epoch * 10 / 100;
-                        let d = epoch * 10 / 100;
-                        (epoch - u - i - d, u, i, d)
-                    }
-                    Workload::Churn => {
-                        let u = epoch * 40 / 100;
-                        let i = epoch * 30 / 100;
-                        (0, u, i, epoch - u - i)
-                    }
-                    _ => unreachable!(),
-                };
+                let (r_target, u_target, i_target, d_target) = mixed_epoch_targets(
+                    args.workload,
+                    epoch,
+                    args.state_evolution == StateEvolution::Bounded,
+                );
 
                 let mut units = Vec::with_capacity((r_target as usize) + 16);
                 for _ in 0..r_target {
@@ -1109,22 +1168,49 @@ async fn run_client<C: ClientOps>(
                         make_value(id, args.seed ^ offset ^ done),
                     ));
                 }
-                for _ in 0..i_target {
-                    let id = next_id;
-                    next_id += 1;
-                    specs.push(WriteSpec::Put(
-                        make_key(id),
-                        make_value(id, args.seed ^ offset ^ done),
-                    ));
-                }
-                for _ in 0..d_target {
-                    let id = base::sample_existing_id(
-                        &mut rng,
-                        args.records,
-                        args.access_pattern,
-                        args.workload,
-                    );
-                    specs.push(WriteSpec::Delete(make_key(id)));
+                if args.state_evolution == StateEvolution::Bounded
+                    && matches!(args.workload, Workload::Balanced | Workload::Churn)
+                {
+                    if i_target != d_target {
+                        bail!("bounded churn requires paired insert/delete targets");
+                    }
+                    for _ in 0..i_target {
+                        let local_slot = (churn_cursor % churn_slot_count) as usize;
+                        churn_cursor = churn_cursor.saturating_add(1);
+                        let slot = churn_slot_start.saturating_add(local_slot as u64);
+                        let (delete_id, put_id) = bounded_churn_ids(
+                            args.records,
+                            args.bounded_churn_slots,
+                            slot,
+                            churn_active_a[local_slot],
+                        );
+                        churn_active_a[local_slot] = !churn_active_a[local_slot];
+                        specs.push(WriteSpec::Toggle {
+                            put: (
+                                make_key(put_id),
+                                make_value(put_id, args.seed ^ offset ^ done ^ churn_cursor),
+                            ),
+                            delete: make_key(delete_id),
+                        });
+                    }
+                } else {
+                    for _ in 0..i_target {
+                        let id = next_id;
+                        next_id += 1;
+                        specs.push(WriteSpec::Put(
+                            make_key(id),
+                            make_value(id, args.seed ^ offset ^ done),
+                        ));
+                    }
+                    for _ in 0..d_target {
+                        let id = base::sample_existing_id(
+                            &mut rng,
+                            args.records,
+                            args.access_pattern,
+                            args.workload,
+                        );
+                        specs.push(WriteSpec::Delete(make_key(id)));
+                    }
                 }
                 specs.shuffle(&mut rng);
 
@@ -1132,11 +1218,26 @@ async fn run_client<C: ClientOps>(
                 let mut dels = Vec::with_capacity(txn_size);
                 let mut batch_ops = 0usize;
                 for spec in specs {
+                    let spec_ops = match &spec {
+                        WriteSpec::Toggle { .. } => 2,
+                        WriteSpec::Put(_, _) | WriteSpec::Delete(_) => 1,
+                    };
+                    if batch_ops != 0 && batch_ops + spec_ops > txn_size {
+                        units.push(Unit::Write {
+                            puts: std::mem::take(&mut puts),
+                            deletes: std::mem::take(&mut dels),
+                        });
+                        batch_ops = 0;
+                    }
                     match spec {
                         WriteSpec::Put(k, v) => puts.push((k, v)),
                         WriteSpec::Delete(k) => dels.push(k),
+                        WriteSpec::Toggle { put, delete } => {
+                            puts.push(put);
+                            dels.push(delete);
+                        }
                     }
-                    batch_ops += 1;
+                    batch_ops += spec_ops;
                     if batch_ops == txn_size {
                         units.push(Unit::Write {
                             puts: std::mem::take(&mut puts),
@@ -1205,11 +1306,34 @@ struct AggregateRun {
     read_hist: Histogram<u64>,
     write_hist: Histogram<u64>,
     clients: Vec<ClientRun>,
+    bounded_state_verified: bool,
     elapsed_s: f64,
     process: base::metrics::ProcDelta,
     system_before: base::metrics::SystemSnapshot,
     system_after: base::metrics::SystemSnapshot,
     system_delta: base::metrics::SystemDelta,
+}
+
+async fn verify_bounded_churn_state<C: ClientOps>(client: &mut C, args: &Args) -> Result<()> {
+    for slot in 0..args.bounded_churn_slots {
+        let a_id = args.records.saturating_add(slot);
+        let b_id = args
+            .records
+            .saturating_add(args.bounded_churn_slots)
+            .saturating_add(slot);
+        let a = client
+            .get(&base::key(a_id, args.key_bytes, args.key_shape, args.seed))
+            .await?
+            .is_some();
+        let b = client
+            .get(&base::key(b_id, args.key_bytes, args.key_shape, args.seed))
+            .await?
+            .is_some();
+        if a == b {
+            bail!("bounded churn slot {slot} has invalid occupancy: a={a} b={b}");
+        }
+    }
+    Ok(())
 }
 
 fn run_clients<C: ClientOps>(
@@ -1222,13 +1346,29 @@ fn run_clients<C: ClientOps>(
     let (tx, rx) = mpsc::channel::<(usize, Result<ClientRun>)>();
     let base_ops = args.ops / args.clients as u64;
     let extra = args.ops % args.clients as u64;
+    let use_churn_pool = args.state_evolution == StateEvolution::Bounded
+        && matches!(args.workload, Workload::Balanced | Workload::Churn);
+    let base_slots = if use_churn_pool {
+        args.bounded_churn_slots / args.clients as u64
+    } else {
+        0
+    };
+    let extra_slots = if use_churn_pool {
+        args.bounded_churn_slots % args.clients as u64
+    } else {
+        0
+    };
     let mut offset = 0u64;
+    let mut slot_offset = 0u64;
     let mut joins = Vec::with_capacity(args.clients);
 
     for client in 0..args.clients {
         let ops = base_ops + u64::from((client as u64) < extra);
         let client_offset = offset;
         offset = offset.saturating_add(ops);
+        let client_slots = base_slots + u64::from((client as u64) < extra_slots);
+        let client_slot_start = slot_offset;
+        slot_offset = slot_offset.saturating_add(client_slots);
 
         let mut engine = prototype.clone();
         let thread_args = args.clone();
@@ -1248,6 +1388,8 @@ fn run_clients<C: ClientOps>(
                             client,
                             ops,
                             client_offset,
+                            client_slot_start,
+                            client_slots,
                         ))
                     })();
                     let _ = tx.send((client, outcome));
@@ -1296,6 +1438,14 @@ fn run_clients<C: ClientOps>(
     }
     receive_result?;
 
+    let bounded_state_verified = if args.verify_bounded_state {
+        let mut verifier = prototype;
+        runtime.block_on(verify_bounded_churn_state(&mut verifier, args))?;
+        true
+    } else {
+        false
+    };
+
     client_runs.sort_by_key(|r| r.client);
     let mut read_hist = base::hist();
     let mut write_hist = base::hist();
@@ -1324,6 +1474,7 @@ fn run_clients<C: ClientOps>(
         read_hist,
         write_hist,
         clients: client_runs,
+        bounded_state_verified,
         elapsed_s: elapsed.as_secs_f64(),
         process: process_before.delta(&process_after, elapsed),
         system_delta: system_before.delta(&system_after),
@@ -1447,6 +1598,42 @@ fn median(mut values: Vec<f64>) -> f64 {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bounded_churn_pairs_are_disjoint_and_reversible() {
+        let records = 100_000;
+        let slots = 8_192;
+        for slot in [0, 1, slots / 2, slots - 1] {
+            let (delete_a, put_b) = bounded_churn_ids(records, slots, slot, true);
+            let (delete_b, put_a) = bounded_churn_ids(records, slots, slot, false);
+            assert_eq!(delete_a, put_a);
+            assert_eq!(put_b, delete_b);
+            assert_ne!(delete_a, put_b);
+            assert!((records..records + slots).contains(&delete_a));
+            assert!((records + slots..records + 2 * slots).contains(&put_b));
+        }
+    }
+
+    #[test]
+    fn mixed_epoch_targets_preserve_exact_logical_op_count() {
+        for epoch in 1..=1_000 {
+            for workload in [Workload::ReadHeavy, Workload::Balanced, Workload::Churn] {
+                for bounded in [false, true] {
+                    let (reads, updates, inserts, deletes) =
+                        mixed_epoch_targets(workload, epoch, bounded);
+                    assert_eq!(reads + updates + inserts + deletes, epoch);
+                    if bounded && matches!(workload, Workload::Balanced | Workload::Churn) {
+                        assert_eq!(inserts, deletes);
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<()> {
     let args = Args::parse();
@@ -1470,6 +1657,45 @@ async fn main() -> Result<()> {
     }
     if matches!(args.workload, Workload::DeleteBurst) && args.ops > args.records {
         bail!("delete-burst requires total ops <= records");
+    }
+    if args.verify_bounded_state
+        && !(args.state_evolution == StateEvolution::Bounded
+            && matches!(args.workload, Workload::Balanced | Workload::Churn))
+    {
+        bail!("--verify-bounded-state requires bounded balanced or churn workload");
+    }
+    if args.state_evolution == StateEvolution::Bounded {
+        if matches!(args.workload, Workload::DeleteBurst) {
+            bail!(
+                "bounded state evolution is unsupported for delete-burst; it is a finite transition diagnostic"
+            );
+        }
+        if matches!(args.workload, Workload::TinyTxn | Workload::WriteBurst)
+            && args.write_pattern == WritePattern::Append
+        {
+            bail!(
+                "bounded tiny-txn/write-burst requires update-uniform or update-hot write pattern"
+            );
+        }
+        if matches!(args.workload, Workload::Balanced | Workload::Churn) {
+            if args.write_pattern != WritePattern::UpdateUniform {
+                bail!("bounded balanced/churn requires canonical write-pattern=update-uniform");
+            }
+            if args.txn_size < 2 {
+                bail!(
+                    "bounded balanced/churn requires txn-size >= 2 for paired delete/insert toggles"
+                );
+            }
+            let minimum_slots = (args.clients as u64).saturating_mul(300);
+            if args.bounded_churn_slots < minimum_slots {
+                bail!(
+                    "bounded-churn-slots must be >= clients*300 ({minimum_slots}) to avoid slot reuse within a 1000-op epoch"
+                );
+            }
+            args.records
+                .checked_add(args.bounded_churn_slots.saturating_mul(2))
+                .context("bounded churn key-id range overflow")?;
+        }
     }
     if matches!(args.engine, EngineKind::Lkv) {
         bail!(
@@ -1550,7 +1776,7 @@ async fn main() -> Result<()> {
     let rate_max = client_rates.iter().copied().fold(0.0, f64::max);
 
     let result = Measurement {
-        format_version: 5,
+        format_version: 6,
         lane: "kv-concurrency",
         engine: args.engine,
         engine_version: args.engine.version(),
@@ -1568,6 +1794,14 @@ async fn main() -> Result<()> {
         access_pattern: args.access_pattern,
         miss_percent: args.miss_percent,
         write_pattern: args.write_pattern,
+        state_evolution: args.state_evolution,
+        bounded_churn_slots: if args.state_evolution == StateEvolution::Bounded {
+            args.bounded_churn_slots
+        } else {
+            0
+        },
+        verify_bounded_state: args.verify_bounded_state,
+        bounded_state_verified: run.bounded_state_verified,
         txn_size: args.txn_size,
         scan_len: args.scan_len,
         trial: args.trial,

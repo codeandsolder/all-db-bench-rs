@@ -13,14 +13,15 @@ sys.modules[SPEC.name] = MODULE
 SPEC.loader.exec_module(MODULE)
 
 
-def group(clients: int, rate: float) -> dict:
+def group(clients: int, rate: float, *, state_evolution: str = "growth", bounded_churn_slots: int = 0, format_version: int = 5) -> dict:
     speed = rate / 100.0
     return {
-        "format_version": 5, "lane": "kv-concurrency", "scenario": "concurrency-primary",
+        "format_version": format_version, "lane": "kv-concurrency", "scenario": "concurrency-primary",
         "engine": "x", "engine_version": "1", "durability": "sync", "workload": "point-read",
         "records": 100, "ops_requested": 1000, "clients": clients, "value_bytes": 256,
         "value_pattern": "pseudo-random", "key_bytes": 8, "key_shape": "sequential",
         "access_pattern": "auto", "miss_percent": 0, "write_pattern": "append",
+        "state_evolution": state_evolution, "bounded_churn_slots": bounded_churn_slots,
         "txn_size": 100, "scan_len": 100, "settle_ms": 0, "ops_per_s_median": rate,
         "speedup_vs_c1": speed, "parallel_efficiency_vs_c1": speed / clients,
         "p99_read_multiplier_vs_c1": float(clients), "p99_write_txn_multiplier_vs_c1": None,
@@ -48,6 +49,28 @@ class ScalingSummaryTests(unittest.TestCase):
         self.assertEqual(family["observed_clients"], [1, 2, 4, 8])
         self.assertEqual(family["speedup_at_max_clients"], 4.0)
         self.assertEqual(family["parallel_efficiency_at_max_clients"], 0.5)
+
+    def test_state_evolution_is_part_of_family_identity(self) -> None:
+        growth = [group(c, r, state_evolution="growth", format_version=6) for c, r in ((1,100),(2,180),(4,300),(8,400))]
+        bounded = [group(c, r, state_evolution="bounded", bounded_churn_slots=8192, format_version=6) for c, r in ((1,90),(2,170),(4,290),(8,390))]
+        support = dict(self.support); support["case_count"] = 24
+        summary = {"row_count": 24, "group_count": 8, "problems": [], "groups": growth + bounded}
+        report = MODULE.build_report(summary, support)
+        self.assertEqual(report["problems"], [])
+        self.assertEqual(report["family_count"], 2)
+        self.assertEqual({f["state_evolution"] for f in report["families"]}, {"growth", "bounded"})
+        self.assertEqual({f["bounded_churn_slots"] for f in report["families"]}, {0, 8192})
+
+    def test_state_evolution_is_part_of_family_identity(self) -> None:
+        growth = [group(c, r, state_evolution="growth", format_version=6) for c, r in ((1,100),(2,180),(4,300),(8,400))]
+        bounded = [group(c, r, state_evolution="bounded", bounded_churn_slots=8192, format_version=6) for c, r in ((1,90),(2,170),(4,290),(8,390))]
+        support = dict(self.support); support["case_count"] = 24
+        summary = {"row_count": 24, "group_count": 8, "problems": [], "groups": growth + bounded}
+        report = MODULE.build_report(summary, support)
+        self.assertEqual(report["problems"], [])
+        self.assertEqual(report["family_count"], 2)
+        self.assertEqual({f["state_evolution"] for f in report["families"]}, {"growth", "bounded"})
+        self.assertEqual({f["bounded_churn_slots"] for f in report["families"]}, {0, 8192})
 
     def test_incomplete_family_is_visible_during_progress(self) -> None:
         summary = {"row_count": 6, "group_count": 2, "problems": ["partial"], "groups": [group(1, 100), group(4, 250)]}

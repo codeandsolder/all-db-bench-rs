@@ -35,5 +35,15 @@ class PlanIdleTests(unittest.TestCase):
             (run/"failures.ndjson").write_text("{}\n")
             self.assertFalse(M.run_complete(repo,"r"))
 
+    def test_run_complete_accepts_multitrial_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo=Path(tmp); run=repo/"results"/"runs"/"r"; run.mkdir(parents=True)
+            (run/"support.json").write_text(json.dumps({"case_count":12,"expect_trials":3}))
+            (run/"summary.json").write_text(json.dumps({"row_count":12,"group_count":4,"problems":[]}))
+            self.assertTrue(M.run_complete(repo,"r"))
+            (run/"summary.json").write_text(json.dumps({"row_count":12,"group_count":12,"problems":[]}))
+            self.assertFalse(M.run_complete(repo,"r"))
+
+
 
 if __name__ == "__main__": unittest.main()

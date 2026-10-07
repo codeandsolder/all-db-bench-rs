@@ -35,6 +35,45 @@ def fmt(v: float) -> str:
     return f"{v:.2f}"
 
 
+def group_key(r: dict) -> tuple:
+    return (
+        r.get("format_version", 1),
+        r.get("lane", "kv"),
+        r.get("scenario", "legacy"),
+        r["engine"],
+        r["engine_version"],
+        r["durability"],
+        r["workload"],
+        r["records"],
+        r["ops_requested"],
+        r.get("clients", 1),
+        r.get("value_bytes", r.get("payload_bytes")),
+        r.get("value_pattern", "pseudo-random"),
+        r.get("key_bytes", 8),
+        r.get("key_shape", "sequential"),
+        r.get("access_pattern", "auto"),
+        r.get("miss_percent", 0),
+        r.get("write_pattern", "append"),
+        r.get("state_evolution", "growth"),
+        r.get("bounded_churn_slots", 0),
+        r["txn_size"],
+        r.get("scan_len"),
+        (r.get("post_workload_settle") or {}).get("requested_ms", 0),
+    )
+
+
+def concurrency_identity(item: dict) -> tuple:
+    return (
+        item["format_version"], item["scenario"], item["engine"],
+        item["engine_version"], item["durability"], item["workload"],
+        item["records"], item["ops_requested"], item["value_bytes"],
+        item["value_pattern"], item["key_bytes"], item["key_shape"],
+        item["access_pattern"], item["miss_percent"], item["write_pattern"],
+        item["state_evolution"], item["bounded_churn_slots"],
+        item["txn_size"], item["scan_len"], item["settle_ms"],
+    )
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("input", type=Path)
@@ -59,28 +98,7 @@ def main() -> None:
 
     grouped: dict[tuple, list[dict]] = defaultdict(list)
     for r in rows:
-        key = (
-            r.get("format_version", 1),
-            r.get("lane", "kv"),
-            r.get("scenario", "legacy"),
-            r["engine"],
-            r["engine_version"],
-            r["durability"],
-            r["workload"],
-            r["records"],
-            r["ops_requested"],
-            r.get("clients", 1),
-            r.get("value_bytes", r.get("payload_bytes")),
-            r.get("value_pattern", "pseudo-random"),
-            r.get("key_bytes", 8),
-            r.get("key_shape", "sequential"),
-            r.get("access_pattern", "auto"),
-            r.get("miss_percent", 0),
-            r.get("write_pattern", "append"),
-            r["txn_size"],
-            r.get("scan_len"),
-            (r.get("post_workload_settle") or {}).get("requested_ms", 0),
-        )
+        key = group_key(r)
         grouped[key].append(r)
 
     summary = []
@@ -104,6 +122,8 @@ def main() -> None:
             access_pattern,
             miss_percent,
             write_pattern,
+            state_evolution,
+            bounded_churn_slots,
             txn_size,
             scan_len,
             settle_ms,
@@ -149,6 +169,8 @@ def main() -> None:
                 "access_pattern": access_pattern,
                 "miss_percent": miss_percent,
                 "write_pattern": write_pattern,
+                "state_evolution": state_evolution,
+                "bounded_churn_slots": bounded_churn_slots,
                 "txn_size": txn_size,
                 "scan_len": scan_len,
                 "settle_ms": settle_ms,
@@ -156,7 +178,8 @@ def main() -> None:
                     (
                         f"clients={clients} k={key_bytes}/{key_shape} "
                         f"v={value_bytes}/{value_pattern} access={access_pattern} "
-                        f"miss={miss_percent}% write={write_pattern}"
+                        f"miss={miss_percent}% write={write_pattern} "
+                        f"state={state_evolution}/slots={bounded_churn_slots}"
                     )
                     if lane == "kv-concurrency"
                     else (
@@ -268,14 +291,7 @@ def main() -> None:
     for item in summary:
         if item["lane"] not in {"kv-concurrency", "record-concurrency"} or item["clients"] != 1:
             continue
-        identity = (
-            item["format_version"], item["scenario"], item["engine"],
-            item["engine_version"], item["durability"], item["workload"],
-            item["records"], item["ops_requested"], item["value_bytes"],
-            item["value_pattern"], item["key_bytes"], item["key_shape"],
-            item["access_pattern"], item["miss_percent"], item["write_pattern"],
-            item["txn_size"], item["scan_len"], item["settle_ms"],
-        )
+        identity = concurrency_identity(item)
         concurrency_baselines[identity] = item
 
     for item in summary:
@@ -285,14 +301,7 @@ def main() -> None:
         item["p99_write_txn_multiplier_vs_c1"] = None
         if item["lane"] not in {"kv-concurrency", "record-concurrency"}:
             continue
-        identity = (
-            item["format_version"], item["scenario"], item["engine"],
-            item["engine_version"], item["durability"], item["workload"],
-            item["records"], item["ops_requested"], item["value_bytes"],
-            item["value_pattern"], item["key_bytes"], item["key_shape"],
-            item["access_pattern"], item["miss_percent"], item["write_pattern"],
-            item["txn_size"], item["scan_len"], item["settle_ms"],
-        )
+        identity = concurrency_identity(item)
         base = concurrency_baselines.get(identity)
         if base is None:
             continue

@@ -13,8 +13,8 @@ from typing import Any
 IDENTITY_FIELDS = (
     "format_version", "lane", "scenario", "engine", "engine_version", "durability",
     "workload", "records", "ops_requested", "value_bytes", "value_pattern", "key_bytes",
-    "key_shape", "access_pattern", "miss_percent", "write_pattern", "txn_size", "scan_len",
-    "settle_ms",
+    "key_shape", "access_pattern", "miss_percent", "write_pattern", "state_evolution",
+    "bounded_churn_slots", "txn_size", "scan_len", "settle_ms",
 )
 
 
@@ -116,6 +116,8 @@ def build_report(
             "records": first["records"],
             "ops_requested": first["ops_requested"],
             "value_bytes": first["value_bytes"],
+            "state_evolution": first.get("state_evolution", "growth"),
+            "bounded_churn_slots": first.get("bounded_churn_slots", 0),
             "txn_size": first["txn_size"],
             "scan_len": first["scan_len"],
             "expected_clients": expected,

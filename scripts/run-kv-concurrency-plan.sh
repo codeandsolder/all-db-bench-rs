@@ -49,35 +49,7 @@ HOST_NAME=$(hostname); MACHINE_ID_SHA256=$(sha256sum /etc/machine-id | awk '{pri
 FILESYSTEM=$(findmnt -n -o FSTYPE --target "$DATA_DIR"); SOURCE=$(findmnt -n -o SOURCE --target "$DATA_DIR")
 
 PLAN_TSV="$RUN_DIR/plan.tsv.new"
-python3 - "$PLAN" "$PLAN_TSV" <<'PY_PLAN'
-import json,sys
-from pathlib import Path
-plan=json.loads(Path(sys.argv[1]).read_text())
-if plan.get("concurrency_probe_plan_version") != 1:
-    raise SystemExit(f"unsupported plan version: {plan.get('concurrency_probe_plan_version')!r}")
-cases=plan.get("cases")
-if not isinstance(cases,list) or len(cases) != int(plan.get("case_count",-1)):
-    raise SystemExit("plan case_count mismatch")
-required=("scenario","engine","durability","workload","clients","records","ops","trial")
-seen=set(); families={}
-with open(sys.argv[2],"w") as out:
-    for i,item in enumerate(cases):
-        missing=[key for key in required if key not in item]
-        if missing: raise SystemExit(f"plan case {i} missing {missing}")
-        vals=[str(item[k]) for k in required]
-        if any("|" in v or "\n" in v for v in vals): raise SystemExit(f"invalid delimiter in case {i}")
-        clients=int(item["clients"]); records=int(item["records"]); ops=int(item["ops"]); trial=int(item["trial"])
-        if min(clients,records,ops,trial) < 1: raise SystemExit(f"non-positive numeric field in case {i}")
-        if clients > ops: raise SystemExit(f"clients > ops in case {i}")
-        key=(item["scenario"],item["engine"],item["durability"],item["workload"],clients)
-        if key in seen: raise SystemExit(f"duplicate client group: {key}")
-        seen.add(key)
-        family=key[:-1]
-        previous=families.setdefault(family,(records,ops))
-        if previous != (records,ops): raise SystemExit(f"family total-work mismatch: {family}: {previous} != {(records,ops)}")
-        if item["workload"] == "delete-burst" and ops > records: raise SystemExit(f"delete-burst ops > records in case {i}")
-        out.write("|".join(vals)+"\n")
-PY_PLAN
+uv run --script "$ROOT/scripts/validate-concurrency-plan.py" "$PLAN" "$PLAN_TSV" "$RUN_DIR/plan-meta.json.new" || exit $?
 
 if [[ -s "$RUN_DIR/plan.tsv" ]]; then
   if ! cmp -s "$RUN_DIR/plan.tsv" "$PLAN_TSV"; then
@@ -87,18 +59,29 @@ if [[ -s "$RUN_DIR/plan.tsv" ]]; then
 else
   mv "$PLAN_TSV" "$RUN_DIR/plan.tsv"
 fi
+if [[ -s "$RUN_DIR/plan-meta.json" ]]; then
+  if ! cmp -s "$RUN_DIR/plan-meta.json" "$RUN_DIR/plan-meta.json.new"; then
+    rm -f "$RUN_DIR/plan-meta.json.new"; echo "refusing plan resume: plan metadata changed" >&2; exit 2
+  fi
+  rm -f "$RUN_DIR/plan-meta.json.new"
+else
+  mv "$RUN_DIR/plan-meta.json.new" "$RUN_DIR/plan-meta.json"
+fi
+PLAN_VERSION=$(jq -r .plan_version "$RUN_DIR/plan-meta.json")
+EXPECT_TRIALS=$(jq -r .expect_trials "$RUN_DIR/plan-meta.json")
 mapfile -t JOBS < "$RUN_DIR/plan.tsv"
 TOTAL=${#JOBS[@]}
 (( TOTAL > 0 )) || { echo "empty plan" >&2; exit 2; }
+(( TOTAL % EXPECT_TRIALS == 0 )) || { echo "plan case count is not divisible by expect_trials" >&2; exit 2; }
 
 SUPPORT_NEW="$RUN_DIR/support.json.new"
 python3 - "$SUPPORT_NEW" <<PY_SUPPORT
 import json
 json.dump({
- "lane":"kv-concurrency-probe","profile":"quick","case_count":$TOTAL,"expect_trials":1,
+ "lane":"kv-concurrency-probe","profile":"quick","case_count":$TOTAL,"expect_trials":$EXPECT_TRIALS,"plan_version":$PLAN_VERSION,
  "plan_path":"$PLAN","plan_sha256":"$PLAN_SHA","build_profile":"$BUILD_PROFILE","benchmark_binary_sha256":"$BIN_SHA",
  "runner_sha256":"$RUNNER_SHA","concurrency_policy_sha256":"$CONCURRENCY_POLICY_SHA","noise_guard_sha256":"$NOISE_SHA","short_pressure_guard_sha256":"$PRESSURE_SHA",
- "case_timeout_s":$CASE_TIMEOUT_S,"persy_lock_timeout_ms":$PERSY_LOCK_TIMEOUT_MS,"write_pattern":"append-explicit",
+ "case_timeout_s":$CASE_TIMEOUT_S,"persy_lock_timeout_ms":$PERSY_LOCK_TIMEOUT_MS,
  "hostname":"$HOST_NAME","machine_id_sha256":"$MACHINE_ID_SHA256","filesystem":"$FILESYSTEM","source":"$SOURCE",
  "total_work_semantics":"each planned family keeps identical records and total ops across client counts"
 },open("$SUPPORT_NEW","w"),sort_keys=True,separators=(",",":"))
@@ -125,9 +108,9 @@ clear_failure() {
 INDEX=0
 for job in "${ORDERED[@]}"; do
   INDEX=$((INDEX + 1))
-  IFS='|' read -r scenario engine durability workload clients records ops trial <<< "$job"
+  IFS='|' read -r scenario engine durability workload clients records ops trial state_evolution write_pattern bounded_churn_slots <<< "$job"
   scenario_tag=${scenario#concurrency-}
-  case_id="t${trial}-${scenario_tag}-${engine}-${durability}-${workload}-c${clients}-n${records}-o${ops}"
+  case_id="t${trial}-${scenario_tag}-${engine}-${durability}-${workload}-se${state_evolution}-wp${write_pattern}-bs${bounded_churn_slots}-c${clients}-n${records}-o${ops}"
   out="$RUN_DIR/cases/$case_id.json"; err="$RUN_DIR/stderr/$case_id.log"
   noise_before="$RUN_DIR/noise/$case_id.before.json"; noise_after="$RUN_DIR/noise/$case_id.after.json"
   if [[ -s "$out" ]]; then clear_failure "$case_id"; continue; fi
@@ -135,7 +118,7 @@ for job in "${ORDERED[@]}"; do
   concurrency_check_io_quiet "$PROFILE" "before:$case_id" || exit $?
   concurrency_check_external_noise "$ROOT" "$PROFILE" "before:$case_id" "$noise_before" || exit $?
   rm -f "$out"
-  cmd=("$BIN" --engine "$engine" --durability "$durability" --workload "$workload" --records "$records" --ops "$ops" --clients "$clients" --value-bytes 256 --value-pattern pseudo-random --key-bytes 8 --key-shape sequential --access-pattern auto --write-pattern append --txn-size 100 --scan-len 100 --warmup-reads 5000 --trial "$trial" --seed 1592606758 --scenario "$scenario" --root "$DATA_DIR" --output "$out")
+  cmd=("$BIN" --engine "$engine" --durability "$durability" --workload "$workload" --records "$records" --ops "$ops" --clients "$clients" --value-bytes 256 --value-pattern pseudo-random --key-bytes 8 --key-shape sequential --access-pattern auto --write-pattern "$write_pattern" --state-evolution "$state_evolution" --bounded-churn-slots "$bounded_churn_slots" --txn-size 100 --scan-len 100 --warmup-reads 5000 --trial "$trial" --seed 1592606758 --scenario "$scenario" --root "$DATA_DIR" --output "$out")
   if [[ "$engine" == persy ]]; then
     DBBENCH_PERSY_LOCK_TIMEOUT_MS="$PERSY_LOCK_TIMEOUT_MS" timeout --signal=TERM --kill-after=5s "${CASE_TIMEOUT_S}s" "${cmd[@]}" 2>"$err"
   else
@@ -164,7 +147,7 @@ done
 
 find "$RUN_DIR/cases" -type f -name '*.json' -print0 | sort -z | xargs -0 -r cat > "$RUN_DIR/results.ndjson"
 "$ROOT/scripts/capture-host-metadata.sh" "$RUN_DIR/host-end.txt" "$ROOT"
-if uv run --script "$ROOT/scripts/summarize.py" "$RUN_DIR/results.ndjson" --expect-trials 1 --json-out "$RUN_DIR/summary.json" --markdown-out "$RUN_DIR/summary.md"; then summary_rc=0; else summary_rc=$?; fi
+if uv run --script "$ROOT/scripts/summarize.py" "$RUN_DIR/results.ndjson" --expect-trials "$EXPECT_TRIALS" --json-out "$RUN_DIR/summary.json" --markdown-out "$RUN_DIR/summary.md"; then summary_rc=0; else summary_rc=$?; fi
 FAILURES=0; [[ -s "$RUN_DIR/failures.ndjson" ]] && FAILURES=$(wc -l < "$RUN_DIR/failures.ndjson")
 COMPLETED=$(find "$RUN_DIR/cases" -type f -name '*.json' | wc -l)
 printf 'run=%s total=%s completed=%s failures=%s summary_rc=%s results=%s\n' "$RUN_ID" "$TOTAL" "$COMPLETED" "$FAILURES" "$summary_rc" "$RUN_DIR/results.ndjson"

@@ -153,12 +153,16 @@ A thread created and destroyed entirely between the two snapshots cannot be reco
 The summarizer includes format_version in its exact-match aggregation key and prints it in Markdown output. Results from old schemas therefore cannot be silently combined with v4 even when every workload field matches.
 
 
-## KV concurrency lane — schema v5
+## KV concurrency lane — schema v6
 
-kvconcurrency writes the same schema-v5 process/system resource objects as the raw-KV lane, with lane: "kv-concurrency" and additional concurrency identity/diagnostic fields:
+`kvconcurrency` schema v6 extends the prior concurrency record while retaining the same process/system resource objects, with `lane = "kv-concurrency"`. Schema v5 growth-mode rows remain interpretable but cannot aggregate with v6 because `format_version` is part of every exact identity. v6 adds explicit state-evolution identity so bounded steady-state and growth diagnostics also cannot combine within the new schema. Additional concurrency identity/diagnostic fields are:
 
 - clients: simultaneous client count; this is part of the exact aggregation key.
 - ops_requested: total logical work across all clients, held fixed when calculating scaling.
+- state_evolution: `growth` or `bounded`. `growth` preserves the historical append/mixed-state trajectory; `bounded` is the steady-state scaling semantic.
+- bounded_churn_slots: total fixed churn-slot pool for bounded balanced/churn rows; zero for growth rows. It is part of exact aggregation and c1-baseline identity.
+- verify_bounded_state / bounded_state_verified: functional-validation controls/results. When requested for bounded balanced/churn, verification occurs after the timed/process-resource snapshot and checks that exactly one A/B key is live per slot. Performance runs leave it disabled.
+- write_pattern remains explicit. Bounded tiny-txn/write-burst reject `append` and require update-in-place; balanced/churn use the bounded toggle pool regardless of this field.
 - concurrency_handle: human-readable native sharing strategy (Arc/shared handle, native clones, or sled per-client clones).
 - client_measurements[]: per-client requested/completed operations, elapsed time, throughput, read/write/delete counts and HDR read/write-transaction latency quantiles.
 - client_elapsed_s_min/median/max.
@@ -167,7 +171,7 @@ kvconcurrency writes the same schema-v5 process/system resource objects as the r
 - write_conflict_retries: total transparent engine-contention retries across all clients. SurrealKV TransactionWriteConflict/TransactionRetry and Persy typed transaction-lock timeouts are retried with the same logical write set; successful-operation and latency accounting includes every failed attempt.
 - client_measurements[].write_conflict_retries: the corresponding per-client retry count.
 
-The coordinator records foreground wall time from the synchronized start barrier until all clients report completion. Client threads are kept alive until the process-after snapshot is captured so per-thread scheduler accounting does not lose completed-client TIDs.
+The coordinator records foreground wall time from the synchronized start barrier until all clients report completion. Client threads are kept alive until the process-after snapshot is captured so per-thread scheduler accounting does not lose completed-client TIDs. Generic summary grouping, c1 baseline matching and concurrency-family scaling identity all include `state_evolution` and `bounded_churn_slots`; naming a growth and bounded run with the same scenario therefore cannot silently merge them.
 
 The summarizer keeps client count separate and, when a matching 1-client row exists, adds:
 

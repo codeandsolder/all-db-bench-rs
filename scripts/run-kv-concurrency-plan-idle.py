@@ -86,11 +86,14 @@ def run_complete(repo: Path, run_id: str) -> bool:
         return False
     failures = run / "failures.ndjson"
     expected = int(support.get("case_count", -1))
+    trials = int(support.get("expect_trials", 0))
+    expected_groups = expected // trials if trials > 0 and expected % trials == 0 else -1
     return (
         expected > 0
-        and int(support.get("expect_trials", 0)) == 1
+        and trials > 0
+        and expected_groups > 0
         and summary.get("row_count") == expected
-        and summary.get("group_count") == expected
+        and summary.get("group_count") == expected_groups
         and not summary.get("problems")
         and (not failures.exists() or failures.stat().st_size == 0)
     )
