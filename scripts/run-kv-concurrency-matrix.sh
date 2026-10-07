@@ -33,6 +33,8 @@ esac
 ROOT=${ROOT:-/srv/scratch/db-bench-2026-09-27}
 # shellcheck source=kv-matrix-policy.sh
 source "$ROOT/scripts/kv-matrix-policy.sh"
+# shellcheck source=concurrency-matrix-policy.sh
+source "$ROOT/scripts/concurrency-matrix-policy.sh"
 CPUS=$(getconf _NPROCESSORS_ONLN)
 LOAD1=$(awk '{print $1}' /proc/loadavg)
 if [[ "${ALLOW_BUSY:-0}" != 1 ]] && ! awk -v l="$LOAD1" -v c="$CPUS" 'BEGIN { exit !(l <= c * 1.5) }'; then
@@ -100,7 +102,7 @@ clear_failure() {
   local failures="$RUN_DIR/failures.ndjson"
   [[ -f "$failures" ]] || return 0
   local tmp="${failures}.tmp"
-  jq -c --arg case_id "$case_id" 'select(.case_id != $case_id)'     "$failures" > "$tmp"
+  jq -c --arg case_id "$case_id" 'select(.case_id != $case_id)' "$failures" > "$tmp"
   mv "$tmp" "$failures"
   [[ -s "$failures" ]] || rm -f "$failures"
 }
@@ -148,16 +150,12 @@ for job in "${ORDERED[@]}"; do
   INDEX=$((INDEX + 1))
   IFS='|' read -r scenario engine durability workload clients trial <<< "$job"
 
-  ops=$OPS
   scan=100
+  ops=$(kv_concurrency_ops "$PROFILE" "$workload" "$OPS" "$scan" "$RECORDS") || exit 2
   if [[ "$workload" == range-scan ]]; then
-    ops=$(( OPS / scan ))
     (( ops < clients )) && ops=$clients
     ops=$(kv_effective_ops "$engine" "$workload" "$ops" "$RECORDS") || exit 2
   elif [[ "$workload" == tiny-txn ]]; then
-    # Shared policy applies the one-key-transaction sizing once; do not
-    # pre-divide here or the helper would scale this lane twice.
-    ops=$(kv_effective_ops "$engine" "$workload" "$OPS" "$RECORDS") || exit 2
     (( ops < clients )) && ops=$clients
   elif [[ "$workload" == delete-burst && "$ops" -gt "$RECORDS" ]]; then
     ops=$RECORDS
@@ -209,7 +207,6 @@ if [[ -s "$RUN_DIR/failures.ndjson" ]]; then
 else
   FAILURES=0
 fi
-printf 'run=%s cpus=%s total=%s failures=%s results=%s
-' \
+printf 'run=%s cpus=%s total=%s failures=%s results=%s\n' \
   "$RUN_ID" "$CPUS" "$TOTAL" "$FAILURES" "$RUN_DIR/results.ndjson"
 exit $(( FAILURES > 0 ? 1 : 0 ))
