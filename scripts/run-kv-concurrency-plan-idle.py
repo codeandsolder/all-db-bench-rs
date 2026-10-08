@@ -143,7 +143,7 @@ def main() -> int:
             "BENCH_BIN": str(args.bench_bin),
             "BENCH_BIN_SHA256": args.bench_bin_sha256,
             "BENCH_BIN_PREVERIFIED": "1",
-            "MATRIX_RESUME_SHUFFLE_REMAINING": "1",
+            "MATRIX_RESUME_SHUFFLE_REMAINING": "0" if version >= 2 else "1",
         })
         while True:
             # v2 runners prepare databases at low priority before their own fresh

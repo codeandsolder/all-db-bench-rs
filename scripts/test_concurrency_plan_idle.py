@@ -39,6 +39,7 @@ class PlanIdleTests(unittest.TestCase):
         source = SCRIPT.read_text()
         self.assertIn('"BENCH_BIN_PREVERIFIED": "1"', source)
         self.assertIn('preflight = 0 if version >= 2 else preflight_host(args.repo)', source)
+        self.assertIn('\"MATRIX_RESUME_SHUFFLE_REMAINING\": \"0\" if version >= 2 else \"1\"', source)
 
     def test_run_complete(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
