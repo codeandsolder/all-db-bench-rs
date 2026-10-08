@@ -16,7 +16,7 @@ record = ["dep:surrealdb", "dep:turso", "dep:rusqlite", "surrealdb/kv-surrealkv"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 hdrhistogram = "7"
-rand = { version = "0.9", features = ["small_rng"] }
+rand = { version = "0.10", features = ["small_rng"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tempfile = "3"
