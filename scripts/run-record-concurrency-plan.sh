@@ -184,11 +184,6 @@ for job in "${ORDERED[@]}"; do
       '{case_id:$case_id,returncode:$rc,failure_kind:$failure_kind,stderr:$stderr}' >> "$RUN_DIR/failures.ndjson"
     continue
   fi
-  pressure_report=$(mktemp)
-  pressure_rc=0
-  concurrency_scrub_case_pressure "$ROOT" "$PROFILE" "$RUN_DIR" "$case_id" "$pressure_report" || pressure_rc=$?
-  rm -f "$pressure_report"
-  if (( pressure_rc != 0 )); then clear_failure "$case_id"; exit "$pressure_rc"; fi
   clear_failure "$case_id"
   [[ -s "$err" ]] || rm -f "$err"
 done

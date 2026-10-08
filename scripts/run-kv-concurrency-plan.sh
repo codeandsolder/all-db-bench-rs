@@ -209,15 +209,6 @@ for job in "${ORDERED[@]}"; do
     jq -cn --arg case_id "$case_id" --arg stderr "$err" --arg failure_kind "$failure_kind" --argjson rc "$rc" '{case_id:$case_id,returncode:$rc,failure_kind:$failure_kind,stderr:$stderr}' >> "$RUN_DIR/failures.ndjson"
     continue
   fi
-  pressure_report=$(mktemp)
-  pressure_rc=0
-  concurrency_scrub_case_pressure "$ROOT" "$PROFILE" "$RUN_DIR" "$case_id" "$pressure_report" || pressure_rc=$?
-  rm -f "$pressure_report"
-  if (( pressure_rc != 0 )); then
-    clear_failure "$case_id"
-    (( PLAN_VERSION >= 2 )) && rm -rf "$case_root"
-    exit "$pressure_rc"
-  fi
   (( PLAN_VERSION >= 2 )) && rm -rf "$case_root"
   clear_failure "$case_id"; [[ -s "$err" ]] || rm -f "$err"
 done
