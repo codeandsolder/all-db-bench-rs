@@ -146,6 +146,9 @@ Result NDJSON, summaries and provenance metadata are durable. Per-run database d
 
 ## Concurrency
 
+Concurrency trials are never post-selected on their own runqueue wait or host CPU PSI. Those signals can be induced by the benchmark itself (including engine/runtime worker threads), so they are retained as measured outputs rather than treated as attributable evidence of foreign load. Performance admission instead uses explicit pre/post external-process sampling plus I/O-pressure checks; contaminated windows are retried before/after the case without conditioning accepted results on the engine's own scheduler behavior.
+
+
 Concurrency is a separate raw-KV result lane (lane = "kv-concurrency"); it is never merged with the historical single-client throughput matrix.
 
 scripts/run-kv-concurrency-matrix.sh keeps total logical work fixed across client counts. Quick mode measures 1/2/4/8 simultaneous clients on the 8-logical-CPU laptop; full mode also includes 16 clients as a deliberate oversubscription/suboptimal case. Every case uses one shared logical database, one common prefill, one synchronized start barrier and disjoint append/delete ID ranges. Reads and update-in-place workloads intentionally contend on the same populated/hot sets.

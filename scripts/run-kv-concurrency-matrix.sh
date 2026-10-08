@@ -175,13 +175,7 @@ for job in "${ORDERED[@]}"; do
     jq -cn --arg case_id "$case_id" --arg stderr "$err" --arg failure_kind "$failure_kind" --argjson rc "$rc" '{case_id:$case_id,returncode:$rc,failure_kind:$failure_kind,stderr:$stderr}' >> "$RUN_DIR/failures.ndjson"
     continue
   fi
-  pressure_report=$(mktemp)
-  pressure_rc=0
-  concurrency_scrub_case_pressure "$ROOT" "$PROFILE" "$RUN_DIR" "$case_id" "$pressure_report" || pressure_rc=$?
-  if (( pressure_rc != 0 )); then
-    rm -f "$pressure_report"; clear_failure "$case_id"; exit "$pressure_rc"
-  fi
-  rm -f "$pressure_report"; clear_failure "$case_id"; [[ -s "$err" ]] || rm -f "$err"
+  clear_failure "$case_id"; [[ -s "$err" ]] || rm -f "$err"
 done
 
 find "$RUN_DIR/cases" -type f -name '*.json' -print0 | sort -z | xargs -0 -r cat > "$RUN_DIR/results.ndjson"

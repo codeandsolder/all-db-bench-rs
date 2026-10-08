@@ -21,23 +21,6 @@ concurrency_check_external_noise() {
   return "$rc"
 }
 
-concurrency_scrub_case_pressure() {
-  local root=$1 profile=$2 run_dir=$3 case_id=$4 report=$5
-  [[ "$profile" == smoke ]] && return 0
-  uv run --script "$root/scripts/scrub-short-trial-pressure.py" "$run_dir" \
-    --case-id "$case_id" > "$report" || return $?
-  local rejected
-  rejected=$(python3 - "$report" <<'PY'
-import json,sys
-print(int(json.load(open(sys.argv[1]))["rejected"]))
-PY
-)
-  if (( rejected > 0 )); then
-    echo "retrying short concurrency case after in-window CPU pressure: $case_id" >&2
-    return 75
-  fi
-}
-
 concurrency_prepare_order() {
   local run_dir=$1 resume_policy=$2
   shift 2
