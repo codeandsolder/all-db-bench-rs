@@ -5,7 +5,7 @@ use crate::base::{
 };
 use anyhow::{Context, Result, bail};
 use clap::{Parser, ValueEnum};
-use rand::{Rng, SeedableRng, rngs::SmallRng, seq::SliceRandom};
+use rand::{RngExt, SeedableRng, rngs::SmallRng, seq::SliceRandom};
 use serde::Serialize;
 use std::{
     fs,
