@@ -11,7 +11,7 @@ use base::{
     dir_size, hist, key, peak_rss_kib, quantiles, record, sample_existing_id, value,
 };
 use clap::{Parser, ValueEnum};
-use rand::{Rng, SeedableRng, rngs::SmallRng, seq::SliceRandom};
+use rand::{RngExt, SeedableRng, rngs::SmallRng, seq::SliceRandom};
 use serde::Serialize;
 use std::{
     fs,

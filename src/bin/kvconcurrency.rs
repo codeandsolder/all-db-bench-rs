@@ -10,7 +10,7 @@ use base::{
 };
 use clap::{Parser, ValueEnum};
 use hdrhistogram::Histogram;
-use rand::{Rng, SeedableRng, rngs::SmallRng, seq::SliceRandom};
+use rand::{RngExt, SeedableRng, rngs::SmallRng, seq::SliceRandom};
 use serde::Serialize;
 use std::{
     fs,

@@ -8,7 +8,7 @@ use anyhow::{Context, Result, bail};
 use base::{Durability, Engine, EngineKind, RecordData, Workload};
 use clap::{Parser, ValueEnum};
 use hdrhistogram::Histogram;
-use rand::{Rng, SeedableRng, rngs::SmallRng};
+use rand::{RngExt, SeedableRng, rngs::SmallRng};
 use serde::Serialize;
 use std::{
     fs,
