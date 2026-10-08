@@ -56,31 +56,35 @@ def parse_jobs(run_dir: Path, support: dict[str, Any]) -> list[dict[str, Any]]:
     path = run_dir / "jobs.txt"
     if not path.is_file():
         raise ValueError(f"missing jobs.txt: {path}")
-    profile = str(support["profile"])
-    default_ops = int(support["default_ops"])
-    records = int(support["records"])
     jobs: list[dict[str, Any]] = []
     for line_no, line in enumerate(path.read_text().splitlines(), 1):
         if not line.strip():
             continue
         fields = line.split("|")
-        if len(fields) != 6:
-            raise ValueError(f"invalid jobs.txt line {line_no}: {line!r}")
-        scenario, engine, durability, workload, clients_raw, trial_raw = fields
-        clients = int(clients_raw)
-        trial = int(trial_raw)
-        jobs.append(
-            {
-                "scenario": f"concurrency-{scenario}",
-                "engine": engine,
-                "durability": durability,
-                "workload": workload,
-                "clients": clients,
-                "trial": trial,
-                "records": records,
+        if len(fields) == 6:
+            profile = str(support["profile"])
+            default_ops = int(support["default_ops"])
+            records = int(support["records"])
+            scenario, engine, durability, workload, clients_raw, trial_raw = fields
+            clients = int(clients_raw)
+            trial = int(trial_raw)
+            jobs.append({
+                "scenario": f"concurrency-{scenario}", "engine": engine,
+                "durability": durability, "workload": workload, "clients": clients,
+                "trial": trial, "records": records,
                 "ops": stock_ops(profile, workload, default_ops, records, clients),
-            }
-        )
+            })
+        elif len(fields) == 11:
+            scenario, engine, durability, workload, clients_raw, records_raw, ops_raw, trial_raw, state, write, slots_raw = fields
+            jobs.append({
+                "scenario": scenario, "engine": engine, "durability": durability,
+                "workload": workload, "clients": int(clients_raw), "records": int(records_raw),
+                "ops": int(ops_raw), "trial": int(trial_raw),
+                "state_evolution": state, "write_pattern": write,
+                "bounded_churn_slots": int(slots_raw),
+            })
+        else:
+            raise ValueError(f"invalid jobs.txt line {line_no}: {line!r}")
     return jobs
 
 
@@ -135,10 +139,16 @@ def audit(run_dir: Path, additional_runs: Iterable[Path] = ()) -> dict[str, Any]
 
     planned_groups: dict[tuple[Any, ...], dict[str, Any]] = {}
     planned_families: dict[tuple[Any, ...], set[int]] = defaultdict(set)
+    planned_family_work: dict[tuple[Any, ...], tuple[int, int]] = {}
     for job in jobs:
         ck = client_key(job)
         planned_groups.setdefault(ck, job)
-        planned_families[family_key(job)].add(int(job["clients"]))
+        fk = family_key(job)
+        planned_families[fk].add(int(job["clients"]))
+        work = (int(job["records"]), int(job["ops"]))
+        previous = planned_family_work.setdefault(fk, work)
+        if previous != work:
+            raise ValueError(f"family total-work mismatch: {fk}: {previous} != {work}")
 
     observed: dict[tuple[Any, ...], list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
@@ -189,9 +199,7 @@ def audit(run_dir: Path, additional_runs: Iterable[Path] = ()) -> dict[str, Any]
         scenario, engine, durability, workload = fk
         observed_groups = by_family_observed.get(fk, [])
         missing_clients = sorted(clients - {int(item["clients"]) for item in observed_groups})
-        current_ops = stock_ops(
-            str(support["profile"]), workload, int(support["default_ops"]), int(support["records"]), max(clients)
-        )
+        current_records, current_ops = planned_family_work[fk]
         entry: dict[str, Any] = {
             "scenario": scenario,
             "engine": engine,
@@ -199,7 +207,7 @@ def audit(run_dir: Path, additional_runs: Iterable[Path] = ()) -> dict[str, Any]
             "workload": workload,
             "clients": sorted(clients),
             "missing_clients": missing_clients,
-            "current_records": int(support["records"]),
+            "current_records": current_records,
             "current_ops": current_ops,
             "observed_client_groups": len(observed_groups),
             "planned_client_groups": len(clients),
