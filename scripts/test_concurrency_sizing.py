@@ -119,6 +119,20 @@ class ConcurrencySizingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "partial result"):
             M.audit(self.make_run(jobs, [bad]))
 
+    def test_exact_plan_jobs_are_supported(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        run = Path(tmp.name)
+        (run / "cases").mkdir()
+        (run / "support.json").write_text(json.dumps({"lane": "kv-concurrency", "profile": "quick", "trials": 1}))
+        (run / "jobs.txt").write_text("concurrency-primary|fast|sync|point-read|1|100000|200000|1|growth|append|0\n")
+        (run / "cases" / "r0.json").write_text(json.dumps(row(workload="point-read", clients=1, trial=1, elapsed=1.0, rate=200_000)))
+        report = M.audit(run)
+        self.assertEqual(report["planned_case_count"], 1)
+        self.assertEqual(report["observed_client_group_count"], 1)
+        self.assertEqual(report["families"][0]["current_records"], 100_000)
+        self.assertEqual(report["families"][0]["current_ops"], 200_000)
+
 
 if __name__ == "__main__":
     unittest.main()
