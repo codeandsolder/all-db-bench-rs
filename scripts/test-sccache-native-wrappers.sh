@@ -24,14 +24,13 @@ out=$(
   "$ROOT/scripts/sccache-native-rustc.sh" /toolchains/rustc --crate-name demo
 )
 grep -Fx 'port=4999' <<<"$out"
-grep -Fx 'start=unset' <<<"$out"
+grep -Fx 'start=0' <<<"$out"
 grep -Fx "conf=$ROOT/scripts/sccache-native-local.conf" <<<"$out"
 grep -Fx 'canonical=unset' <<<"$out"
 grep -Fx 'argv=</toolchains/rustc><--crate-name><demo>' <<<"$out"
 
 out=$(
   SCCACHE_BIN="$TMP/fake-sccache" \
-  DB_BENCH_CC_REAL=/usr/bin/cc \
   "$ROOT/scripts/sccache-native-cc.sh" -c demo.c
 )
 grep -Fx 'canonical=unset' <<<"$out"
@@ -39,7 +38,6 @@ grep -Fx 'argv=</usr/bin/cc><-c><demo.c>' <<<"$out"
 
 out=$(
   SCCACHE_BIN="$TMP/fake-sccache" \
-  DB_BENCH_CXX_REAL=/usr/bin/c++ \
   "$ROOT/scripts/sccache-native-cxx.sh" -c demo.cc
 )
 grep -Fx 'canonical=unset' <<<"$out"
@@ -50,5 +48,14 @@ if SCCACHE_BIN="$TMP/does-not-exist" "$ROOT/scripts/sccache-native-rustc.sh" /to
   exit 1
 fi
 grep -F 'refusing uncached compilation' "$TMP/missing.err"
+
+# Exercise the real wrappers, not just argv plumbing. This catches accidental
+# recursion through machine-wide compiler shims such as /usr/local/bin/c++.
+printf 'int demo(void) { return 0; }\n' > "$TMP/demo.c"
+printf 'int demo_cpp() { return 0; }\n' > "$TMP/demo.cc"
+timeout 30 "$ROOT/scripts/sccache-native-cc.sh" -c "$TMP/demo.c" -o "$TMP/demo.o"
+timeout 30 "$ROOT/scripts/sccache-native-cxx.sh" -c "$TMP/demo.cc" -o "$TMP/demo++.o"
+test -s "$TMP/demo.o"
+test -s "$TMP/demo++.o"
 
 echo 'native sccache wrapper tests passed'
