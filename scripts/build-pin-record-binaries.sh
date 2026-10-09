@@ -12,16 +12,26 @@ if [[ -n "$(git -C "$ROOT" status --porcelain=v1 --untracked-files=normal)" ]]; 
 fi
 
 mkdir -p "$OUT"
-CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" build \
-  --release --locked --features record \
-  --bin recordbench --bin recordconcurrency --bin recordsustained
-"$ROOT/scripts/cargo-local-1.99.sh" build \
-  --release --locked \
-  --manifest-path "$ROOT/engines/surrealdb-rocksdb/Cargo.toml" \
-  --target-dir "$ROCKS_TARGET_DIR" \
-  --bin surrealdb-rocksdb-recordbench \
-  --bin surrealdb-rocksdb-recordconcurrency \
-  --bin surrealdb-rocksdb-recordsustained
+
+# These release binaries use ThinLTO + one codegen unit and can each consume
+# several GiB while linking. Build them serially so pinning is reliable on the
+# 16 GiB benchmark host instead of inducing memory pressure or linker SIGTERM.
+for bin in recordbench recordconcurrency recordsustained; do
+  CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" build \
+    --release --locked --features record --bin "$bin"
+done
+
+for bin in \
+  surrealdb-rocksdb-recordbench \
+  surrealdb-rocksdb-recordconcurrency \
+  surrealdb-rocksdb-recordsustained
+do
+  "$ROOT/scripts/cargo-local-1.99.sh" build \
+    --release --locked \
+    --manifest-path "$ROOT/engines/surrealdb-rocksdb/Cargo.toml" \
+    --target-dir "$ROCKS_TARGET_DIR" \
+    --bin "$bin"
+done
 
 "$ROOT/scripts/smoke-record-binaries.py" \
   --bench-bin "$TARGET_DIR/release/recordbench" \
