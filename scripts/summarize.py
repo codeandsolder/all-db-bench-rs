@@ -57,6 +57,8 @@ def group_key(r: dict) -> tuple:
         r.get("state_evolution", "growth"),
         r.get("bounded_churn_slots", 0),
         r["txn_size"],
+        r.get("read_materialization", "legacy-read-v0"),
+        r.get("write_materialization", "legacy-return-v0"),
         r.get("scan_len"),
         (r.get("post_workload_settle") or {}).get("requested_ms", 0),
     )
@@ -70,7 +72,8 @@ def concurrency_identity(item: dict) -> tuple:
         item["value_pattern"], item["key_bytes"], item["key_shape"],
         item["access_pattern"], item["miss_percent"], item["write_pattern"],
         item["state_evolution"], item["bounded_churn_slots"],
-        item["txn_size"], item["scan_len"], item["settle_ms"],
+        item["txn_size"], item.get("read_materialization", "legacy-read-v0"),
+        item.get("write_materialization", "legacy-return-v0"), item["scan_len"], item["settle_ms"],
     )
 
 
@@ -125,6 +128,8 @@ def main() -> None:
             state_evolution,
             bounded_churn_slots,
             txn_size,
+            read_materialization,
+            write_materialization,
             scan_len,
             settle_ms,
         ) = key
@@ -172,6 +177,8 @@ def main() -> None:
                 "state_evolution": state_evolution,
                 "bounded_churn_slots": bounded_churn_slots,
                 "txn_size": txn_size,
+                "read_materialization": read_materialization,
+                "write_materialization": write_materialization,
                 "scan_len": scan_len,
                 "settle_ms": settle_ms,
                 "configuration": (

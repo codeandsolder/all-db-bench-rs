@@ -11,6 +11,9 @@ from typing import Any
 TARGET_SECONDS=3.0
 MAX_SLOW_SECONDS=15.0
 FINAL_TRIALS=3
+PLAN_VERSION=2
+READ_MATERIALIZATION="full-record-v1"
+WRITE_MATERIALIZATION="no-return-v1"
 
 def sha256(path: Path)->str:
     h=hashlib.sha256()
@@ -25,13 +28,15 @@ def case_set_sha256(paths:list[Path])->str:
     return h.hexdigest()
 
 def family_key(x:dict[str,Any])->tuple[Any,...]:
-    return (x["scenario"],x["engine"],x["durability"],x["workload"],int(x["records"]),int(x["payload_bytes"]),int(x["txn_size"]),x["state_evolution"])
+    return (x["scenario"],x["engine"],x["durability"],x["workload"],int(x["records"]),int(x["payload_bytes"]),int(x["txn_size"]),x["state_evolution"],x["read_materialization"],x["write_materialization"])
 def client_key(x:dict[str,Any])->tuple[Any,...]: return family_key(x)+(int(x["clients"]),)
 def result_key(x:dict[str,Any])->tuple[Any,...]: return client_key(x)+(int(x["trial"]),)
 
 def load_results(plan_path:Path,run_dir:Path):
     plan=json.loads(plan_path.read_text())
-    if int(plan.get("record_concurrency_plan_version",-1))!=1 or plan.get("kind")!="semantic-calibration": raise ValueError("not a record semantic calibration plan")
+    if int(plan.get("record_concurrency_plan_version",-1))!=PLAN_VERSION or plan.get("kind")!="semantic-calibration": raise ValueError("not a record semantic calibration plan")
+    if plan.get("read_materialization") != READ_MATERIALIZATION: raise ValueError("unexpected calibration read materialization")
+    if plan.get("write_materialization") != WRITE_MATERIALIZATION: raise ValueError("unexpected calibration write materialization")
     support_path=run_dir/"support.json"; summary_path=run_dir/"summary.json"
     if not support_path.is_file() or not summary_path.is_file(): raise ValueError("calibration run incomplete")
     support=json.loads(support_path.read_text()); summary=json.loads(summary_path.read_text()); plan_sha=sha256(plan_path)
@@ -44,7 +49,10 @@ def load_results(plan_path:Path,run_dir:Path):
     if len(planned)!=expected: raise ValueError("duplicate calibration plan identity")
     results={}
     for p in paths:
-        row=json.loads(p.read_text()); key=result_key(row)
+        row=json.loads(p.read_text())
+        if row.get("read_materialization") != READ_MATERIALIZATION: raise ValueError(f"unexpected calibration read materialization: {p.name}")
+        if row.get("write_materialization") != WRITE_MATERIALIZATION: raise ValueError(f"unexpected calibration write materialization: {p.name}")
+        key=result_key(row)
         if key not in planned: raise ValueError(f"result outside calibration plan: {p.name}")
         if key in results: raise ValueError(f"duplicate calibration result: {key}")
         if int(row.get("ops_completed",-1))!=int(row.get("ops_requested",-2)): raise ValueError(f"partial calibration result: {p.name}")
@@ -83,11 +91,11 @@ def build_final(plan_path:Path,run_dir:Path,trials:int=FINAL_TRIALS)->dict[str,A
         clients=sorted(int(x["clients"]) for x in cases)
         if len(clients)!=len(set(clients)): raise ValueError(f"duplicate client group in family: {fk}")
         ops,analysis=choose_ops(cases,results); template=cases[0]
-        selected.append({"scenario":template["scenario"],"engine":template["engine"],"durability":template["durability"],"workload":template["workload"],"records":int(template["records"]),"payload_bytes":int(template["payload_bytes"]),"txn_size":int(template["txn_size"]),"state_evolution":template["state_evolution"],"clients":clients,"final_ops":ops,**analysis})
+        selected.append({"scenario":template["scenario"],"engine":template["engine"],"durability":template["durability"],"workload":template["workload"],"records":int(template["records"]),"payload_bytes":int(template["payload_bytes"]),"txn_size":int(template["txn_size"]),"state_evolution":template["state_evolution"],"read_materialization":template["read_materialization"],"write_materialization":template["write_materialization"],"clients":clients,"final_ops":ops,**analysis})
         for trial in range(1,trials+1):
             for base in cases:
                 item=dict(base); item["ops"]=ops; item["trial"]=trial; final_cases.append(item)
-    return {"record_concurrency_plan_version":1,"kind":"steady-scaling-final","expect_trials":trials,"target_seconds":TARGET_SECONDS,"max_slow_seconds":MAX_SLOW_SECONDS,"source_calibration_plan_sha256":sha256(plan_path),**prov,"family_count":len(selected),"families":selected,"case_count":len(final_cases),"cases":final_cases}
+    return {"record_concurrency_plan_version":PLAN_VERSION,"kind":"steady-scaling-final","read_materialization":READ_MATERIALIZATION,"write_materialization":WRITE_MATERIALIZATION,"expect_trials":trials,"target_seconds":TARGET_SECONDS,"max_slow_seconds":MAX_SLOW_SECONDS,"source_calibration_plan_sha256":sha256(plan_path),**prov,"family_count":len(selected),"families":selected,"case_count":len(final_cases),"cases":final_cases}
 
 def main()->int:
     ap=argparse.ArgumentParser(description="Build final record concurrency scaling plan from one-shot calibration")

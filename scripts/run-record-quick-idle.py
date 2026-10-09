@@ -16,12 +16,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TextIO
 
-DEFAULT_REPO = Path("/srv/scratch/db-bench-work/kv-sizing-v3-followup")
-DEFAULT_BIN = Path("/srv/scratch/db-bench-work/record-sizing-audit/bin/recordbench-ae74103b847171d1")
-DEFAULT_ROCKS_BIN = Path("/srv/scratch/db-bench-work/record-sizing-audit/bin/surrealdb-rocksdb-recordbench-c3978a3b66a24edd")
+DEFAULT_REPO = Path("/srv/scratch/db-bench-work/record-full-v1/runtime")
 DEFAULT_LOCK = Path("/run/lock/all-db-bench-performance.lock")
-DEFAULT_STATUS = Path("/srv/scratch/db-bench-work/record-sizing-audit/idle-status.json")
-DEFAULT_RUN_ID = "20261006-record-quick-stock"
+DEFAULT_STATUS = Path("/srv/scratch/db-bench-work/record-full-v1/stock-idle-status.json")
+DEFAULT_RUN_ID = "20261009-record-full-v1-stock-v1"
 
 
 def sha256(path: Path) -> str:
@@ -135,9 +133,9 @@ def audit(repo: Path, run_id: str, audit_dir: Path) -> None:
             str(repo / "scripts" / "audit_baseline_sizing.py"),
             str(run_dir / "results.ndjson"),
             "--json-out",
-            str(audit_dir / f"{run_id}-v4.json"),
+            str(audit_dir / f"{run_id}-sizing-v3.json"),
             "--markdown-out",
-            str(audit_dir / f"{run_id}-v4.md"),
+            str(audit_dir / f"{run_id}-sizing-v3.md"),
         ],
         cwd=repo,
         check=False,
@@ -149,14 +147,14 @@ def audit(repo: Path, run_id: str, audit_dir: Path) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run record-product quick baseline opportunistically when the host is quiet")
     parser.add_argument("--repo", type=Path, default=DEFAULT_REPO)
-    parser.add_argument("--bench-bin", type=Path, default=DEFAULT_BIN)
-    parser.add_argument("--rocks-bench-bin", type=Path, default=DEFAULT_ROCKS_BIN)
+    parser.add_argument("--bench-bin", type=Path, required=True)
+    parser.add_argument("--rocks-bench-bin", type=Path, required=True)
     parser.add_argument("--expected-bench-sha256")
     parser.add_argument("--expected-rocks-bench-sha256")
     parser.add_argument("--run-id", default=DEFAULT_RUN_ID)
     parser.add_argument("--lock-file", type=Path, default=DEFAULT_LOCK)
     parser.add_argument("--status-file", type=Path, default=DEFAULT_STATUS)
-    parser.add_argument("--audit-dir", type=Path, default=Path("/srv/scratch/db-bench-work/record-sizing-audit"))
+    parser.add_argument("--audit-dir", type=Path, default=Path("/srv/scratch/db-bench-work/record-full-v1"))
     parser.add_argument("--watch", action="store_true")
     parser.add_argument("--busy-sleep", type=float, default=2.0)
     parser.add_argument("--max-io-full-avg10", type=float, default=5.0)

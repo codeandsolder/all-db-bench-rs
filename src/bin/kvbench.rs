@@ -350,7 +350,7 @@ impl EngineKind {
             Self::Lkv => "0.2.1",
             Self::Manifold | Self::ManifoldWal => "3.1.0",
             Self::Turbokv => "0.6.0",
-            Self::ParitydbHash | Self::ParitydbBtree => "0.5.6",
+            Self::ParitydbHash | Self::ParitydbBtree => "0.5.7",
             #[cfg(feature = "kv-external")]
             Self::Rocksdb => "0.25.0",
             #[cfg(feature = "kv-external")]
@@ -402,7 +402,7 @@ impl EngineKind {
                 "ParityDB default background durability pipeline; commit publishes to the in-memory overlay before WAL/data fsync completes"
             }
             (Self::ParitydbHash | Self::ParitydbBtree, Durability::Sync) => {
-                bail!("ParityDB 0.5.6 has no public durable-before-return commit API")
+                bail!("ParityDB 0.5.7 has no public durable-before-return commit API")
             }
             #[cfg(feature = "kv-external")]
             (Self::Rocksdb, Durability::Relaxed) => {
@@ -540,7 +540,7 @@ impl Engine {
             }
             EngineKind::ParitydbHash | EngineKind::ParitydbBtree => {
                 if durability == Durability::Sync {
-                    bail!("ParityDB 0.5.6 has no public durable-before-return commit API");
+                    bail!("ParityDB 0.5.7 has no public durable-before-return commit API");
                 }
                 let dir = match kind {
                     EngineKind::ParitydbHash => path.join("paritydb-hash"),

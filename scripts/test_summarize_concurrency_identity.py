@@ -33,6 +33,22 @@ class SummarizeConcurrencyIdentityTests(unittest.TestCase):
         explicit = row()
         self.assertEqual(M.group_key(legacy), M.group_key(explicit))
 
+    def test_read_materialization_is_concurrency_identity(self) -> None:
+        corrected = dict(row(), read_materialization="full-record-v1")
+        legacy = dict(row(), read_materialization="legacy-read-v0")
+        corrected["settle_ms"] = 0
+        legacy["settle_ms"] = 0
+        self.assertNotEqual(M.group_key(corrected), M.group_key(legacy))
+        self.assertNotEqual(M.concurrency_identity(corrected), M.concurrency_identity(legacy))
+
+    def test_write_materialization_is_concurrency_identity(self) -> None:
+        corrected = dict(row(), write_materialization="no-return-v1")
+        legacy = dict(row(), write_materialization="legacy-return-v0")
+        corrected["settle_ms"] = 0
+        legacy["settle_ms"] = 0
+        self.assertNotEqual(M.group_key(corrected), M.group_key(legacy))
+        self.assertNotEqual(M.concurrency_identity(corrected), M.concurrency_identity(legacy))
+
     def test_c1_baseline_identity_separates_state(self) -> None:
         growth = row(); growth["settle_ms"] = 0
         bounded = dict(growth, state_evolution="bounded", bounded_churn_slots=8192)

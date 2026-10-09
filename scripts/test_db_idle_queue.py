@@ -23,20 +23,14 @@ class DbIdleQueueTests(unittest.TestCase):
             path.write_bytes(b"benchmark")
             self.assertEqual(MODULE.sha256(path), hashlib.sha256(b"benchmark").hexdigest())
 
-    def test_verify_pinned_binaries_checks_all_three(self) -> None:
-        paths = [Path("/kv"), Path("/record"), Path("/rocks")]
+    def test_verify_pinned_binaries_checks_only_legacy_kv_pin(self) -> None:
+        path = Path("/kv")
         with (
-            patch.object(MODULE, "KV_BIN", paths[0]),
-            patch.object(MODULE, "RECORD_BIN", paths[1]),
-            patch.object(MODULE, "ROCKS_BIN", paths[2]),
-            patch.object(
-                MODULE,
-                "sha256",
-                side_effect=[MODULE.KV_SHA, MODULE.RECORD_SHA, MODULE.ROCKS_SHA],
-            ) as digest,
+            patch.object(MODULE, "KV_BIN", path),
+            patch.object(MODULE, "sha256", return_value=MODULE.KV_SHA) as digest,
         ):
             MODULE.verify_pinned_binaries()
-        self.assertEqual([call.args[0] for call in digest.call_args_list], paths)
+        digest.assert_called_once_with(path)
 
     def test_verify_pinned_binaries_rejects_mismatch(self) -> None:
         with patch.object(MODULE, "sha256", return_value="wrong"):

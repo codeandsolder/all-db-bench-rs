@@ -13,7 +13,7 @@ use std::{
 use surrealdb::{
     Surreal,
     engine::local::{Db as SurrealLocalDb, RocksDb},
-    types::SurrealValue,
+    types::{RecordId, SurrealValue},
 };
 
 const HIST_MAX_NS: u64 = 60_000_000_000;
@@ -84,6 +84,34 @@ pub(crate) struct RecordData {
     pub(crate) payload: String,
 }
 
+pub(crate) const READ_MATERIALIZATION: &str = "full-record-v1";
+pub(crate) const WRITE_MATERIALIZATION: &str = "no-return-v1";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ReadDigest {
+    bucket: u32,
+    payload_len: usize,
+}
+
+impl ReadDigest {
+    fn new(bucket: u32, payload_len: usize) -> Self {
+        Self {
+            bucket,
+            payload_len,
+        }
+    }
+
+    fn checksum(self) -> u64 {
+        (u64::from(self.bucket) << 32) ^ self.payload_len as u64
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct IndexedRead {
+    pub(crate) rows: usize,
+    pub(crate) checksum: u64,
+}
+
 #[derive(Debug, Serialize)]
 pub(crate) struct Quantiles {
     count: u64,
@@ -108,6 +136,8 @@ struct Measurement {
     ops_completed: u64,
     payload_bytes: usize,
     txn_size: usize,
+    read_materialization: &'static str,
+    write_materialization: &'static str,
     trial: u32,
     seed: u64,
     scenario: String,
@@ -137,7 +167,7 @@ pub(crate) enum Engine {
 
 impl EngineKind {
     pub(crate) fn version(self) -> &'static str {
-        "SurrealDB 3.3.0 / surrealdb-rocksdb 0.24.0-surreal.5"
+        "SurrealDB 3.3.2 / surrealdb-rocksdb 0.24.0-surreal.5"
     }
 
     pub(crate) fn mapping(self, d: Durability) -> &'static str {
@@ -246,16 +276,20 @@ impl Engine {
         }
     }
 
-    pub(crate) async fn get(&self, id: u64) -> Result<bool> {
+    pub(crate) async fn get(&self, id: u64) -> Result<Option<ReadDigest>> {
         match self {
             Self::SurrealRocksdb(db) => {
-                let row: Option<RecordData> = db.select(("item", id as i64)).await?;
-                Ok(row.is_some())
+                let mut response = db
+                    .query("SELECT ONLY bucket, payload FROM $id")
+                    .bind(("id", RecordId::new("item", id as i64)))
+                    .await?;
+                let row: Option<RecordData> = response.take(0)?;
+                Ok(row.map(|record| ReadDigest::new(record.bucket, record.payload.len())))
             }
         }
     }
 
-    pub(crate) async fn indexed_read(&self, group: u32) -> Result<usize> {
+    pub(crate) async fn indexed_read(&self, group: u32) -> Result<IndexedRead> {
         match self {
             Self::SurrealRocksdb(db) => {
                 let mut resp = db
@@ -263,7 +297,13 @@ impl Engine {
                     .bind(("bucket", group))
                     .await?;
                 let rows: Vec<RecordData> = resp.take(0)?;
-                Ok(rows.len())
+                let checksum = rows.iter().fold(0u64, |acc, row| {
+                    acc.wrapping_add(ReadDigest::new(row.bucket, row.payload.len()).checksum())
+                });
+                Ok(IndexedRead {
+                    rows: rows.len(),
+                    checksum,
+                })
             }
         }
     }
@@ -271,8 +311,11 @@ impl Engine {
     pub(crate) async fn upsert_one(&self, id: u64, data: &RecordData) -> Result<()> {
         match self {
             Self::SurrealRocksdb(db) => {
-                let _: Option<RecordData> =
-                    db.upsert(("item", id as i64)).content(data.clone()).await?;
+                db.query("UPSERT $id CONTENT $data RETURN NONE")
+                    .bind(("id", RecordId::new("item", id as i64)))
+                    .bind(("data", data.clone()))
+                    .await?
+                    .check()?;
             }
         }
         Ok(())
@@ -286,17 +329,26 @@ impl Engine {
         match self {
             Self::SurrealRocksdb(db) => {
                 let mut sql = String::from("BEGIN TRANSACTION;\n");
-                for (id, data) in rows {
+                for index in 0..rows.len() {
                     sql.push_str(&format!(
-                        "UPSERT item:{} CONTENT {{ bucket: {}, payload: '{}' }};\n",
-                        id, data.bucket, data.payload
+                        "UPSERT $id_{index} CONTENT $data_{index} RETURN NONE;\n"
                     ));
                 }
-                for id in deletes {
-                    sql.push_str(&format!("DELETE item:{id};\n"));
+                for index in 0..deletes.len() {
+                    sql.push_str(&format!("DELETE $delete_{index} RETURN NONE;\n"));
                 }
                 sql.push_str("COMMIT TRANSACTION;");
-                db.query(sql).await?.check()?;
+                let mut query = db.query(sql);
+                for (index, (id, data)) in rows.iter().enumerate() {
+                    query = query
+                        .bind((format!("id_{index}"), RecordId::new("item", *id as i64)))
+                        .bind((format!("data_{index}"), data.clone()));
+                }
+                for (index, id) in deletes.iter().enumerate() {
+                    query =
+                        query.bind((format!("delete_{index}"), RecordId::new("item", *id as i64)));
+                }
+                query.await?.check()?;
             }
         }
         Ok(())
@@ -344,9 +396,11 @@ async fn run(
             while done < args.ops {
                 let id = rng.random_range(0..args.records);
                 let t = Instant::now();
-                if !engine.get(id).await? {
+                let read = engine.get(id).await?;
+                if read.is_none() {
                     bail!("prefilled record missing");
                 }
+                std::hint::black_box(read);
                 record(op_hist, t.elapsed());
                 done += 1;
             }
@@ -355,7 +409,8 @@ async fn run(
             while done < args.ops {
                 let group = rng.random_range(0..100);
                 let t = Instant::now();
-                let _ = engine.indexed_read(group).await?;
+                let read = engine.indexed_read(group).await?;
+                std::hint::black_box(read);
                 record(op_hist, t.elapsed());
                 done += 1;
             }
@@ -368,7 +423,11 @@ async fn run(
                     }
                     let id = rng.random_range(0..args.records);
                     let t = Instant::now();
-                    let _ = engine.get(id).await?;
+                    let read = engine.get(id).await?;
+                    if read.is_none() {
+                        bail!("prefilled record missing");
+                    }
+                    std::hint::black_box(read);
                     record(op_hist, t.elapsed());
                     done += 1;
                 }
@@ -465,7 +524,7 @@ async fn main() -> Result<()> {
 
     let warmup_started = Instant::now();
     for id in 0..args.records.min(args.warmup_reads) {
-        let _ = engine.get(id).await?;
+        std::hint::black_box(engine.get(id).await?);
     }
     let warmup_s = warmup_started.elapsed().as_secs_f64();
 
@@ -484,7 +543,7 @@ async fn main() -> Result<()> {
     let db_bytes = dir_size(&path);
 
     let result = Measurement {
-        format_version: 5,
+        format_version: 7,
         lane: "record",
         engine: args.engine,
         engine_version: args.engine.version(),
@@ -496,6 +555,8 @@ async fn main() -> Result<()> {
         ops_completed: completed,
         payload_bytes: args.payload_bytes,
         txn_size: args.txn_size,
+        read_materialization: READ_MATERIALIZATION,
+        write_materialization: WRITE_MATERIALIZATION,
         trial: args.trial,
         seed: args.seed,
         scenario: args.scenario.clone(),

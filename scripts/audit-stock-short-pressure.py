@@ -15,6 +15,16 @@ from typing import Any
 QUALITY_POLICY_VERSION = 1
 
 
+def identity(item: dict[str, Any], lane: str) -> tuple[str, ...]:
+    base = (str(item["engine"]), str(item["durability"]), str(item["workload"]))
+    if lane == "record":
+        return base + (
+            str(item.get("read_materialization", "legacy-read-v0")),
+            str(item.get("write_materialization", "legacy-return-v0")),
+        )
+    return base
+
+
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -40,15 +50,14 @@ def build_plan(
     *,
     lane: str,
 ) -> dict[str, Any]:
-    if sizing_audit.get("sizing_policy_version") != 2:
+    if int(sizing_audit.get("sizing_policy_version", -1)) not in {2, 3}:
         raise ValueError(f"unsupported sizing policy: {sizing_audit.get('sizing_policy_version')!r}")
-    by_identity = {
-        (str(group["engine"]), str(group["durability"]), str(group["workload"])): group
-        for group in sizing_audit["groups"]
-    }
-    pressure_by_identity: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    by_identity = {identity(group, lane): group for group in sizing_audit["groups"]}
+    if len(by_identity) != len(sizing_audit["groups"]):
+        raise ValueError("duplicate sizing audit identity")
+    pressure_by_identity: dict[tuple[str, ...], list[dict[str, Any]]] = {}
     for case in scrub_report.get("cases", []):
-        key = (str(case["engine"]), str(case["durability"]), str(case["workload"]))
+        key = identity(case, lane)
         pressure_by_identity.setdefault(key, []).append(case)
 
     repairs: list[dict[str, Any]] = []
@@ -64,6 +73,14 @@ def build_plan(
                     "engine": key[0],
                     "durability": key[1],
                     "workload": key[2],
+                    **(
+                        {
+                            "read_materialization": key[3],
+                            "write_materialization": key[4],
+                        }
+                        if lane == "record"
+                        else {}
+                    ),
                     "pressure_trials": sorted(int(case["trial"]) for case in cases),
                 }
             )

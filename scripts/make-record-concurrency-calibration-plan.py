@@ -24,6 +24,9 @@ HOT_DEFAULT_OPS = 24_000
 TX1_DEFAULT_OPS = 24_000
 TX1000_DEFAULT_OPS = 24_000
 BOUNDED_WORKLOADS = {"tiny-txn", "write-burst"}
+PLAN_VERSION = 2
+READ_MATERIALIZATION = "full-record-v1"
+WRITE_MATERIALIZATION = "no-return-v1"
 
 
 @lru_cache(maxsize=None)
@@ -77,6 +80,8 @@ def add_case(
             "engine": engine,
             "durability": durability,
             "workload": workload,
+            "read_materialization": READ_MATERIALIZATION,
+            "write_materialization": WRITE_MATERIALIZATION,
             "clients": clients,
             "records": records,
             "ops": ops,
@@ -180,7 +185,9 @@ def build_plan(repo: Path) -> dict[str, Any]:
             )
 
     return {
-        "record_concurrency_plan_version": 1,
+        "record_concurrency_plan_version": PLAN_VERSION,
+        "read_materialization": READ_MATERIALIZATION,
+        "write_materialization": WRITE_MATERIALIZATION,
         "kind": "semantic-calibration",
         "expect_trials": 1,
         "case_count": len(cases),

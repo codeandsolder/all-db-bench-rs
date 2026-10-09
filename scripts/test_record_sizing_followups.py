@@ -38,7 +38,13 @@ class RecordSizingFollowupsTests(unittest.TestCase):
     def test_run_id_encodes_effective_ops_and_trials(self) -> None:
         self.assertEqual(
             MODULE.run_id(group()),
-            "20261006-record-resize-v4-sqlite-relaxed-tiny-txn-e5000-t11",
+            "20261009-record-full-v1-resize-v1-sqlite-relaxed-tiny-txn-e5000-t11",
+        )
+
+    def test_run_id_accepts_campaign_prefix(self) -> None:
+        self.assertEqual(
+            MODULE.run_id(group(), prefix="20261009-record-full-v1-resize-v1"),
+            "20261009-record-full-v1-resize-v1-sqlite-relaxed-tiny-txn-e5000-t11",
         )
 
     def test_command_env_uses_record_profile_override_and_trials(self) -> None:

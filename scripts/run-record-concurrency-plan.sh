@@ -85,6 +85,8 @@ fi
 EXPECT_TRIALS=$(jq -r .expect_trials "$RUN_DIR/plan-meta.json")
 PLAN_VERSION=$(jq -r .plan_version "$RUN_DIR/plan-meta.json")
 PLAN_KIND=$(jq -r .kind "$RUN_DIR/plan-meta.json")
+READ_MATERIALIZATION=$(jq -r .read_materialization "$RUN_DIR/plan-meta.json")
+WRITE_MATERIALIZATION=$(jq -r .write_materialization "$RUN_DIR/plan-meta.json")
 mapfile -t JOBS < "$RUN_DIR/plan.tsv"
 TOTAL=${#JOBS[@]}
 (( TOTAL > 0 )) || { echo "empty plan" >&2; exit 2; }
@@ -95,7 +97,7 @@ python3 - "$SUPPORT_NEW" <<PY_SUPPORT
 import json
 json.dump({
  "lane":"record-concurrency","profile":"quick","case_count":$TOTAL,"trials":$EXPECT_TRIALS,"expect_trials":$EXPECT_TRIALS,
- "plan_version":$PLAN_VERSION,"plan_kind":"$PLAN_KIND","plan_path":"$PLAN","plan_sha256":"$PLAN_SHA",
+ "plan_version":$PLAN_VERSION,"plan_kind":"$PLAN_KIND","read_materialization":"$READ_MATERIALIZATION","write_materialization":"$WRITE_MATERIALIZATION","plan_path":"$PLAN","plan_sha256":"$PLAN_SHA",
  "engines":"surrealdb turso sqlite surrealdb-rocksdb",
  "clients":"1 2 4 8","relaxed_clients":"1 4 8","stress_clients":"1 4 8","tx_clients":"1 4 8",
  "build_profile":"$BUILD_PROFILE","benchmark_binary_sha256":"$BIN_SHA","benchmark_source_commit":"$BENCH_SOURCE_COMMIT",
@@ -133,8 +135,8 @@ clear_failure() {
 INDEX=0
 for job in "${ORDERED[@]}"; do
   INDEX=$((INDEX + 1))
-  IFS='|' read -r scenario engine durability workload clients records ops payload txn trial state_evolution <<< "$job"
-  case_id="t${trial}-${scenario}-${engine}-${durability}-${workload}-se${state_evolution}-c${clients}-n${records}-o${ops}-p${payload}-tx${txn}"
+  IFS='|' read -r scenario engine durability workload clients records ops payload txn trial state_evolution read_materialization write_materialization <<< "$job"
+  case_id="t${trial}-${scenario}-${engine}-${durability}-${workload}-se${state_evolution}-rm${read_materialization}-wm${write_materialization}-c${clients}-n${records}-o${ops}-p${payload}-tx${txn}"
   out="$RUN_DIR/cases/$case_id.json"
   err="$RUN_DIR/stderr/$case_id.log"
   noise_before="$RUN_DIR/noise/$case_id.before.json"
@@ -159,6 +161,14 @@ for job in "${ORDERED[@]}"; do
   if (( io_rc != 0 || noise_rc != 0 )); then
     rm -f "$out"; clear_failure "$case_id"
     if (( io_rc != 0 )); then exit "$io_rc"; else exit "$noise_rc"; fi
+  fi
+  if (( rc == 0 )) && [[ -s "$out" ]] && [[ $(wc -l < "$out") -eq 1 ]]; then
+    if ! jq -e --arg read_expected "$read_materialization" --arg write_expected "$write_materialization" \
+      '.read_materialization == $read_expected and .write_materialization == $write_expected' "$out" >/dev/null; then
+      rc=2
+      printf 'record result semantic identity mismatch: expected read_materialization=%s write_materialization=%s\n' \
+        "$read_materialization" "$write_materialization" >>"$err"
+    fi
   fi
   if (( rc != 0 )) || [[ ! -s "$out" ]] || [[ $(wc -l < "$out") -ne 1 ]]; then
     rm -f "$out"; clear_failure "$case_id"

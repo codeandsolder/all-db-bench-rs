@@ -14,7 +14,7 @@ IDENTITY_FIELDS = (
     "format_version", "lane", "scenario", "engine", "engine_version", "durability",
     "workload", "records", "ops_requested", "value_bytes", "value_pattern", "key_bytes",
     "key_shape", "access_pattern", "miss_percent", "write_pattern", "state_evolution",
-    "bounded_churn_slots", "txn_size", "scan_len", "settle_ms",
+    "bounded_churn_slots", "txn_size", "read_materialization", "write_materialization", "scan_len", "settle_ms",
 )
 
 

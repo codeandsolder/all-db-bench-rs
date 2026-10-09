@@ -16,7 +16,7 @@ use std::{
 use surrealdb::{
     Surreal,
     engine::local::{Db as SurrealLocalDb, SurrealKv},
-    types::SurrealValue,
+    types::{RecordId, SurrealValue},
 };
 
 use rusqlite::{Connection as SqliteConnection, OptionalExtension, params};
@@ -99,6 +99,34 @@ pub(crate) struct RecordData {
     pub(crate) payload: String,
 }
 
+pub(crate) const READ_MATERIALIZATION: &str = "full-record-v1";
+pub(crate) const WRITE_MATERIALIZATION: &str = "no-return-v1";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ReadDigest {
+    bucket: u32,
+    payload_len: usize,
+}
+
+impl ReadDigest {
+    fn new(bucket: u32, payload_len: usize) -> Self {
+        Self {
+            bucket,
+            payload_len,
+        }
+    }
+
+    fn checksum(self) -> u64 {
+        (u64::from(self.bucket) << 32) ^ self.payload_len as u64
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct IndexedRead {
+    pub(crate) rows: usize,
+    pub(crate) checksum: u64,
+}
+
 #[derive(Debug, Serialize)]
 pub(crate) struct Quantiles {
     count: u64,
@@ -139,6 +167,8 @@ struct Measurement {
     ops_completed: u64,
     payload_bytes: usize,
     txn_size: usize,
+    read_materialization: &'static str,
+    write_materialization: &'static str,
     trial: u32,
     seed: u64,
     scenario: String,
@@ -172,8 +202,8 @@ pub(crate) enum Engine {
 impl EngineKind {
     pub(crate) fn version(self) -> &'static str {
         match self {
-            Self::Surrealdb => "3.3.0 / SurrealKV 0.21.4",
-            Self::Turso => "0.8.2-pre.2",
+            Self::Surrealdb => "3.3.2 / SurrealKV 0.21.4",
+            Self::Turso => "0.8.2",
             Self::Sqlite => "rusqlite 0.40.2 / SQLite 3.53.4",
         }
     }
@@ -331,29 +361,48 @@ impl Engine {
         }
     }
 
-    pub(crate) async fn get(&self, id: u64) -> Result<bool> {
+    pub(crate) async fn get(&self, id: u64) -> Result<Option<ReadDigest>> {
         match self {
             Self::Surreal(db) => {
-                let row: Option<RecordData> = db.select(("item", id as i64)).await?;
-                Ok(row.is_some())
+                let mut response = db
+                    .query("SELECT ONLY bucket, payload FROM $id")
+                    .bind(("id", RecordId::new("item", id as i64)))
+                    .await?;
+                let row: Option<RecordData> = response.take(0)?;
+                Ok(row.map(|record| ReadDigest::new(record.bucket, record.payload.len())))
             }
             Self::Turso(conn) => {
-                let mut stmt = conn.prepare("SELECT payload FROM item WHERE id=?1").await?;
-                let mut rows = stmt.query([id.to_string()]).await?;
-                Ok(rows.next().await?.is_some())
+                let mut stmt = conn
+                    .prepare("SELECT grp, payload FROM item WHERE id=?1")
+                    .await?;
+                let mut rows = stmt.query((id as i64,)).await?;
+                if let Some(row) = rows.next().await? {
+                    let bucket: i64 = row.get(0)?;
+                    let bucket = u32::try_from(bucket).context("Turso grp outside u32 range")?;
+                    let payload: String = row.get(1)?;
+                    Ok(Some(ReadDigest::new(bucket, payload.len())))
+                } else {
+                    Ok(None)
+                }
             }
             Self::Sqlite(conn) => {
-                let row: Option<i64> = conn
-                    .query_row("SELECT 1 FROM item WHERE id=?1", [id as i64], |row| {
-                        row.get(0)
-                    })
+                let row: Option<(i64, String)> = conn
+                    .query_row(
+                        "SELECT grp, payload FROM item WHERE id=?1",
+                        [id as i64],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
                     .optional()?;
-                Ok(row.is_some())
+                row.map(|(bucket, payload)| {
+                    let bucket = u32::try_from(bucket).context("SQLite grp outside u32 range")?;
+                    Ok(ReadDigest::new(bucket, payload.len()))
+                })
+                .transpose()
             }
         }
     }
 
-    pub(crate) async fn indexed_read(&self, group: u32) -> Result<usize> {
+    pub(crate) async fn indexed_read(&self, group: u32) -> Result<IndexedRead> {
         match self {
             Self::Surreal(db) => {
                 let mut resp = db
@@ -361,27 +410,46 @@ impl Engine {
                     .bind(("bucket", group))
                     .await?;
                 let rows: Vec<RecordData> = resp.take(0)?;
-                Ok(rows.len())
+                let checksum = rows.iter().fold(0u64, |acc, row| {
+                    acc.wrapping_add(ReadDigest::new(row.bucket, row.payload.len()).checksum())
+                });
+                Ok(IndexedRead {
+                    rows: rows.len(),
+                    checksum,
+                })
             }
             Self::Turso(conn) => {
                 let mut stmt = conn
-                    .prepare("SELECT payload FROM item WHERE grp=?1 LIMIT 100")
+                    .prepare("SELECT grp, payload FROM item WHERE grp=?1 LIMIT 100")
                     .await?;
-                let mut rows = stmt.query([group.to_string()]).await?;
-                let mut n = 0;
-                while rows.next().await?.is_some() {
+                let mut rows = stmt.query((group as i64,)).await?;
+                let mut n = 0usize;
+                let mut checksum = 0u64;
+                while let Some(row) = rows.next().await? {
+                    let bucket: i64 = row.get(0)?;
+                    let bucket = u32::try_from(bucket).context("Turso grp outside u32 range")?;
+                    let payload: String = row.get(1)?;
+                    checksum =
+                        checksum.wrapping_add(ReadDigest::new(bucket, payload.len()).checksum());
                     n += 1;
                 }
-                Ok(n)
+                Ok(IndexedRead { rows: n, checksum })
             }
             Self::Sqlite(conn) => {
-                let mut stmt = conn.prepare("SELECT payload FROM item WHERE grp=?1 LIMIT 100")?;
+                let mut stmt =
+                    conn.prepare("SELECT grp, payload FROM item WHERE grp=?1 LIMIT 100")?;
                 let mut rows = stmt.query([group as i64])?;
                 let mut n = 0usize;
-                while rows.next()?.is_some() {
+                let mut checksum = 0u64;
+                while let Some(row) = rows.next()? {
+                    let bucket: i64 = row.get(0)?;
+                    let bucket = u32::try_from(bucket).context("SQLite grp outside u32 range")?;
+                    let payload: String = row.get(1)?;
+                    checksum =
+                        checksum.wrapping_add(ReadDigest::new(bucket, payload.len()).checksum());
                     n += 1;
                 }
-                Ok(n)
+                Ok(IndexedRead { rows: n, checksum })
             }
         }
     }
@@ -389,19 +457,18 @@ impl Engine {
     pub(crate) async fn upsert_one(&self, id: u64, data: &RecordData) -> Result<()> {
         match self {
             Self::Surreal(db) => {
-                let _: Option<RecordData> =
-                    db.upsert(("item", id as i64)).content(data.clone()).await?;
+                db.query("UPSERT $id CONTENT $data RETURN NONE")
+                    .bind(("id", RecordId::new("item", id as i64)))
+                    .bind(("data", data.clone()))
+                    .await?
+                    .check()?;
             }
             Self::Turso(conn) => {
                 let mut stmt = conn.prepare(
                     "INSERT INTO item(id, grp, payload) VALUES(?1, ?2, ?3) ON CONFLICT(id) DO UPDATE SET grp=excluded.grp, payload=excluded.payload"
                 ).await?;
-                stmt.execute([
-                    id.to_string(),
-                    data.bucket.to_string(),
-                    data.payload.clone(),
-                ])
-                .await?;
+                stmt.execute((id as i64, data.bucket as i64, data.payload.as_str()))
+                    .await?;
             }
             Self::Sqlite(conn) => {
                 conn.execute(
@@ -422,17 +489,26 @@ impl Engine {
         match self {
             Self::Surreal(db) => {
                 let mut sql = String::from("BEGIN TRANSACTION;\n");
-                for (id, data) in rows {
+                for index in 0..rows.len() {
                     sql.push_str(&format!(
-                        "UPSERT item:{} CONTENT {{ bucket: {}, payload: '{}' }};\n",
-                        id, data.bucket, data.payload
+                        "UPSERT $id_{index} CONTENT $data_{index} RETURN NONE;\n"
                     ));
                 }
-                for id in deletes {
-                    sql.push_str(&format!("DELETE item:{id};\n"));
+                for index in 0..deletes.len() {
+                    sql.push_str(&format!("DELETE $delete_{index} RETURN NONE;\n"));
                 }
                 sql.push_str("COMMIT TRANSACTION;");
-                db.query(sql).await?.check()?;
+                let mut query = db.query(sql);
+                for (index, (id, data)) in rows.iter().enumerate() {
+                    query = query
+                        .bind((format!("id_{index}"), RecordId::new("item", *id as i64)))
+                        .bind((format!("data_{index}"), data.clone()));
+                }
+                for (index, id) in deletes.iter().enumerate() {
+                    query =
+                        query.bind((format!("delete_{index}"), RecordId::new("item", *id as i64)));
+                }
+                query.await?.check()?;
             }
             Self::Turso(conn) => {
                 conn.execute("BEGIN IMMEDIATE TRANSACTION", ()).await?;
@@ -444,18 +520,14 @@ impl Engine {
                             )
                             .await?;
                         for (id, data) in rows {
-                            stmt.execute([
-                                id.to_string(),
-                                data.bucket.to_string(),
-                                data.payload.clone(),
-                            ])
-                            .await?;
+                            stmt.execute((*id as i64, data.bucket as i64, data.payload.as_str()))
+                                .await?;
                         }
                     }
                     if !deletes.is_empty() {
                         let mut stmt = conn.prepare("DELETE FROM item WHERE id=?1").await?;
                         for id in deletes {
-                            stmt.execute([id.to_string()]).await?;
+                            stmt.execute((*id as i64,)).await?;
                         }
                     }
                     Ok(())
@@ -541,9 +613,11 @@ async fn run(
             while done < args.ops {
                 let id = rng.random_range(0..args.records);
                 let t = Instant::now();
-                if !engine.get(id).await? {
+                let read = engine.get(id).await?;
+                if read.is_none() {
                     bail!("prefilled record missing");
                 }
+                std::hint::black_box(read);
                 record(op_hist, t.elapsed());
                 done += 1;
             }
@@ -552,7 +626,8 @@ async fn run(
             while done < args.ops {
                 let group = rng.random_range(0..100);
                 let t = Instant::now();
-                let _ = engine.indexed_read(group).await?;
+                let read = engine.indexed_read(group).await?;
+                std::hint::black_box(read);
                 record(op_hist, t.elapsed());
                 done += 1;
             }
@@ -565,7 +640,11 @@ async fn run(
                     }
                     let id = rng.random_range(0..args.records);
                     let t = Instant::now();
-                    let _ = engine.get(id).await?;
+                    let read = engine.get(id).await?;
+                    if read.is_none() {
+                        bail!("prefilled record missing");
+                    }
+                    std::hint::black_box(read);
                     record(op_hist, t.elapsed());
                     done += 1;
                 }
@@ -642,7 +721,7 @@ async fn verify_recovery(
     let mut prefix_present_after_gap = 0u64;
     let mut gap_seen = false;
     for id in 0..expected_prefix_records {
-        let present = engine.get(id).await?;
+        let present = engine.get(id).await?.is_some();
         if present {
             if gap_seen {
                 prefix_present_after_gap += 1;
@@ -660,7 +739,7 @@ async fn verify_recovery(
     let mut tail_present_after_gap = 0u64;
     gap_seen = false;
     for id in expected_prefix_records..expected_prefix_records.saturating_add(tail_records) {
-        let present = engine.get(id).await?;
+        let present = engine.get(id).await?.is_some();
         if present {
             tail_total_present += 1;
             if gap_seen {
@@ -767,7 +846,7 @@ async fn main() -> Result<()> {
 
     let warmup_started = Instant::now();
     for id in 0..args.records.min(args.warmup_reads) {
-        let _ = engine.get(id).await?;
+        std::hint::black_box(engine.get(id).await?);
     }
     let warmup_s = warmup_started.elapsed().as_secs_f64();
 
@@ -786,7 +865,7 @@ async fn main() -> Result<()> {
     let db_bytes = dir_size(&path);
 
     let result = Measurement {
-        format_version: 6,
+        format_version: 7,
         lane: "record",
         engine: args.engine,
         engine_version: args.engine.version(),
@@ -798,6 +877,8 @@ async fn main() -> Result<()> {
         ops_completed: completed,
         payload_bytes: args.payload_bytes,
         txn_size: args.txn_size,
+        read_materialization: READ_MATERIALIZATION,
+        write_materialization: WRITE_MATERIALIZATION,
         trial: args.trial,
         seed: args.seed,
         scenario: args.scenario.clone(),

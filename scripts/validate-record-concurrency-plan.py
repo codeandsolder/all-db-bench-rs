@@ -12,18 +12,23 @@ from typing import Any
 
 REQUIRED = (
     "scenario", "engine", "durability", "workload", "clients", "records",
-    "ops", "payload_bytes", "txn_size", "trial", "state_evolution",
+    "ops", "payload_bytes", "txn_size", "trial", "state_evolution", "read_materialization",
+    "write_materialization",
 )
 ALLOWED_ENGINES = {"surrealdb", "turso", "sqlite", "surrealdb-rocksdb"}
 ALLOWED_DURABILITY = {"sync", "relaxed"}
 ALLOWED_WORKLOADS = {"point-read", "indexed-read", "read-heavy", "tiny-txn", "write-burst"}
 ALLOWED_STATE = {"growth", "bounded"}
+PLAN_VERSION = 2
+READ_MATERIALIZATION = "full-record-v1"
+WRITE_MATERIALIZATION = "no-return-v1"
 
 
 def family_key(item: dict[str, Any]) -> tuple[Any, ...]:
     return (
         item["scenario"], item["engine"], item["durability"], item["workload"],
         int(item["payload_bytes"]), int(item["txn_size"]), item["state_evolution"],
+        item["read_materialization"], item["write_materialization"],
     )
 
 
@@ -33,8 +38,12 @@ def client_key(item: dict[str, Any]) -> tuple[Any, ...]:
 
 def materialize(plan: dict[str, Any]) -> tuple[list[list[str]], dict[str, Any]]:
     version = int(plan.get("record_concurrency_plan_version", -1))
-    if version != 1:
+    if version != PLAN_VERSION:
         raise ValueError(f"unsupported record concurrency plan version: {version}")
+    if plan.get("read_materialization") != READ_MATERIALIZATION:
+        raise ValueError(f"invalid plan read_materialization: {plan.get('read_materialization')!r}")
+    if plan.get("write_materialization") != WRITE_MATERIALIZATION:
+        raise ValueError(f"invalid plan write_materialization: {plan.get('write_materialization')!r}")
     cases = plan.get("cases")
     if not isinstance(cases, list) or len(cases) != int(plan.get("case_count", -1)):
         raise ValueError("plan case_count mismatch")
@@ -59,6 +68,10 @@ def materialize(plan: dict[str, Any]) -> tuple[list[list[str]], dict[str, Any]]:
             raise ValueError(f"invalid workload in case {i}: {item['workload']}")
         if item["state_evolution"] not in ALLOWED_STATE:
             raise ValueError(f"invalid state_evolution in case {i}: {item['state_evolution']}")
+        if item["read_materialization"] != READ_MATERIALIZATION:
+            raise ValueError(f"invalid read_materialization in case {i}: {item['read_materialization']!r}")
+        if item["write_materialization"] != WRITE_MATERIALIZATION:
+            raise ValueError(f"invalid write_materialization in case {i}: {item['write_materialization']!r}")
 
         clients = int(item["clients"])
         records = int(item["records"])
@@ -95,7 +108,8 @@ def materialize(plan: dict[str, Any]) -> tuple[list[list[str]], dict[str, Any]]:
         values = [
             str(item["scenario"]), str(item["engine"]), str(item["durability"]),
             str(workload), str(clients), str(records), str(ops), str(payload),
-            str(txn), str(trial), str(state),
+            str(txn), str(trial), str(state), str(item["read_materialization"]),
+            str(item["write_materialization"]),
         ]
         if any("|" in value or "\n" in value for value in values):
             raise ValueError(f"invalid delimiter in case {i}")
@@ -114,6 +128,8 @@ def materialize(plan: dict[str, Any]) -> tuple[list[list[str]], dict[str, Any]]:
         "expect_trials": expect_trials,
         "case_count": len(rows),
         "kind": str(plan.get("kind", "record-concurrency-plan")),
+        "read_materialization": READ_MATERIALIZATION,
+        "write_materialization": WRITE_MATERIALIZATION,
     }
 
 

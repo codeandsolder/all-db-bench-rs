@@ -39,6 +39,8 @@ BIN="$TARGET_DIR/release/recordbench"
 ROCKS_TARGET_DIR="${SURREAL_ROCKS_TARGET_DIR:-/tmp/rust-db-surreal-rocks-target}"
 "$ROOT/scripts/cargo-local-1.99.sh" build --release --manifest-path "$ROOT/engines/surrealdb-rocksdb/Cargo.toml" --target-dir "$ROCKS_TARGET_DIR"
 ROCKS_BIN="$ROCKS_TARGET_DIR/release/surrealdb-rocksdb-recordbench"
+READ_MATERIALIZATION=full-record-v1
+WRITE_MATERIALIZATION=no-return-v1
 
 JOBS=()
 add() { JOBS+=("$1|$2|$3|$4|$5|$6|$7|$8|$9"); }
@@ -83,7 +85,15 @@ for job in "${ORDERED[@]}"; do
     --records "$records" --ops "$ops" --payload-bytes "$payload" --txn-size "$txn" \
     --trial "$trial" --seed 1592606758 --scenario "$scenario" --root "$DATA_DIR" --output "$case_out" 2>"$err"
   rc=$?
-  if (( rc != 0 )); then
+  if (( rc == 0 )) && [[ -s "$case_out" ]] && [[ $(wc -l < "$case_out") -eq 1 ]]; then
+    if ! jq -e --arg read_expected "$READ_MATERIALIZATION" --arg write_expected "$WRITE_MATERIALIZATION" \
+      '.read_materialization == $read_expected and .write_materialization == $write_expected' "$case_out" >/dev/null; then
+      rc=2
+      printf 'record result semantic identity mismatch: expected read_materialization=%s write_materialization=%s\n' \
+        "$READ_MATERIALIZATION" "$WRITE_MATERIALIZATION" >>"$err"
+    fi
+  fi
+  if (( rc != 0 )) || [[ ! -s "$case_out" ]] || [[ $(wc -l < "$case_out") -ne 1 ]]; then
     FAILURES=$((FAILURES+1)); rm -f "$case_out"
     jq -cn --arg case_id "$case_id" --arg stderr "$err" --argjson rc "$rc" \
       '{case_id:$case_id, returncode:$rc, stderr:$stderr}' >> "$RUN_DIR/failures.ndjson"

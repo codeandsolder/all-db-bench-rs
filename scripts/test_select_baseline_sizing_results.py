@@ -186,6 +186,41 @@ class SelectBaselineSizingResultsTests(unittest.TestCase):
         self.assertEqual(manifest["sources"][0]["source"], "quality-repair")
         self.assertEqual(manifest["sources"][0]["final_status"], "accepted")
 
+    def test_policy_v3_requires_explicit_record_semantics(self) -> None:
+        stock = [dict(row("sqlite", "point-read", trial, 100), lane="record") for trial in (1, 2, 3)]
+        group = audit_group("sqlite", "point-read", 100, "accepted")
+        group["read_materialization"] = "full-record-v1"
+        group["write_materialization"] = "no-return-v1"
+        plan = audit(group)
+        plan["sizing_policy_version"] = 3
+        with self.assertRaisesRegex(ValueError, "require explicit read/write materialization"):
+            select_rows(stock, plan, Path("/tmp"), allow_missing_resize=True)
+
+    def test_policy_v3_read_semantics_are_part_of_selection_identity(self) -> None:
+        stock = [
+            dict(
+                row("sqlite", "point-read", trial, 100),
+                lane="record",
+                read_materialization="full-record-v1",
+                write_materialization="no-return-v1",
+            )
+            for trial in (1, 2, 3)
+        ]
+        group = audit_group("sqlite", "point-read", 100, "accepted")
+        group["read_materialization"] = "full-record-v1"
+        group["write_materialization"] = "no-return-v1"
+        plan = audit(group)
+        plan["sizing_policy_version"] = 3
+        selected, manifest = select_rows(stock, plan, Path("/tmp"), allow_missing_resize=False)
+        self.assertEqual(len(selected), 3)
+        self.assertTrue(manifest["complete"])
+
+        wrong = dict(group, read_materialization="legacy-read-v0")
+        wrong_plan = audit(wrong)
+        wrong_plan["sizing_policy_version"] = 3
+        with self.assertRaisesRegex(ValueError, "missing from audit"):
+            select_rows(stock, wrong_plan, Path("/tmp"), allow_missing_resize=False)
+
     def test_rejects_old_policy(self) -> None:
         with self.assertRaisesRegex(ValueError, "unsupported sizing policy"):
             select_rows([], {"sizing_policy_version": 1, "groups": []}, Path("/tmp"), allow_missing_resize=True)

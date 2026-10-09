@@ -141,6 +141,8 @@ def summarize_case(r: dict[str, Any]) -> dict[str, Any]:
         "key_bytes": r.get("key_bytes"),
         "key_shape": r.get("key_shape"),
         "txn_size": r.get("txn_size"),
+        "read_materialization": r.get("read_materialization", "legacy-read-v0"),
+        "write_materialization": r.get("write_materialization", "legacy-return-v0"),
         "trial": r.get("trial"),
         "window_count": len(windows),
         "wall_ops_per_s": float(r.get("ops_per_s", 0.0)),
@@ -200,6 +202,8 @@ def group_key(c: dict[str, Any]) -> tuple[Any, ...]:
         c["durability"], c["durability_mapping"], c["pattern"], c["records"],
         c["ops_requested"], c["window_ops"], c["value_bytes"], c["payload_bytes"],
         c["value_pattern"], c["key_bytes"], c["key_shape"], c["txn_size"],
+        c.get("read_materialization", "legacy-read-v0"),
+        c.get("write_materialization", "legacy-return-v0"),
     )
 
 
@@ -232,6 +236,7 @@ def aggregate(cases: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "format_version", "lane", "scenario", "engine", "engine_version", "durability",
             "durability_mapping", "pattern", "records", "ops_requested", "window_ops",
             "value_bytes", "payload_bytes", "value_pattern", "key_bytes", "key_shape", "txn_size",
+            "read_materialization", "write_materialization",
         ]}
         g["trials"] = len(rs)
         for field in numeric:
