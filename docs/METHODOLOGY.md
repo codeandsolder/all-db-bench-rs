@@ -148,9 +148,15 @@ Cargo build artifacts are directed to `/tmp/rust-db-realistic-bench-target`, and
 
 Result NDJSON, summaries and provenance metadata are durable. Per-run database directories are deleted after their final on-disk size has been recorded, unless the individual benchmark is run with `--keep-db`. This prevents the full repeated matrix from consuming storage merely to retain equivalent scratch databases.
 
+## Performance admission
+
+Performance cases are admitted only from a clean **starting** host state: the pre-case gate requires I/O PSI `full avg10 <= 5%` and explicit external-process sampling below the foreign-work threshold. After the measured child exits, external-process sampling runs again and can reject the case if attributable foreign work appeared during the measurement window.
+
+The harness never post-selects on post-case I/O PSI, runqueue wait, or CPU PSI. All three can be induced by the database engine/runtime being measured, so rejecting on them would condition the accepted sample on the benchmark's own behavior. They remain recorded diagnostic outputs. Short trials are made longer by sizing/calibration policy rather than retried until an in-window pressure metric happens to look favorable.
+
 ## Concurrency
 
-Concurrency trials are never post-selected on their own runqueue wait or host CPU PSI. Those signals can be induced by the benchmark itself (including engine/runtime worker threads), so they are retained as measured outputs rather than treated as attributable evidence of foreign load. Performance admission instead uses explicit pre/post external-process sampling plus I/O-pressure checks; contaminated windows are retried before/after the case without conditioning accepted results on the engine's own scheduler behavior.
+Concurrency uses the same admission rule. In particular, concurrency trials are never post-selected on their own runqueue wait, CPU PSI, or post-case I/O PSI; engine/runtime worker threads and storage activity are part of the measured cost.
 
 
 Concurrency is a separate raw-KV result lane (lane = "kv-concurrency"); it is never merged with the historical single-client throughput matrix.

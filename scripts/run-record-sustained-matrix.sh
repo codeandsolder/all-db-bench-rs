@@ -60,7 +60,6 @@ RUNNER_SHA=$(sha256sum "$ROOT/scripts/run-record-sustained-matrix.sh" | awk '{pr
 POLICY_SHA=$(sha256sum "$ROOT/scripts/sustained-matrix-policy.sh" | awk '{print $1}')
 COMMON_SHA=$(sha256sum "$ROOT/scripts/performance-runner-common.sh" | awk '{print $1}')
 NOISE_SHA=$(sha256sum "$ROOT/scripts/check-external-noise.py" | awk '{print $1}')
-PRESSURE_SHA=$(sha256sum "$ROOT/scripts/scrub-short-trial-pressure.py" | awk '{print $1}')
 HOST_NAME=$(hostname); MACHINE_ID_SHA256=$(sha256sum /etc/machine-id | awk '{print $1}')
 FILESYSTEM=$(findmnt -n -o FSTYPE --target "$DATA_DIR"); SOURCE=$(findmnt -n -o SOURCE --target "$DATA_DIR")
 
@@ -90,7 +89,7 @@ EXPECTED=$(record_sustained_expected_cases "$PROFILE") || exit 2
 RESUME_ORDER_POLICY=fixed-initial; [[ "${MATRIX_RESUME_SHUFFLE_REMAINING:-0}" == 1 ]] && RESUME_ORDER_POLICY=reshuffle-remaining
 SUPPORT_NEW="$RUN_DIR/support.json.new"
 cat > "$SUPPORT_NEW" <<JSON
-{"lane":"record-sustained","profile":"$PROFILE","trials":$TRIALS,"case_count":$TOTAL,"build_profile":"$BUILD_PROFILE","benchmark_binary_sha256":"$BIN_SHA","rocksdb_benchmark_binary_sha256":"$ROCKS_BIN_SHA","runner_sha256":"$RUNNER_SHA","sustained_policy_sha256":"$POLICY_SHA","performance_common_sha256":"$COMMON_SHA","noise_guard_sha256":"$NOISE_SHA","short_pressure_guard_sha256":"$PRESSURE_SHA","resume_order_policy":"$RESUME_ORDER_POLICY","hostname":"$HOST_NAME","machine_id_sha256":"$MACHINE_ID_SHA256","filesystem":"$FILESYSTEM","source":"$SOURCE","engines":"${ENGINES[*]}","core":{"records":$CORE_RECORDS,"ops":$CORE_OPS,"window_ops":$CORE_WINDOW,"payload_bytes":$CORE_PAYLOAD},"stress":{"records":$STRESS_RECORDS,"ops":$STRESS_OPS,"window_ops":$STRESS_WINDOW,"payload_bytes":$STRESS_PAYLOAD},"relaxed":{"records":$RELAXED_RECORDS,"ops":$RELAXED_OPS,"window_ops":$RELAXED_WINDOW,"payload_bytes":$RELAXED_PAYLOAD},"txn1":{"records":$TX1_RECORDS,"ops":$TX1_OPS,"window_ops":$TX1_WINDOW,"payload_bytes":$TX1_PAYLOAD},"txn1000":{"records":$TX1000_RECORDS,"ops":$TX1000_OPS,"window_ops":$TX1000_WINDOW,"payload_bytes":$TX1000_PAYLOAD},"window_method":"fixed logical-op windows; no recursive database-size scan between windows","churn_transaction_semantics":"40/30/30 update/insert/delete operations are shuffled and committed as one mixed transaction per batch","logical_mutated_bytes":"estimated logical record bytes: id(8)+bucket(4)+payload for upsert; id(8) for delete","threshold_interpretation":"75/50/25% baseline ratios are reporting diagnostics, not pass/fail criteria","baseline_method":"median throughput and p99 latency of the first min(3, window_count) windows","targeted_sweeps":["4KiB payload stress","relaxed durability","txn-size extremes 1 and 1000"],"backend_coverage":"SurrealDB/SurrealKV, SurrealDB/RocksDB, Turso, SQLite","post_workload_settle_ms":$SETTLE_MS}
+{"lane":"record-sustained","profile":"$PROFILE","trials":$TRIALS,"case_count":$TOTAL,"build_profile":"$BUILD_PROFILE","benchmark_binary_sha256":"$BIN_SHA","rocksdb_benchmark_binary_sha256":"$ROCKS_BIN_SHA","runner_sha256":"$RUNNER_SHA","sustained_policy_sha256":"$POLICY_SHA","performance_common_sha256":"$COMMON_SHA","noise_guard_sha256":"$NOISE_SHA","admission_policy":"pre-io+pre/post-external-v2","resume_order_policy":"$RESUME_ORDER_POLICY","hostname":"$HOST_NAME","machine_id_sha256":"$MACHINE_ID_SHA256","filesystem":"$FILESYSTEM","source":"$SOURCE","engines":"${ENGINES[*]}","core":{"records":$CORE_RECORDS,"ops":$CORE_OPS,"window_ops":$CORE_WINDOW,"payload_bytes":$CORE_PAYLOAD},"stress":{"records":$STRESS_RECORDS,"ops":$STRESS_OPS,"window_ops":$STRESS_WINDOW,"payload_bytes":$STRESS_PAYLOAD},"relaxed":{"records":$RELAXED_RECORDS,"ops":$RELAXED_OPS,"window_ops":$RELAXED_WINDOW,"payload_bytes":$RELAXED_PAYLOAD},"txn1":{"records":$TX1_RECORDS,"ops":$TX1_OPS,"window_ops":$TX1_WINDOW,"payload_bytes":$TX1_PAYLOAD},"txn1000":{"records":$TX1000_RECORDS,"ops":$TX1000_OPS,"window_ops":$TX1000_WINDOW,"payload_bytes":$TX1000_PAYLOAD},"window_method":"fixed logical-op windows; no recursive database-size scan between windows","churn_transaction_semantics":"40/30/30 update/insert/delete operations are shuffled and committed as one mixed transaction per batch","logical_mutated_bytes":"estimated logical record bytes: id(8)+bucket(4)+payload for upsert; id(8) for delete","threshold_interpretation":"75/50/25% baseline ratios are reporting diagnostics, not pass/fail criteria","baseline_method":"median throughput and p99 latency of the first min(3, window_count) windows","targeted_sweeps":["4KiB payload stress","relaxed durability","txn-size extremes 1 and 1000"],"backend_coverage":"SurrealDB/SurrealKV, SurrealDB/RocksDB, Turso, SQLite","post_workload_settle_ms":$SETTLE_MS}
 JSON
 EXISTING_CASES=$(find "$RUN_DIR/cases" -type f -name '*.json' | wc -l)
 if [[ -s "$RUN_DIR/support.json" ]]; then
@@ -120,12 +119,11 @@ for job in "${ORDERED[@]}"; do
   CASE_BIN="$BIN"; [[ "$engine" == surrealdb-rocksdb ]] && CASE_BIN="$ROCKS_BIN"
   "$CASE_BIN" --engine "$engine" --durability "$dur" --pattern "$pattern" --records "$records" --ops "$ops" --window-ops "$window" --payload-bytes "$payload" --txn-size "$txn" --trial "$trial" --seed 1592606758 --warmup-reads 5000 --settle-ms "$SETTLE_MS" --settle-sample-ms "$SETTLE_SAMPLE_MS" --scenario "$scenario" --root "$DATA_DIR" --output "$out" --keep-db 2>"$err"
   rc=$?
-  io_rc=0; performance_check_io_quiet "$PROFILE" "after:$case_id" || io_rc=$?
   noise_rc=0; performance_check_external_noise "$ROOT" "$PROFILE" "after:$case_id" "$noise_after" || noise_rc=$?
-  if (( io_rc != 0 || noise_rc != 0 )); then
+  if (( noise_rc != 0 )); then
     if [[ -s "$out" ]]; then record_cleanup_result_db "$out" "$DATA_DIR" || true; fi
     rm -f "$out"; clear_failure "$case_id"
-    if (( io_rc != 0 )); then exit "$io_rc"; else exit "$noise_rc"; fi
+    exit "$noise_rc"
   fi
   if (( rc == 0 )) && [[ -s "$out" ]]; then
     record_cleanup_result_db "$out" "$DATA_DIR" || rc=$?
@@ -135,10 +133,6 @@ for job in "${ORDERED[@]}"; do
     jq -cn --arg case_id "$case_id" --arg stderr "$err" --argjson rc "$rc" '{case_id:$case_id,returncode:$rc,stderr:$stderr}' >> "$RUN_DIR/failures.ndjson"
     continue
   fi
-  pressure_report=$(mktemp); pressure_rc=0
-  performance_scrub_case_pressure "$ROOT" "$PROFILE" "$RUN_DIR" "$case_id" "$pressure_report" || pressure_rc=$?
-  rm -f "$pressure_report"
-  if (( pressure_rc != 0 )); then clear_failure "$case_id"; exit "$pressure_rc"; fi
   clear_failure "$case_id"; [[ -s "$err" ]] || rm -f "$err"
 done
 

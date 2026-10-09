@@ -120,7 +120,7 @@ json.dump({
   "imported_cases_manifest_sha256":"$IMPORTED_CASES_MANIFEST_SHA",
   "engines":"${ENGINES[*]}", "workloads":"${WORKLOADS[*]}", "durabilities":"${DURABILITIES[*]}",
   "resume_order_policy":"$RESUME_ORDER_POLICY", "build_profile":"$BUILD_PROFILE",
-  "benchmark_binary_sha256":"$BIN_SHA", "runner_sha256":"$RUNNER_SHA", "kv_matrix_policy_sha256":"$POLICY_SHA", "noise_guard_sha256":"$NOISE_SHA",
+  "benchmark_binary_sha256":"$BIN_SHA", "runner_sha256":"$RUNNER_SHA", "kv_matrix_policy_sha256":"$POLICY_SHA", "noise_guard_sha256":"$NOISE_SHA", "admission_policy":"pre-io+pre/post-external-v2",
   "hostname":"$HOST_NAME", "machine_id_sha256":"$MACHINE_ID_SHA256", "filesystem":"$FILESYSTEM", "source":"$SOURCE"
 }, open(sys.argv[1], "w"), sort_keys=True, separators=(",",":"))
 PY_SUPPORT
@@ -166,11 +166,10 @@ for job in "${ORDERED[@]}"; do
     --records "$RECORDS" --ops "$CASE_OPS" --value-bytes 256 --txn-size 100 --scan-len 100 \
     --trial "$trial" --seed 1592606758 --scenario baseline-core --root "$DATA_DIR" --output "$out" 2>"$err"
   rc=$?
-  io_rc=0; check_io_quiet "after:$case_id" || io_rc=$?
   noise_rc=0; check_external_noise "after:$case_id" "$noise_after" || noise_rc=$?
-  if (( io_rc != 0 || noise_rc != 0 )); then
+  if (( noise_rc != 0 )); then
     rm -f "$out"; clear_failure "$case_id"
-    if (( io_rc != 0 )); then exit "$io_rc"; else exit "$noise_rc"; fi
+    exit "$noise_rc"
   fi
   if (( rc != 0 )) || [[ ! -s "$out" ]] || [[ $(wc -l < "$out") -ne 1 ]]; then
     rm -f "$out"; clear_failure "$case_id"

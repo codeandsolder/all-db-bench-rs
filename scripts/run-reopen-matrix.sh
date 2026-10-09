@@ -46,7 +46,6 @@ RUNNER_SHA=$(sha256sum "$ROOT/scripts/run-reopen-matrix.sh" | awk '{print $1}')
 KV_POLICY_SHA=$(sha256sum "$ROOT/scripts/kv-matrix-policy.sh" | awk '{print $1}')
 COMMON_SHA=$(sha256sum "$ROOT/scripts/performance-runner-common.sh" | awk '{print $1}')
 NOISE_SHA=$(sha256sum "$ROOT/scripts/check-external-noise.py" | awk '{print $1}')
-PRESSURE_SHA=$(sha256sum "$ROOT/scripts/scrub-short-trial-pressure.py" | awk '{print $1}')
 HOST_NAME=$(hostname); MACHINE_ID_SHA256=$(sha256sum /etc/machine-id | awk '{print $1}')
 FILESYSTEM=$(findmnt -n -o FSTYPE --target "$DATA_DIR"); SOURCE=$(findmnt -n -o SOURCE --target "$DATA_DIR")
 
@@ -82,7 +81,7 @@ EXPECTED=$((50 * TRIALS))
 RESUME_ORDER_POLICY=fixed-initial; [[ "${MATRIX_RESUME_SHUFFLE_REMAINING:-0}" == 1 ]] && RESUME_ORDER_POLICY=reshuffle-remaining
 SUPPORT_NEW="$RUN_DIR/support.json.new"
 cat > "$SUPPORT_NEW" <<JSON
-{"lane":"kv-reopen","profile":"$PROFILE","cache_mode":"$CACHE","trials":$TRIALS,"records":$RECORDS,"default_ops":$OPS,"case_count":$TOTAL,"build_profile":"$BUILD_PROFILE","benchmark_binary_sha256":"$BIN_SHA","runner_sha256":"$RUNNER_SHA","kv_matrix_policy_sha256":"$KV_POLICY_SHA","performance_common_sha256":"$COMMON_SHA","noise_guard_sha256":"$NOISE_SHA","short_pressure_guard_sha256":"$PRESSURE_SHA","resume_order_policy":"$RESUME_ORDER_POLICY","hostname":"$HOST_NAME","machine_id_sha256":"$MACHINE_ID_SHA256","filesystem":"$FILESYSTEM","source":"$SOURCE","open_pressure_evidence":"format v7 open_process + open_system_delta; short-pressure scrub checks measured and open intervals","prepare_semantics":"fresh prefill with one discarded read; measured process reopens same DB with prefill and warmup skipped","cold_cache_semantics":"root-only global sync + drop_caches; never simulated"}
+{"lane":"kv-reopen","profile":"$PROFILE","cache_mode":"$CACHE","trials":$TRIALS,"records":$RECORDS,"default_ops":$OPS,"case_count":$TOTAL,"build_profile":"$BUILD_PROFILE","benchmark_binary_sha256":"$BIN_SHA","runner_sha256":"$RUNNER_SHA","kv_matrix_policy_sha256":"$KV_POLICY_SHA","performance_common_sha256":"$COMMON_SHA","noise_guard_sha256":"$NOISE_SHA","admission_policy":"pre-io+pre/post-external-v2","resume_order_policy":"$RESUME_ORDER_POLICY","hostname":"$HOST_NAME","machine_id_sha256":"$MACHINE_ID_SHA256","filesystem":"$FILESYSTEM","source":"$SOURCE","open_pressure_evidence":"format v7 open_process + open_system_delta retained as diagnostic evidence; never used for acceptance","prepare_semantics":"fresh prefill with one discarded read; measured process reopens same DB with prefill and warmup skipped","cold_cache_semantics":"root-only global sync + drop_caches; never simulated"}
 JSON
 EXISTING_CASES=$(find "$RUN_DIR/cases" -type f -name '*.json' | wc -l)
 if [[ -s "$RUN_DIR/support.json" ]]; then
@@ -136,21 +135,16 @@ for job in "${ORDERED[@]}"; do
     --trial "$trial" --seed 1592606758 --scenario "reopen-$CACHE" --db-name "$db_name" \
     --root "$DATA_DIR" --output "$out" --reuse-db --skip-prefill --warmup-reads 0 2>"$err"
   rc=$?
-  io_rc=0; performance_check_io_quiet "$PROFILE" "after:$case_id" || io_rc=$?
   noise_rc=0; performance_check_external_noise "$ROOT" "$PROFILE" "after:$case_id" "$noise_after" || noise_rc=$?
-  if (( io_rc != 0 || noise_rc != 0 )); then
+  if (( noise_rc != 0 )); then
     rm -f "$out"; clear_failure "$case_id"
-    if (( io_rc != 0 )); then exit "$io_rc"; else exit "$noise_rc"; fi
+    exit "$noise_rc"
   fi
   if (( rc != 0 )) || [[ ! -s "$out" ]] || [[ $(wc -l < "$out") -ne 1 ]]; then
     rm -f "$out"; clear_failure "$case_id"
     jq -cn --arg case_id "$case_id" --arg stderr "$err" --argjson rc "$rc" '{case_id:$case_id,phase:"reopen",returncode:$rc,stderr:$stderr}' >> "$RUN_DIR/failures.ndjson"
     continue
   fi
-  pressure_report=$(mktemp); pressure_rc=0
-  performance_scrub_case_pressure "$ROOT" "$PROFILE" "$RUN_DIR" "$case_id" "$pressure_report" --interval measured --interval open || pressure_rc=$?
-  rm -f "$pressure_report"
-  if (( pressure_rc != 0 )); then clear_failure "$case_id"; exit "$pressure_rc"; fi
   clear_failure "$case_id"; [[ -s "$err" ]] || rm -f "$err"
 done
 
