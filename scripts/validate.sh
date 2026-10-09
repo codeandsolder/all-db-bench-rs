@@ -21,6 +21,7 @@ rustfmt +1.99.0 --edition 2024 \
   engines/surrealdb-rocksdb/src/bin/surrealdb-rocksdb-recordsustained.rs --check
 bash -n scripts/*.sh
 "$ROOT/scripts/test-sccache-native-wrappers.sh"
+"$ROOT/scripts/test-record-result-cleanup.sh"
 uv run python -m py_compile scripts/*.py
 uv run python -m unittest discover -s scripts -p 'test_*.py'
 

@@ -19,9 +19,15 @@ def checked_result(cmd: list[str], output: Path, *, label: str, expected_format:
     proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False)
     if proc.returncode != 0:
         raise RuntimeError(f"runtime smoke failed for {label} rc={proc.returncode}\n{proc.stdout}")
-    rows = [json.loads(line) for line in output.read_text().splitlines() if line.strip()]
-    if len(rows) != 1:
-        raise RuntimeError(f"expected one result row for {label}, got {len(rows)}")
+    text = output.read_text()
+    try:
+        document = json.loads(text)
+    except json.JSONDecodeError:
+        rows = [json.loads(line) for line in text.splitlines() if line.strip()]
+    else:
+        rows = [document]
+    if len(rows) != 1 or not isinstance(rows[0], dict):
+        raise RuntimeError(f"expected one result object for {label}, got {len(rows)}")
     row = rows[0]
     if row.get("read_materialization") != READ or row.get("write_materialization") != WRITE:
         raise RuntimeError(f"semantic marker mismatch for {label}: {row}")
@@ -47,6 +53,7 @@ def run_baseline(binary: Path, engine: str, workload: str, root: Path) -> None:
             "--warmup-reads", "8",
             "--root", str(root / f"baseline-{engine}-{workload}"),
             "--output", str(output),
+            "--keep-db",
         ],
         output,
         label=f"baseline/{engine}/{workload}",
@@ -63,7 +70,6 @@ def run_concurrency(binary: Path, engine: str, root: Path) -> None:
             "--engine", engine,
             "--durability", "sync",
             "--workload", "point-read",
-            "--state-evolution", "bounded",
             "--records", "32",
             "--ops", "64",
             "--clients", "2",
@@ -72,6 +78,7 @@ def run_concurrency(binary: Path, engine: str, root: Path) -> None:
             "--warmup-reads", "8",
             "--root", str(root / f"concurrency-{engine}"),
             "--output", str(output),
+            "--keep-db",
         ],
         output,
         label=f"concurrency/{engine}/point-read-c2",
@@ -97,6 +104,7 @@ def run_sustained(binary: Path, engine: str, root: Path) -> None:
             "--settle-ms", "0",
             "--root", str(root / f"sustained-{engine}"),
             "--output", str(output),
+            "--keep-db",
         ],
         output,
         label=f"sustained/{engine}/churn",

@@ -9,6 +9,8 @@ PROFILE=quick
 source "$ROOT/scripts/concurrency-matrix-policy.sh"
 # shellcheck source=concurrency-runner-common.sh
 source "$ROOT/scripts/concurrency-runner-common.sh"
+# shellcheck source=record-result-cleanup.sh
+source "$ROOT/scripts/record-result-cleanup.sh"
 CASE_TIMEOUT_S=$(concurrency_case_timeout_s "$PROFILE") || exit 2
 command -v timeout >/dev/null || { echo "GNU timeout is required" >&2; exit 2; }
 [[ -s "$PLAN" ]] || { echo "plan not found: $PLAN" >&2; exit 2; }
@@ -153,14 +155,18 @@ for job in "${ORDERED[@]}"; do
     "$CASE_BIN" --engine "$engine" --durability "$durability" --workload "$workload" \
     --state-evolution "$state_evolution" --clients "$clients" --records "$records" --ops "$ops" \
     --payload-bytes "$payload" --txn-size "$txn" --trial "$trial" --seed 1592606758 \
-    --scenario "$scenario" --warmup-reads 5000 --root "$DATA_DIR" --output "$out" 2>"$err"
+    --scenario "$scenario" --warmup-reads 5000 --root "$DATA_DIR" --output "$out" --keep-db 2>"$err"
   rc=$?
 
   io_rc=0; concurrency_check_io_quiet "$PROFILE" "after:$case_id" || io_rc=$?
   noise_rc=0; concurrency_check_external_noise "$ROOT" "$PROFILE" "after:$case_id" "$noise_after" || noise_rc=$?
   if (( io_rc != 0 || noise_rc != 0 )); then
+    if [[ -s "$out" ]]; then record_cleanup_result_db "$out" "$DATA_DIR" || true; fi
     rm -f "$out"; clear_failure "$case_id"
     if (( io_rc != 0 )); then exit "$io_rc"; else exit "$noise_rc"; fi
+  fi
+  if (( rc == 0 )) && [[ -s "$out" ]] && [[ $(wc -l < "$out") -eq 1 ]]; then
+    record_cleanup_result_db "$out" "$DATA_DIR" || rc=$?
   fi
   if (( rc == 0 )) && [[ -s "$out" ]] && [[ $(wc -l < "$out") -eq 1 ]]; then
     if ! jq -e --arg read_expected "$read_materialization" --arg write_expected "$write_materialization" \

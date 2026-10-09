@@ -14,6 +14,8 @@ ROOT=${ROOT:-/srv/scratch/db-bench-2026-09-27}
 source "$ROOT/scripts/sustained-matrix-policy.sh"
 # shellcheck source=performance-runner-common.sh
 source "$ROOT/scripts/performance-runner-common.sh"
+# shellcheck source=record-result-cleanup.sh
+source "$ROOT/scripts/record-result-cleanup.sh"
 read -r CORE_RECORDS CORE_OPS CORE_WINDOW CORE_PAYLOAD < <(record_sustained_budget "$PROFILE" core 100) || exit 2
 read -r STRESS_RECORDS STRESS_OPS STRESS_WINDOW STRESS_PAYLOAD < <(record_sustained_budget "$PROFILE" stress 100) || exit 2
 read -r RELAXED_RECORDS RELAXED_OPS RELAXED_WINDOW RELAXED_PAYLOAD < <(record_sustained_budget "$PROFILE" relaxed 100) || exit 2
@@ -116,13 +118,17 @@ for job in "${ORDERED[@]}"; do
   performance_check_external_noise "$ROOT" "$PROFILE" "before:$case_id" "$noise_before" || exit $?
   rm -f "$out"
   CASE_BIN="$BIN"; [[ "$engine" == surrealdb-rocksdb ]] && CASE_BIN="$ROCKS_BIN"
-  "$CASE_BIN" --engine "$engine" --durability "$dur" --pattern "$pattern" --records "$records" --ops "$ops" --window-ops "$window" --payload-bytes "$payload" --txn-size "$txn" --trial "$trial" --seed 1592606758 --warmup-reads 5000 --settle-ms "$SETTLE_MS" --settle-sample-ms "$SETTLE_SAMPLE_MS" --scenario "$scenario" --root "$DATA_DIR" --output "$out" 2>"$err"
+  "$CASE_BIN" --engine "$engine" --durability "$dur" --pattern "$pattern" --records "$records" --ops "$ops" --window-ops "$window" --payload-bytes "$payload" --txn-size "$txn" --trial "$trial" --seed 1592606758 --warmup-reads 5000 --settle-ms "$SETTLE_MS" --settle-sample-ms "$SETTLE_SAMPLE_MS" --scenario "$scenario" --root "$DATA_DIR" --output "$out" --keep-db 2>"$err"
   rc=$?
   io_rc=0; performance_check_io_quiet "$PROFILE" "after:$case_id" || io_rc=$?
   noise_rc=0; performance_check_external_noise "$ROOT" "$PROFILE" "after:$case_id" "$noise_after" || noise_rc=$?
   if (( io_rc != 0 || noise_rc != 0 )); then
+    if [[ -s "$out" ]]; then record_cleanup_result_db "$out" "$DATA_DIR" || true; fi
     rm -f "$out"; clear_failure "$case_id"
     if (( io_rc != 0 )); then exit "$io_rc"; else exit "$noise_rc"; fi
+  fi
+  if (( rc == 0 )) && [[ -s "$out" ]]; then
+    record_cleanup_result_db "$out" "$DATA_DIR" || rc=$?
   fi
   if (( rc != 0 )) || [[ ! -s "$out" ]]; then
     rm -f "$out"; clear_failure "$case_id"
