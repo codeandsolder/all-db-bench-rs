@@ -20,9 +20,18 @@ if [[ ! -x "$RUSTC_REAL" ]]; then
 fi
 export RUSTUP_TOOLCHAIN=1.99.0
 export RUSTC="$RUSTC_REAL"
-export RUSTC_WRAPPER=
-export CC="${CC_REAL:-/usr/bin/cc}"
-export CXX="${CXX_REAL:-/usr/bin/c++}"
+NATIVE_SCCACHE_WRAPPER=${DB_BENCH_RUSTC_WRAPPER:-$ROOT/scripts/sccache-native-rustc.sh}
+NATIVE_CC_WRAPPER=${DB_BENCH_CC:-$ROOT/scripts/sccache-native-cc.sh}
+NATIVE_CXX_WRAPPER=${DB_BENCH_CXX:-$ROOT/scripts/sccache-native-cxx.sh}
+for wrapper in "$NATIVE_SCCACHE_WRAPPER" "$NATIVE_CC_WRAPPER" "$NATIVE_CXX_WRAPPER"; do
+  if [[ ! -x "$wrapper" ]]; then
+    echo "Required native sccache wrapper is not executable: $wrapper" >&2
+    exit 127
+  fi
+done
+export RUSTC_WRAPPER="$NATIVE_SCCACHE_WRAPPER"
+export CC="$NATIVE_CC_WRAPPER"
+export CXX="$NATIVE_CXX_WRAPPER"
 export CARGO_HOME="${DB_BENCH_CARGO_HOME:-/tmp/db-bench-cargo-home}"
 mkdir -p "$CARGO_HOME"
 SQLITE_PREFIX="$ROOT/.deps/sqlite-3.53.4"
