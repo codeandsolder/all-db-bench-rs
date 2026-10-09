@@ -365,7 +365,7 @@ impl Engine {
         match self {
             Self::Surreal(db) => {
                 let mut response = db
-                    .query("SELECT ONLY bucket, payload FROM $id")
+                    .query("SELECT bucket, payload FROM ONLY $id")
                     .bind(("id", RecordId::new("item", id as i64)))
                     .await?;
                 let row: Option<RecordData> = response.take(0)?;

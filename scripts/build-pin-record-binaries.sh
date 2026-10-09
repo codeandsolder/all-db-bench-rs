@@ -23,6 +23,14 @@ CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" build \
   --bin surrealdb-rocksdb-recordconcurrency \
   --bin surrealdb-rocksdb-recordsustained
 
+"$ROOT/scripts/smoke-record-binaries.py" \
+  --bench-bin "$TARGET_DIR/release/recordbench" \
+  --concurrency-bin "$TARGET_DIR/release/recordconcurrency" \
+  --sustained-bin "$TARGET_DIR/release/recordsustained" \
+  --rocks-bench-bin "$ROCKS_TARGET_DIR/release/surrealdb-rocksdb-recordbench" \
+  --rocks-concurrency-bin "$ROCKS_TARGET_DIR/release/surrealdb-rocksdb-recordconcurrency" \
+  --rocks-sustained-bin "$ROCKS_TARGET_DIR/release/surrealdb-rocksdb-recordsustained"
+
 commit=$(git -C "$ROOT" rev-parse HEAD)
 short=${commit:0:16}
 rustc_version=$(rustc +1.99.0 --version)

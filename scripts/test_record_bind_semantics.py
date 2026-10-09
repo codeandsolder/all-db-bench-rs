@@ -17,7 +17,7 @@ class RecordBindSemanticsTests(unittest.TestCase):
 
     def test_surreal_point_reads_project_only_compared_fields(self) -> None:
         for source in (SOURCE, ROCKS_SOURCE):
-            self.assertIn("SELECT ONLY bucket, payload FROM $id", source)
+            self.assertIn("SELECT bucket, payload FROM ONLY $id", source)
             self.assertNotIn('db.select(("item", id as i64))', source)
 
     def test_surreal_writes_do_not_materialize_returned_records(self) -> None:
