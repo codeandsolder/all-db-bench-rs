@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import argparse, hashlib, json, os
+import argparse, hashlib, json, os, subprocess
 from pathlib import Path
 
 def sha256(path: Path) -> str:
@@ -9,6 +9,14 @@ def sha256(path: Path) -> str:
         for chunk in iter(lambda:f.read(1024*1024),b""):
             h.update(chunk)
     return h.hexdigest()
+
+def checked_runner_commit(repo: Path) -> str:
+    tracked_dirty=subprocess.check_output(
+        ["git", "status", "--porcelain", "--untracked-files=no"], cwd=repo, text=True
+    ).strip()
+    if tracked_dirty:
+        raise SystemExit("runner checkout has tracked modifications; refusing readiness certificate")
+    return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
 
 def main() -> int:
     ap=argparse.ArgumentParser()
@@ -20,6 +28,7 @@ def main() -> int:
     ap.add_argument("--expected-admission-policy", required=True)
     ap.add_argument("--out", type=Path, required=True)
     a=ap.parse_args()
+    runner_repo_commit=checked_runner_commit(a.repo)
     manifest=json.loads((a.selected/"manifest.json").read_text())
     summary=json.loads((a.selected/"summary.json").read_text())
     bin_manifest=json.loads(a.binary_manifest.read_text())
@@ -106,8 +115,10 @@ def main() -> int:
         if not path.is_file() or not expected or sha256(path) != expected:
             raise SystemExit(f"pinned binary verification failed: {name}")
     out={
-        "ready_version":3,
+        "ready_version":4,
         "repo_commit":a.expected_commit,
+        "binary_repo_commit":a.expected_commit,
+        "runner_repo_commit":runner_repo_commit,
         "admission_policy":a.expected_admission_policy,
         "source_support_sha256":source_supports,
         "selected_noise_guard_sha256":selected_noise_guard_sha256,
