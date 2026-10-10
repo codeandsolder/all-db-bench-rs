@@ -37,6 +37,24 @@ def main() -> int:
     if writes != {"no-return-v1"}:
         raise SystemExit(f"unexpected write semantics: {sorted(map(str,writes))}")
     source_supports = {}
+    selected_source_run_ids = set()
+    if int(manifest.get("selected_stock_groups", 0)) > 0:
+        selected_source_run_ids.add(a.stock_run_id)
+    selected_source_run_ids.update(
+        str(item["run_id"])
+        for item in manifest.get("sources", [])
+        if item.get("source") in {"resize", "quality-repair"} and item.get("run_id")
+    )
+    expected_selected_source_runs = (
+        (1 if int(manifest.get("selected_stock_groups", 0)) > 0 else 0)
+        + int(manifest.get("selected_resize_groups", 0))
+        + int(manifest.get("selected_quality_repair_groups", 0))
+    )
+    if len(selected_source_run_ids) != expected_selected_source_runs:
+        raise SystemExit(
+            "selected source-run provenance mismatch: "
+            f"manifest={expected_selected_source_runs} runs={len(selected_source_run_ids)}"
+        )
     source_run_ids = [a.stock_run_id]
     source_run_ids.extend(
         sorted(
@@ -65,6 +83,16 @@ def main() -> int:
                 f"unexpected admission policy for {run_id}: {support.get('admission_policy')!r}"
             )
         source_supports[run_id] = sha256(support_path)
+    selected_noise_guards = {
+        json.loads((a.repo / "results" / "runs" / run_id / "support.json").read_text()).get("noise_guard_sha256")
+        for run_id in selected_source_run_ids
+    }
+    if None in selected_noise_guards or "" in selected_noise_guards or len(selected_noise_guards) != 1:
+        raise SystemExit(
+            "selected performance sources have inconsistent noise guards: "
+            f"{sorted(map(str, selected_noise_guards))}"
+        )
+    selected_noise_guard_sha256 = next(iter(selected_noise_guards))
     if bin_manifest.get("repo_commit") != a.expected_commit:
         raise SystemExit("binary manifest commit mismatch")
     if bin_manifest.get("read_materialization") != "full-record-v1" or bin_manifest.get("write_materialization") != "no-return-v1":
@@ -78,10 +106,11 @@ def main() -> int:
         if not path.is_file() or not expected or sha256(path) != expected:
             raise SystemExit(f"pinned binary verification failed: {name}")
     out={
-        "ready_version":2,
+        "ready_version":3,
         "repo_commit":a.expected_commit,
         "admission_policy":a.expected_admission_policy,
         "source_support_sha256":source_supports,
+        "selected_noise_guard_sha256":selected_noise_guard_sha256,
         "group_count":40,
         "row_count":len(rows),
         "read_materialization":"full-record-v1",
