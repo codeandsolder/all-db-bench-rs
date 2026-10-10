@@ -42,4 +42,18 @@ for supervisor in run-record-quick-idle.py run-record-sizing-followups.py run-kv
   fi
 done
 
+for common in performance-runner-common.sh concurrency-runner-common.sh; do
+  rg -q 'PERFORMANCE_MIN_FREE_GIB:-8' "$ROOT/scripts/$common" || {
+    echo "missing 8 GiB free-space admission floor in $common" >&2
+    exit 1
+  }
+done
+
+for baseline in run-kv-matrix.sh run-record-matrix.sh; do
+  rg -q 'PERFORMANCE_MIN_FREE_GIB:-8' "$ROOT/scripts/$baseline" || {
+    echo "missing 8 GiB free-space admission floor in $baseline" >&2
+    exit 1
+  }
+done
+
 echo performance-admission-ok

@@ -1,8 +1,22 @@
 #!/usr/bin/env bash
 
+concurrency_check_free_space() {
+  local profile=$1 phase=$2 path=${3:-${PERFORMANCE_FREE_SPACE_PATH:-${DATA_DIR:-$PWD}}}
+  [[ "$profile" == smoke ]] && return 0
+  local min_gib=${PERFORMANCE_MIN_FREE_GIB:-8} free_kib min_kib
+  free_kib=$(df -Pk -- "$path" | awk 'NR==2 {print $4}') || return 2
+  min_kib=$(awk -v g="$min_gib" 'BEGIN { if (g < 0) exit 2; printf "%.0f", g * 1024 * 1024 }') || return 2
+  if (( free_kib < min_kib )); then
+    echo "refusing concurrency performance case under low free space ($phase): free_kib=$free_kib required_kib=$min_kib path=$path" >&2
+    return 75
+  fi
+}
+
 concurrency_check_io_quiet() {
   local profile=$1 phase=$2 threshold=${3:-5.0}
-  [[ "$profile" == smoke || "${ALLOW_BUSY:-0}" == 1 ]] && return 0
+  [[ "$profile" == smoke ]] && return 0
+  concurrency_check_free_space "$profile" "$phase" || return $?
+  [[ "${ALLOW_BUSY:-0}" == 1 ]] && return 0
   local pressure
   pressure=$(awk '/^full / {for(i=1;i<=NF;i++) if($i ~ /^avg10=/){split($i,a,"="); print a[2]}}' /proc/pressure/io)
   if ! awk -v p="${pressure:-0}" -v t="$threshold" 'BEGIN{exit !(p<=t)}'; then

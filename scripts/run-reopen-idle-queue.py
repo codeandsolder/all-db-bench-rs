@@ -16,6 +16,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TextIO
 
+from idle_supervisor_common import storage_preflight, write_status as supervisor_write_status
+
 DEFAULT_LOCK = Path("/run/lock/all-db-bench-performance.lock")
 DEFAULT_STATUS = Path("/srv/scratch/db-bench-work/reopen-quick/idle-status.json")
 DEFAULT_MANIFEST = Path("/srv/scratch/db-bench-work/reopen-quick/bin/manifest.json")
@@ -45,12 +47,8 @@ def acquire_lock(path: Path) -> TextIO:
     return handle
 
 
-def write_status(path: Path, **fields: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {"updated_at": datetime.now(timezone.utc).isoformat(), "pid": os.getpid(), **fields}
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
-    tmp.replace(path)
+def write_status(path: Path, **fields: Any) -> bool:
+    return supervisor_write_status(path, **fields)
 
 
 def parse_io_full_avg10(raw: str) -> float:
@@ -64,6 +62,9 @@ def parse_io_full_avg10(raw: str) -> float:
 
 
 def preflight_host(repo: Path, *, max_io_full_avg10: float = 5.0) -> int:
+    storage_rc = storage_preflight(repo)
+    if storage_rc != 0:
+        return storage_rc
     try:
         pressure = parse_io_full_avg10(Path("/proc/pressure/io").read_text())
     except (OSError, ValueError):

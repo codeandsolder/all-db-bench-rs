@@ -68,8 +68,20 @@ DURABILITIES=(relaxed sync)
 [[ -n "${DURABILITIES_OVERRIDE:-}" ]] && read -r -a DURABILITIES <<< "$DURABILITIES_OVERRIDE"
 if [[ "${MATRIX_RESUME_SHUFFLE_REMAINING:-0}" == 1 ]]; then RESUME_ORDER_POLICY=reshuffle-remaining; else RESUME_ORDER_POLICY=fixed-initial; fi
 
+check_free_space() {
+  [[ "$PROFILE" == smoke ]] && return 0
+  local phase=$1 min_gib=${PERFORMANCE_MIN_FREE_GIB:-8} free_kib min_kib
+  free_kib=$(df -Pk -- "$DATA_DIR" | awk 'NR==2 {print $4}') || return 2
+  min_kib=$(awk -v g="$min_gib" 'BEGIN { if (g < 0) exit 2; printf "%.0f", g * 1024 * 1024 }') || return 2
+  if (( free_kib < min_kib )); then
+    echo "refusing KV performance case under low free space ($phase): free_kib=$free_kib required_kib=$min_kib path=$DATA_DIR" >&2
+    return 75
+  fi
+}
 check_io_quiet() {
-  [[ "$PROFILE" == smoke || "${ALLOW_BUSY:-0}" == 1 ]] && return 0
+  [[ "$PROFILE" == smoke ]] && return 0
+  check_free_space "$1" || return $?
+  [[ "${ALLOW_BUSY:-0}" == 1 ]] && return 0
   local phase=$1 io_psi10
   io_psi10=$(awk '/^full / {for(i=1;i<=NF;i++) if($i ~ /^avg10=/){split($i,a,"="); print a[2]}}' /proc/pressure/io)
   if ! awk -v p="${io_psi10:-0}" 'BEGIN { exit !(p <= 5.0) }'; then
