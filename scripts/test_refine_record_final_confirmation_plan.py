@@ -60,6 +60,10 @@ class RefineRecordFinalConfirmationPlanTests(unittest.TestCase):
         self.assertEqual({g["suggested_effective_ops"] for g in refined["groups"]}, {500})
         self.assertEqual(refined["refinement_policy"]["hard_min_safety_factor"], 1.10)
         self.assertFalse(refined["refined_families"]["sync/point-read"]["slowest_ceiling_feasible"])
+        bounds = refined["estimated_duration_bounds"]["sync/point-read"]
+        self.assertEqual(bounds["fastest_engine"], "fast")
+        self.assertEqual(bounds["slowest_engine"], "slow")
+        self.assertAlmostEqual(bounds["estimated_fastest_s"], 2.5)
 
     def test_refines_whole_undersized_family_and_preserves_other_family(self) -> None:
         groups = []

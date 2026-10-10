@@ -95,6 +95,7 @@ def refine_plan(
     common = dict(base_plan.get("common_effective_ops", {}))
     new_ops_by_family: dict[tuple[str, str], int] = {}
     refined_families: dict[str, dict[str, Any]] = {}
+    refined_duration_bounds: dict[str, dict[str, Any]] = {}
     sizing_rule = base_plan.get("sizing_rule")
     if not isinstance(sizing_rule, dict) or "slowest_ceiling_seconds" not in sizing_rule:
         raise ValueError("base final-confirmation plan is missing slowest_ceiling_seconds")
@@ -113,12 +114,15 @@ def refine_plan(
         if len(old_ops_set) != 1:
             raise ValueError(f"base family is not common-work: {durability}/{workload}")
         old_ops = next(iter(old_ops_set))
-        rates = [
-            float(observations[(str(g["engine"]), durability, workload, int(g["records"]))]["median_ops_per_s"])
+        engine_rates = [
+            (
+                str(g["engine"]),
+                float(observations[(str(g["engine"]), durability, workload, int(g["records"]))]["median_ops_per_s"]),
+            )
             for g in family_groups
         ]
-        fastest_rate = max(rates)
-        slowest_rate = min(rates)
+        fastest_engine, fastest_rate = max(engine_rates, key=lambda item: item[1])
+        slowest_engine, slowest_rate = min(engine_rates, key=lambda item: item[1])
         trial_counts = {int(g["suggested_trials"]) for g in family_groups}
         if len(trial_counts) != 1:
             raise ValueError(f"trial count differs within family: {durability}/{workload}")
@@ -159,6 +163,13 @@ def refine_plan(
             "slowest_ceiling_feasible": ceiling_feasible,
             "reason": "hard-sizing-threshold",
         }
+        if hard_min_safety_factor > 1.0:
+            refined_duration_bounds[f"{durability}/{workload}"] = {
+                "estimated_fastest_s": new_ops / fastest_rate,
+                "estimated_slowest_s": new_ops / slowest_rate,
+                "fastest_engine": fastest_engine,
+                "slowest_engine": slowest_engine,
+            }
 
     refined_groups: list[dict[str, Any]] = []
     for group in groups:
@@ -180,6 +191,10 @@ def refine_plan(
     out["refined_families"] = refined_families
     out["common_effective_ops"] = common
     out["groups"] = refined_groups
+    if hard_min_safety_factor > 1.0:
+        duration_bounds = dict(base_plan.get("estimated_duration_bounds", {}))
+        duration_bounds.update(refined_duration_bounds)
+        out["estimated_duration_bounds"] = duration_bounds
     refinement_policy = {
         "trigger": "hard-sizing-threshold",
         "common_ops_per_durability_workload": True,
