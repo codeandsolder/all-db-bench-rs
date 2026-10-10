@@ -122,16 +122,16 @@ def psi_io_full_total_us() -> int:
 
 def contamination_reasons(
     *,
-    total_io_bytes: int,
+    average_io_rate_bytes_s: float,
     peak_io_rate_bytes_s: float,
     peak_cpu_percent: float,
-    max_io_bytes: int,
+    max_io_average_mib_s: float,
     max_io_rate_mib_s: float,
     max_cpu_percent: float,
 ) -> list[str]:
     reasons: list[str] = []
-    if total_io_bytes > max_io_bytes:
-        reasons.append("foreign-io-total")
+    if average_io_rate_bytes_s > max_io_average_mib_s * 1024 * 1024:
+        reasons.append("foreign-io-average")
     if peak_io_rate_bytes_s > max_io_rate_mib_s * 1024 * 1024:
         reasons.append("foreign-io-rate")
     if peak_cpu_percent >= max_cpu_percent:
@@ -147,7 +147,7 @@ def main() -> int:
     parser.add_argument("--sample-ms", type=float, default=250.0)
     parser.add_argument("--ignore-cpu-nice-at-least", type=int, default=15)
     parser.add_argument("--max-foreign-cpu-percent", type=float, default=50.0)
-    parser.add_argument("--max-foreign-io-bytes", type=int, default=8 * 1024 * 1024)
+    parser.add_argument("--max-foreign-io-average-mib-s", type=float, default=2.0)
     parser.add_argument("--max-foreign-io-rate-mib-s", type=float, default=8.0)
     parser.add_argument("--observe-only", action="store_true")
     parser.add_argument("command", nargs=argparse.REMAINDER)
@@ -159,7 +159,7 @@ def main() -> int:
         parser.error("command is required after --")
     if args.sample_ms <= 0:
         parser.error("--sample-ms must be positive")
-    if args.max_foreign_cpu_percent < 0 or args.max_foreign_io_bytes < 0 or args.max_foreign_io_rate_mib_s < 0:
+    if args.max_foreign_cpu_percent < 0 or args.max_foreign_io_average_mib_s < 0 or args.max_foreign_io_rate_mib_s < 0:
         parser.error("thresholds must be non-negative")
 
     start_uptime_s = float(Path("/proc/uptime").read_text(encoding="utf-8").split()[0])
@@ -217,7 +217,7 @@ def main() -> int:
 
                 current_io = io_now.get(key)
                 previous_io = io_prev.get(key)
-                if current_io is not None:
+                if nice < args.ignore_cpu_nice_at_least and current_io is not None:
                     if previous_io is not None:
                         dr = max(current_io[0] - previous_io[0], 0)
                         dw = max(current_io[1] - previous_io[1], 0)
@@ -306,16 +306,16 @@ def main() -> int:
 
     total_io = total_read + total_write
     contaminated_reasons = contamination_reasons(
-        total_io_bytes=total_io,
+        average_io_rate_bytes_s=total_io / duration,
         peak_io_rate_bytes_s=max_io_rate,
         peak_cpu_percent=max_cpu_percent,
-        max_io_bytes=args.max_foreign_io_bytes,
+        max_io_average_mib_s=args.max_foreign_io_average_mib_s,
         max_io_rate_mib_s=args.max_foreign_io_rate_mib_s,
         max_cpu_percent=args.max_foreign_cpu_percent,
     )
 
     result = {
-        "monitor_version": 1,
+        "monitor_version": 2,
         "command": command,
         "child_pid": child_root,
         "child_returncode": child_rc,
@@ -324,13 +324,14 @@ def main() -> int:
         "sample_count": samples,
         "monitor_nice_before": monitor_nice_before,
         "monitor_nice": monitor_nice,
-        "ignore_cpu_nice_at_least": args.ignore_cpu_nice_at_least,
+        "ignore_nice_at_least": args.ignore_cpu_nice_at_least,
         "max_foreign_cpu_percent": args.max_foreign_cpu_percent,
-        "max_foreign_io_bytes": args.max_foreign_io_bytes,
+        "max_foreign_io_average_mib_s": args.max_foreign_io_average_mib_s,
         "max_foreign_io_rate_mib_s": args.max_foreign_io_rate_mib_s,
         "foreign_read_bytes": total_read,
         "foreign_write_bytes": total_write,
         "foreign_io_bytes": total_io,
+        "foreign_io_average_mib_s": total_io / duration / (1024 * 1024),
         "peak_foreign_io_rate_mib_s": max_io_rate / (1024 * 1024),
         "peak_foreign_cpu_percent": max_cpu_percent,
         "system_io_full_psi_fraction": psi_delta_us / 1e6 / duration,

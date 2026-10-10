@@ -56,7 +56,7 @@ def validate_certificate(
         for field in (
             "continuous_noise_sample_ms",
             "continuous_noise_max_cpu_percent",
-            "continuous_noise_max_io_bytes",
+            "continuous_noise_max_io_average_mib_s",
             "continuous_noise_max_io_rate_mib_s",
         ):
             value = ready.get(field)

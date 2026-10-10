@@ -89,7 +89,7 @@ def load_supports(
                 "guard_sha256": support.get("continuous_noise_guard_sha256"),
                 "sample_ms": support.get("continuous_noise_sample_ms"),
                 "max_cpu_percent": support.get("continuous_noise_max_cpu_percent"),
-                "max_io_bytes": support.get("continuous_noise_max_io_bytes"),
+                "max_io_average_mib_s": support.get("continuous_noise_max_io_average_mib_s"),
                 "max_io_rate_mib_s": support.get("continuous_noise_max_io_rate_mib_s"),
             }
             if any(value is None or value == "" for value in identity.values()):
@@ -183,7 +183,7 @@ def main() -> int:
                 "selected_continuous_noise_guard_sha256": continuous_identity["guard_sha256"],
                 "continuous_noise_sample_ms": continuous_identity["sample_ms"],
                 "continuous_noise_max_cpu_percent": continuous_identity["max_cpu_percent"],
-                "continuous_noise_max_io_bytes": continuous_identity["max_io_bytes"],
+                "continuous_noise_max_io_average_mib_s": continuous_identity["max_io_average_mib_s"],
                 "continuous_noise_max_io_rate_mib_s": continuous_identity["max_io_rate_mib_s"],
             }
         )

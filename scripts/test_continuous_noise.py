@@ -26,10 +26,10 @@ class ContinuousNoiseTests(unittest.TestCase):
     def test_contamination_thresholds(self) -> None:
         self.assertEqual(
             M.contamination_reasons(
-                total_io_bytes=1024,
+                average_io_rate_bytes_s=1024.0,
                 peak_io_rate_bytes_s=1024.0,
                 peak_cpu_percent=10.0,
-                max_io_bytes=4096,
+                max_io_average_mib_s=1.0,
                 max_io_rate_mib_s=1.0,
                 max_cpu_percent=50.0,
             ),
@@ -37,14 +37,14 @@ class ContinuousNoiseTests(unittest.TestCase):
         )
         self.assertEqual(
             M.contamination_reasons(
-                total_io_bytes=8192,
+                average_io_rate_bytes_s=2 * 1024 * 1024,
                 peak_io_rate_bytes_s=2 * 1024 * 1024,
                 peak_cpu_percent=50.0,
-                max_io_bytes=4096,
+                max_io_average_mib_s=1.0,
                 max_io_rate_mib_s=1.0,
                 max_cpu_percent=50.0,
             ),
-            ["foreign-io-total", "foreign-io-rate", "foreign-cpu"],
+            ["foreign-io-average", "foreign-io-rate", "foreign-cpu"],
         )
 
 

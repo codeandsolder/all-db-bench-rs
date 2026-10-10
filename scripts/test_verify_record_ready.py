@@ -61,7 +61,7 @@ class VerifyRecordReadyTests(unittest.TestCase):
                             "continuous_noise_guard_sha256": "2" * 64,
                             "continuous_noise_sample_ms": 250,
                             "continuous_noise_max_cpu_percent": 50,
-                            "continuous_noise_max_io_bytes": 8 * 1024 * 1024,
+                            "continuous_noise_max_io_average_mib_s": 2,
                             "continuous_noise_max_io_rate_mib_s": 8,
                         }
                     )
