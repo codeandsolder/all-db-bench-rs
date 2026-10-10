@@ -84,6 +84,7 @@ OnSuccess=all-db-bench-record-final-continuous.service
 def record_ready_v5_dropin(runtime: Path) -> str:
     checker = runtime / "scripts/check-record-ready-certificate.py"
     return f"""[Unit]
+ConditionPathExists=
 ConditionPathExists={READY}
 
 [Service]
@@ -93,6 +94,7 @@ ExecStartPre=/usr/bin/uv run --script {checker} {READY} --expected-binary-commit
 
 def sustained_ready_v5_dropin() -> str:
     return f"""[Unit]
+ConditionPathExists=
 ConditionPathExists={READY}
 """
 

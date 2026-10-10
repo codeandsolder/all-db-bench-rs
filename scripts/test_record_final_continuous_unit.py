@@ -68,6 +68,7 @@ class RecordFinalContinuousUnitTests(unittest.TestCase):
 
     def test_record_downstream_dropin_requires_v5_continuous_certificate(self) -> None:
         text = M.record_ready_v5_dropin(Path("/record/runtime"))
+        self.assertIn("[Unit]\nConditionPathExists=\n", text)
         self.assertIn("ConditionPathExists=/srv/scratch/db-bench-work/record-full-v1/ready-v4.json", text)
         self.assertIn("/record/runtime/scripts/check-record-ready-certificate.py", text)
         self.assertIn("--expected-admission-policy pre-io+pre/continuous/post-external-v3", text)
@@ -75,7 +76,7 @@ class RecordFinalContinuousUnitTests(unittest.TestCase):
     def test_sustained_gate_requires_v4_ready_file(self) -> None:
         self.assertEqual(
             M.sustained_ready_v5_dropin(),
-            "[Unit]\nConditionPathExists=/srv/scratch/db-bench-work/record-full-v1/ready-v4.json\n",
+            "[Unit]\nConditionPathExists=\nConditionPathExists=/srv/scratch/db-bench-work/record-full-v1/ready-v4.json\n",
         )
 
 
