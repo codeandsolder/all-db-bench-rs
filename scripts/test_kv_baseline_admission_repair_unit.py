@@ -25,6 +25,10 @@ class KvBaselineAdmissionRepairUnitTests(unittest.TestCase):
             "ConditionPathExists=!/srv/scratch/db-bench-work/kv-sizing-audit/selected-final-v5/manifest.json",
             text,
         )
+        self.assertIn("verify-record-ready.py", text)
+        self.assertIn("--selected /srv/scratch/db-bench-work/record-full-v1/selected-final-v3", text)
+        self.assertIn("--repo /srv/scratch/db-bench-work/record-full-v1/runtime", text)
+        self.assertIn("--expected-commit 01b8a5c4ecfd79e69f0c98cef823d7fe79401d25", text)
         self.assertIn("--quality-only", text)
         self.assertIn("--run-prefix 20261010-kv-admission-v2-repair", text)
         self.assertIn(

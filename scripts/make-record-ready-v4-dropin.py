@@ -23,7 +23,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Generate the record-concurrency readiness-v4 systemd drop-in")
     ap.add_argument("--runtime", type=Path, default=DEFAULT_RUNTIME)
     ap.add_argument("--out", type=Path, required=True)
-    args = ap.darse_args()
+    args = ap.parse_args()
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(dropin_text(args.runtime))
     print(args.out)

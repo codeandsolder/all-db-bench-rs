@@ -16,12 +16,20 @@ BIN_SHA256 = "360c3b398babd4710a179cf102ad2cfe1fbd5e39fcf32a288fc771a75fa7f563"
 RUN_PREFIX = "20261010-kv-admission-v2-repair"
 STATUS = Path("/srv/scratch/db-bench-work/kv-sizing-audit/admission-v2-repair-idle-status.json")
 LOCK = Path("/run/lock/all-db-bench-performance.lock")
-RECORD_READY = Path("/srv/scratch/db-bench-work/record-full-v1/ready.json")
+RECORD_BASE = Path("/srv/scratch/db-bench-work/record-full-v1")
+RECORD_RUNTIME = RECORD_BASE / "runtime"
+RECORD_READY = RECORD_BASE / "ready.json"
+RECORD_SELECTED = RECORD_BASE / "selected-final-v3"
+RECORD_BINARY_MANIFEST = RECORD_BASE / "bin/manifest.json"
+RECORD_BINARY_COMMIT = "01b8a5c4ecfd79e69f0c98cef823d7fe79401d25"
+RECORD_STOCK_RUN = "20261010-record-full-v1-stock-v2"
+ADMISSION = "pre-io+pre/post-external-v2"
 KV_SERVICE = "all-db-bench-concurrency-sizing.service"
 SERVICE = "all-db-bench-kv-baseline-admission-repair.service"
 
 
 def unit_text(runtime: Path) -> str:
+    ready_verifier = runtime / "scripts" / "verify-record-ready.py"
     planner = runtime / "scripts" / "plan-kv-baseline-admission-repairs.py"
     runner = runtime / "scripts" / "run-kv-sizing-followups.py"
     finalizer = runtime / "scripts" / "finalize-kv-baseline-admission-repairs.py"
@@ -29,6 +37,7 @@ def unit_text(runtime: Path) -> str:
 Description=all-db-bench repair legacy KV baseline admission-selected groups
 After=local-fs.target all-db-bench-record-final-v3.service
 ConditionPathExists={RECORD_READY}
+ConditionPathExists={RECORD_SELECTED / 'manifest.json'}
 ConditionPathExists={BASE_SELECTED / 'manifest.json'}
 ConditionPathExists={BIN}
 ConditionPathExists=!{OUT_SELECTED / 'manifest.json'}
@@ -37,9 +46,10 @@ OnSuccess={KV_SERVICE}
 [Service]
 Type=oneshot
 WorkingDirectory={runtime}
+ExecStartPre=/usr/bin/uv run --no-project python {ready_verifier} --selected {RECORD_SELECTED} --binary-manifest {RECORD_BINARY_MANIFEST} --expected-commit {RECORD_BINARY_COMMIT} --repo {RECORD_RUNTIME} --stock-run-id {RECORD_STOCK_RUN} --expected-admission-policy {ADMISSION} --out {RECORD_READY}
 ExecStartPre=/usr/bin/uv run --no-project python {planner} --audit {AUDIT} --manifest {BASE_SELECTED / 'manifest.json'} --out {PLAN}
 ExecStart=/usr/bin/uv run --no-project python {runner} --repo {runtime} --plan {AUDIT} --quality-plan {PLAN} --quality-only --run-prefix {RUN_PREFIX} --bench-bin {BIN} --expected-bench-sha256 {BIN_SHA256} --lock-file {LOCK} --status-file {STATUS} --watch --busy-sleep 1
-ExecStart=/usr/bin/uv run --no-project python {finalizer} --base-selected-dir {BASE_SELECTED} --repair-plan {PLAN} --repair-repo {runtime} --run-prefix {RUN_PREFIX} --audit {AUDIT} --out-dir {OUT_SELECTED} --expected-admission-policy pre-io+pre/post-external-v2 --expected-bench-sha256 {BIN_SHA256}
+ExecStart=/usr/bin/uv run --no-project python {finalizer} --base-selected-dir {BASE_SELECTED} --repair-plan {PLAN} --repair-repo {runtime} --run-prefix {RUN_PREFIX} --audit {AUDIT} --out-dir {OUT_SELECTED} --expected-admission-policy {ADMISSION} --expected-bench-sha256 {BIN_SHA256}
 KillMode=control-group
 TimeoutStopSec=15s
 UMask=0022
