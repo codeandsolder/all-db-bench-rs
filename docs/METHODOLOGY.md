@@ -144,6 +144,8 @@ Cargo build artifacts are directed to `/tmp/rust-db-realistic-bench-target`, and
 
 `scripts/check-sync-syscalls.sh` is an untimed validation probe. It traces a tiny single-transaction run and compares Linux sync-barrier syscall counts where syscall-count ordering is semantically meaningful. redb/Fjall/SurrealKV/heed/sled/TurboKV/RocksDB/MDBX/RoughDB use a hard relaxed-vs-sync count check; lkv/Manifold/jammdb/lsm-db are sync-only and must show a barrier. Persy is traced but informational because its relaxed mode deliberately performs the durability sync in the background after acknowledgement, so the same eventual syscall can occur before process exit. This is not proof of hardware-level persistence; crash/recovery tests validate the acknowledgement boundary.
 
+`scripts/check-record-sync-syscalls.sh` applies the same untimed sanity check to the full record-product lane using `tiny-txn` on SQLite, Turso, SurrealDB/SurrealKV and isolated SurrealDB/RocksDB. It requires the sync configuration to emit a strictly larger explicit barrier count than the corresponding relaxed configuration. With the pinned corrected record binaries, the observed relaxed→sync counts were SurrealKV 26→40, Turso 4→8, SQLite 8→12 and RocksDB 15→43.
+
 ## Result/data retention
 
 Result NDJSON, summaries and provenance metadata are durable. Per-run database directories are deleted after their final on-disk size has been recorded, unless the individual benchmark is run with `--keep-db`. This prevents the full repeated matrix from consuming storage merely to retain equivalent scratch databases.
