@@ -15,6 +15,10 @@ class RecordMatrixSemanticTests(unittest.TestCase):
         self.assertIn('.read_materialization == $read_expected', RUNNER)
         self.assertIn('.write_materialization == $write_expected', RUNNER)
         self.assertIn("record result semantic identity mismatch", RUNNER)
+        self.assertIn("run-with-continuous-noise.py", RUNNER)
+        self.assertIn("continuous_noise_guard_sha256", RUNNER)
+        self.assertIn("ADMISSION_POLICY=pre-io+pre/continuous/post-external-v3", RUNNER)
+        self.assertIn("if ((rc==75))", RUNNER)
 
     def test_wide_matrix_rejects_wrong_semantics(self) -> None:
         self.assertIn("READ_MATERIALIZATION=full-record-v1", WIDE_RUNNER)

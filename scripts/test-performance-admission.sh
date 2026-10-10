@@ -29,10 +29,19 @@ for runner in "${runners[@]}"; do
     echo "in-window pressure post-selector returned in $runner" >&2
     exit 1
   fi
-  rg -q 'admission_policy.*pre-io\+pre/post-external-v2' "$path" || {
-    echo "missing corrected admission provenance in $runner" >&2
-    exit 1
-  }
+  if [[ "$runner" == run-record-matrix.sh ]]; then
+    rg -Fq 'ADMISSION_POLICY=pre-io+pre/continuous/post-external-v3' "$path" && \
+    rg -q 'continuous_noise_guard_sha256' "$path" && \
+    rg -q 'run-with-continuous-noise.py' "$path" || {
+      echo "missing continuous record admission provenance in $runner" >&2
+      exit 1
+    }
+  else
+    rg -q 'admission_policy.*pre-io\+pre/post-external-v2' "$path" || {
+      echo "missing corrected admission provenance in $runner" >&2
+      exit 1
+    }
+  fi
 done
 
 for supervisor in run-record-quick-idle.py run-record-sizing-followups.py run-kv-sizing-followups.py; do
