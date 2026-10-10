@@ -28,9 +28,11 @@ def slug(value: str) -> str:
     return "".join(ch if ch.isalnum() or ch in "-_" else "-" for ch in value)
 
 
-def run_id(group: dict[str, Any]) -> str:
+DEFAULT_RUN_PREFIX = "20261006-kv-resize-v4"
+
+def run_id(group: dict[str, Any], prefix: str = DEFAULT_RUN_PREFIX) -> str:
     return (
-        "20261006-kv-resize-v4-"
+        f"{prefix}-"
         f"{slug(str(group['engine']))}-{slug(str(group['durability']))}-"
         f"{slug(str(group['workload']))}-e{int(group['suggested_effective_ops'])}"
         f"-t{int(group['suggested_trials'])}"
@@ -45,8 +47,8 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def complete(repo: Path, group: dict[str, Any]) -> bool:
-    summary = repo / "results" / "runs" / run_id(group) / "summary.json"
+def complete(repo: Path, group: dict[str, Any], prefix: str = DEFAULT_RUN_PREFIX) -> bool:
+    summary = repo / "results" / "runs" / run_id(group, prefix) / "summary.json"
     if not summary.is_file():
         return False
     try:
@@ -69,8 +71,8 @@ def complete(repo: Path, group: dict[str, Any]) -> bool:
     )
 
 
-def median_elapsed(repo: Path, group: dict[str, Any]) -> float:
-    case_dir = repo / "results" / "runs" / run_id(group) / "cases"
+def median_elapsed(repo: Path, group: dict[str, Any], prefix: str = DEFAULT_RUN_PREFIX) -> float:
+    case_dir = repo / "results" / "runs" / run_id(group, prefix) / "cases"
     values = []
     for path in sorted(case_dir.glob("*.json")):
         row = json.loads(path.read_text())
@@ -84,7 +86,7 @@ def median_elapsed(repo: Path, group: dict[str, Any]) -> float:
     expected_trials = int(group["suggested_trials"])
     if len(values) != expected_trials:
         raise RuntimeError(
-            f"expected {expected_trials} validated trials for {run_id(group)}, found {len(values)}"
+            f"expected {expected_trials} validated trials for {run_id(group, prefix)}, found {len(values)}"
         )
     return statistics.median(values)
 
@@ -97,13 +99,14 @@ def calibration_elapsed(
     count: int,
     minimum: float,
     maximum: float,
+    prefix: str = DEFAULT_RUN_PREFIX,
 ) -> float | None:
     if group.get("resize_strategy") != "more-ops" or index > count:
         return None
-    elapsed = median_elapsed(repo, group)
+    elapsed = median_elapsed(repo, group, prefix)
     if not minimum <= elapsed <= maximum:
         raise RuntimeError(
-            f"resize calibration outside [{minimum:.3f}, {maximum:.3f}] s for {run_id(group)}: "
+            f"resize calibration outside [{minimum:.3f}, {maximum:.3f}] s for {run_id(group, prefix)}: "
             f"median_elapsed_s={elapsed:.3f}"
         )
     return elapsed
@@ -164,11 +167,17 @@ def preflight_host(repo: Path, *, max_io_full_avg10: float) -> int:
     return proc.returncode
 
 
-def groups_from_plan(path: Path, quality_plan_path: Path | None = None) -> list[dict[str, Any]]:
+def groups_from_plan(
+    path: Path, quality_plan_path: Path | None = None, *, include_sizing: bool = True
+) -> list[dict[str, Any]]:
     plan = json.loads(path.read_text())
     if plan.get("sizing_policy_version") != 2:
         raise ValueError(f"unsupported sizing policy: {plan.get('sizing_policy_version')!r}")
-    groups = [group for group in plan["groups"] if group["status"] == "undersized"]
+    groups = (
+        [group for group in plan["groups"] if group["status"] == "undersized"]
+        if include_sizing
+        else []
+    )
     if quality_plan_path is not None:
         quality = json.loads(quality_plan_path.read_text())
         if quality.get("quality_policy_version") != 1:
@@ -187,11 +196,11 @@ def groups_from_plan(path: Path, quality_plan_path: Path | None = None) -> list[
     return groups
 
 
-def command_env(group: dict[str, Any], bench_bin: Path) -> dict[str, str]:
+def command_env(group: dict[str, Any], bench_bin: Path, prefix: str = DEFAULT_RUN_PREFIX) -> dict[str, str]:
     env = os.environ.copy()
     env.update(
         {
-            "RUN_ID": run_id(group),
+            "RUN_ID": run_id(group, prefix),
             "BENCH_BIN": str(bench_bin),
             "ENGINES_OVERRIDE": str(group["engine"]),
             "DURABILITIES_OVERRIDE": str(group["durability"]),
@@ -211,6 +220,8 @@ def main() -> int:
     parser.add_argument("--repo", type=Path, default=DEFAULT_REPO)
     parser.add_argument("--plan", type=Path, default=DEFAULT_PLAN)
     parser.add_argument("--quality-plan", type=Path)
+    parser.add_argument("--run-prefix", default=DEFAULT_RUN_PREFIX)
+    parser.add_argument("--quality-only", action="store_true")
     parser.add_argument("--bench-bin", type=Path, default=DEFAULT_BIN)
     parser.add_argument("--expected-bench-sha256")
     parser.add_argument("--lock-file", type=Path, default=DEFAULT_LOCK)
@@ -241,7 +252,9 @@ def main() -> int:
         return 73
 
     with lock_handle:
-        groups = groups_from_plan(args.plan, args.quality_plan)
+        groups = groups_from_plan(
+            args.plan, args.quality_plan, include_sizing=not args.quality_only
+        )
         if args.limit is not None:
             groups = groups[: args.limit]
         total = len(groups)
@@ -255,9 +268,9 @@ def main() -> int:
         bench_verified = not bool(args.expected_bench_sha256)
 
         for index, group in enumerate(groups, 1):
-            rid = run_id(group)
+            rid = run_id(group, args.run_prefix)
             run_dir = args.repo / "results" / "runs" / rid
-            if complete(args.repo, group):
+            if complete(args.repo, group, args.run_prefix):
                 skipped += 1
                 print(f"[{index}/{total}] skip complete {rid}", flush=True)
                 try:
@@ -268,6 +281,7 @@ def main() -> int:
                         count=args.calibration_count,
                         minimum=args.calibration_min_seconds,
                         maximum=args.calibration_max_seconds,
+                        prefix=args.run_prefix,
                     )
                 except RuntimeError as error:
                     write_status(
@@ -357,7 +371,7 @@ def main() -> int:
                 proc = subprocess.run(
                     [str(args.repo / "scripts" / "run-kv-matrix.sh"), "quick"],
                     cwd=args.repo,
-                    env=command_env(group, args.bench_bin),
+                    env=command_env(group, args.bench_bin, args.run_prefix),
                     check=False,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
@@ -366,7 +380,7 @@ def main() -> int:
                 if proc.returncode == 0:
                     if proc.stdout:
                         print(proc.stdout, end="", flush=True)
-                    if not complete(args.repo, group):
+                    if not complete(args.repo, group, args.run_prefix):
                         print(f"runner returned success but result validation failed: {rid}", flush=True)
                         return 2
                     completed_now += 1

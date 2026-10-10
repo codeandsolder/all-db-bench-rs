@@ -41,6 +41,16 @@ class KvSizingFollowupsTests(unittest.TestCase):
             "20261006-kv-resize-v4-paritydb-hash-sync-point-read-e780000-t3",
         )
 
+    def test_run_id_custom_prefix_isolated_from_legacy_runs(self) -> None:
+        custom = "20261010-kv-admission-v2-repair"
+        expected = group(engine="rocksdb", durability="relaxed", workload="write-burst", suggested_effective_ops=50_000, suggested_trials=33)
+        self.assertEqual(
+            MODULE.run_id(expected, custom),
+            "20261010-kv-admission-v2-repair-rocksdb-relaxed-write-burst-e50000-t33",
+        )
+        env = MODULE.command_env(expected, Path("/tmp/pinned-kvbench"), custom)
+        self.assertEqual(env["RUN_ID"], MODULE.run_id(expected, custom))
+
     def test_groups_from_plan_requires_v2_and_calibrates_more_ops_first(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             plan = Path(tmp) / "plan.json"
@@ -77,6 +87,8 @@ class KvSizingFollowupsTests(unittest.TestCase):
             )
             groups = MODULE.groups_from_plan(plan, quality)
             self.assertEqual([item["engine"] for item in groups], ["read", "state", "repair"])
+            quality_only = MODULE.groups_from_plan(plan, quality, include_sizing=False)
+            self.assertEqual([item["engine"] for item in quality_only], ["repair"])
             plan.write_text(json.dumps({"sizing_policy_version": 1, "groups": []}))
             with self.assertRaises(ValueError):
                 MODULE.groups_from_plan(plan)
