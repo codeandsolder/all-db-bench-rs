@@ -8,6 +8,7 @@ from pathlib import Path
 BASE = Path('/srv/scratch/db-bench-work/record-full-v1')
 RUNTIME = BASE / 'runtime'
 MANIFEST = BASE / 'bin/manifest.json'
+BASE_PLAN = BASE / '20261010-record-final-v3-base-plan.json'
 PLAN = BASE / '20261010-record-final-v3-plan.json'
 STOCK_RESULTS = RUNTIME / 'results/runs/20261010-record-full-v1-stock-v2/results.ndjson'
 SIZING_RESULTS = BASE / 'selected-final-v2/results.ndjson'
@@ -50,7 +51,9 @@ OnSuccess=all-db-bench-concurrency-sizing.service
 [Service]
 Type=oneshot
 WorkingDirectory={RUNTIME}
-ExecStartPre=/usr/bin/uv run --script {RUNTIME}/scripts/make-record-final-confirmation-plan.py {SIZING_RESULTS} --out {PLAN}
+ExecStartPre=/usr/bin/uv run --script {RUNTIME}/scripts/make-record-final-confirmation-plan.py {SIZING_RESULTS} --out {BASE_PLAN}
+ExecStart=/usr/bin/uv run --script {RUNTIME}/scripts/run-record-sizing-followups.py --repo {RUNTIME} --plan {EMPTY_SIZING} --quality-plan {BASE_PLAN} --bench-bin {rb['path']} --rocks-bench-bin {rocks['path']} --expected-bench-sha256 {rb['sha256']} --expected-rocks-bench-sha256 {rocks['sha256']} --lock-file {LOCK} --status-file {BASE}/final-v3-base-idle-status.json --run-prefix {RUN_PREFIX} --watch --busy-sleep 1
+ExecStart=/usr/bin/uv run --script {RUNTIME}/scripts/refine-record-final-confirmation-plan.py {BASE_PLAN} --run-root {RUNTIME}/results/runs --thresholds-from-audit {STOCK_AUDIT} --run-prefix {RUN_PREFIX} --out {PLAN}
 ExecStart=/usr/bin/uv run --script {RUNTIME}/scripts/run-record-sizing-followups.py --repo {RUNTIME} --plan {EMPTY_SIZING} --quality-plan {PLAN} --bench-bin {rb['path']} --rocks-bench-bin {rocks['path']} --expected-bench-sha256 {rb['sha256']} --expected-rocks-bench-sha256 {rocks['sha256']} --lock-file {LOCK} --status-file {BASE}/final-v3-idle-status.json --run-prefix {RUN_PREFIX} --watch --busy-sleep 1
 ExecStart=/usr/bin/uv run --script {RUNTIME}/scripts/finalize-baseline-sizing.py --repo {RUNTIME} --record-only --record-stock-results {STOCK_RESULTS} --record-audit {STOCK_AUDIT} --record-resize-prefix {RUN_PREFIX} --record-out-dir {SELECTED} --record-quality-repair-plan {PLAN}
 ExecStart=/usr/bin/uv run --no-project python {RUNTIME}/scripts/verify-record-ready.py --selected {SELECTED} --binary-manifest {MANIFEST} --expected-commit {BINARY_COMMIT} --repo {RUNTIME} --stock-run-id 20261010-record-full-v1-stock-v2 --expected-admission-policy {ADMISSION} --out {READY}
