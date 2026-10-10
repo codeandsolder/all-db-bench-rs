@@ -19,6 +19,11 @@ class RecordMatrixSemanticTests(unittest.TestCase):
         self.assertIn("continuous_noise_guard_sha256", RUNNER)
         self.assertIn("ADMISSION_POLICY=pre-io+pre/continuous/post-external-v3", RUNNER)
         self.assertIn("if ((rc==75))", RUNNER)
+        self.assertIn("preserve_noise_rejection", RUNNER)
+        self.assertIn("\"continuous\"", RUNNER)
+        self.assertIn("\"post-external\"", RUNNER)
+        self.assertIn("noise/rejected", RUNNER)
+        self.assertIn("noise/rejections.ndjson", RUNNER)
 
     def test_wide_matrix_rejects_wrong_semantics(self) -> None:
         self.assertIn("READ_MATERIALIZATION=full-record-v1", WIDE_RUNNER)
