@@ -11,6 +11,7 @@ AUDIT = Path("/srv/scratch/db-bench-work/kv-sizing-audit/20261006-kv-quick-67228
 BASE_SELECTED = Path("/srv/scratch/db-bench-work/kv-sizing-audit/selected-final-v4")
 PLAN = Path("/srv/scratch/db-bench-work/kv-sizing-audit/20261010-kv-baseline-admission-v2-repair-plan.json")
 OUT_SELECTED = Path("/srv/scratch/db-bench-work/kv-sizing-audit/selected-final-v5")
+OUT_COMPLETE = OUT_SELECTED / "complete.json"
 BIN = Path("/srv/scratch/db-bench-work/kv-sizing-audit/bin/kvbench-v3-360c3b398babd4710")
 BIN_SHA256 = "360c3b398babd4710a179cf102ad2cfe1fbd5e39fcf32a288fc771a75fa7f563"
 RUN_PREFIX = "20261010-kv-admission-v2-repair"
@@ -40,7 +41,7 @@ ConditionPathExists={RECORD_READY}
 ConditionPathExists={RECORD_SELECTED / 'manifest.json'}
 ConditionPathExists={BASE_SELECTED / 'manifest.json'}
 ConditionPathExists={BIN}
-ConditionPathExists=!{OUT_SELECTED / 'manifest.json'}
+ConditionPathExists=!{OUT_COMPLETE}
 OnSuccess={KV_SERVICE}
 
 [Service]
@@ -69,9 +70,13 @@ OnSuccess={SERVICE}
 """
 
 
-def kv_v5_gate_dropin() -> str:
+def kv_v5_gate_dropin(runtime: Path) -> str:
+    verifier = runtime / "scripts" / "check-kv-baseline-selection-ready.py"
     return f"""[Unit]
-ConditionPathExists={OUT_SELECTED / 'manifest.json'}
+ConditionPathExists={OUT_COMPLETE}
+
+[Service]
+ExecStartPre=/usr/bin/uv run --no-project python {verifier} {OUT_SELECTED} --expected-rows 1046 --expected-groups 180 --expected-repairs 5
 """
 
 
@@ -88,7 +93,7 @@ def main() -> int:
         path.parent.mkdir(parents=True, exist_ok=True)
     args.unit_out.write_text(unit_text(args.runtime))
     args.record_dropin_out.write_text(record_handoff_dropin())
-    args.kv_gate_dropin_out.write_text(kv_v5_gate_dropin())
+    args.kv_gate_dropin_out.write_text(kv_v5_gate_dropin(args.runtime))
     return 0
 
 

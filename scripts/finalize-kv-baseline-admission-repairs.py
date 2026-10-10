@@ -8,6 +8,7 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import statistics
 from collections import defaultdict
 from pathlib import Path
@@ -22,6 +23,54 @@ def sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def atomic_write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.tmp.{os.getpid()}")
+    try:
+        with tmp.open("w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def write_selection_outputs(out_dir: Path, rows: list[dict[str, Any]], manifest: dict[str, Any]) -> dict[str, Any]:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    results_out = out_dir / "results.ndjson"
+    manifest_out = out_dir / "manifest.json"
+    complete_out = out_dir / "complete.json"
+    # A rerun must make the selection visibly incomplete before replacing either
+    # payload file. The completion marker is committed last.
+    complete_out.unlink(missing_ok=True)
+    results_text = "".join(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n" for row in rows)
+    manifest_text = json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+    atomic_write_text(results_out, results_text)
+    atomic_write_text(manifest_out, manifest_text)
+    completion = {
+        "completion_version": 1,
+        "selection_version": int(manifest["selection_version"]),
+        "admission_repair_complete": bool(manifest["admission_repair_complete"]),
+        "selected_rows": len(rows),
+        "selected_groups": int(manifest["selected_groups"]),
+        "repaired_groups": len(manifest["repaired_groups"]),
+        "results_sha256": sha256(results_out),
+        "manifest_sha256": sha256(manifest_out),
+        "repair_plan_sha256": str(manifest["repair_plan_sha256"]),
+    }
+    atomic_write_text(complete_out, json.dumps(completion, indent=2, sort_keys=True) + "\n")
+    return completion
 
 
 def slug(value: str) -> str:
@@ -311,15 +360,11 @@ def main() -> int:
         expected_admission_policy=args.expected_admission_policy,
         expected_bench_sha256=args.expected_bench_sha256,
     )
-    args.out_dir.mkdir(parents=True, exist_ok=True)
-    results_out = args.out_dir / "results.ndjson"
-    manifest_out = args.out_dir / "manifest.json"
-    results_out.write_text("".join(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n" for row in final_rows))
-    manifest_out.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    completion = write_selection_outputs(args.out_dir, final_rows, manifest)
     print(
         f"rows={len(final_rows)} groups={manifest['selected_groups']} "
         f"repaired={len(manifest['repaired_groups'])} "
-        f"status={manifest['final_status_counts']} out={args.out_dir}"
+        f"status={manifest['final_status_counts']} complete={completion['manifest_sha256']} out={args.out_dir}"
     )
     return 0
 

@@ -22,7 +22,7 @@ class KvBaselineAdmissionRepairUnitTests(unittest.TestCase):
             text,
         )
         self.assertIn(
-            "ConditionPathExists=!/srv/scratch/db-bench-work/kv-sizing-audit/selected-final-v5/manifest.json",
+            "ConditionPathExists=!/srv/scratch/db-bench-work/kv-sizing-audit/selected-final-v5/complete.json",
             text,
         )
         self.assertIn("verify-record-ready.py", text)
@@ -44,11 +44,11 @@ class KvBaselineAdmissionRepairUnitTests(unittest.TestCase):
             "[Unit]\nConditionPathExists=!/srv/scratch/db-bench-work/record-full-v1/ready.json\nOnSuccess=all-db-bench-kv-baseline-admission-repair.service\n",
         )
 
-    def test_kv_gate_requires_v5_manifest(self) -> None:
-        self.assertEqual(
-            M.kv_v5_gate_dropin(),
-            "[Unit]\nConditionPathExists=/srv/scratch/db-bench-work/kv-sizing-audit/selected-final-v5/manifest.json\n",
-        )
+    def test_kv_gate_requires_verified_v5_completion(self) -> None:
+        text = M.kv_v5_gate_dropin(Path("/srv/runtime"))
+        self.assertIn("ConditionPathExists=/srv/scratch/db-bench-work/kv-sizing-audit/selected-final-v5/complete.json", text)
+        self.assertIn("/srv/runtime/scripts/check-kv-baseline-selection-ready.py", text)
+        self.assertIn("--expected-rows 1046 --expected-groups 180 --expected-repairs 5", text)
 
 
 if __name__ == "__main__":

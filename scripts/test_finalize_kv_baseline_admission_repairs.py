@@ -113,6 +113,24 @@ class FinalizeKvBaselineAdmissionRepairsTests(unittest.TestCase):
             self.assertEqual(manifest["sources"][0]["initial_min_free_gib"], 10)
             self.assertEqual(manifest["sources"][0]["case_min_free_gib"], "10")
 
+    def test_transactional_output_commits_hash_marker_last(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "selected"
+            rows = [row("a", 1)]
+            manifest = {
+                "selection_version": 5, "admission_repair_complete": True,
+                "selected_groups": 1, "repaired_groups": [{}], "repair_plan_sha256": "plan",
+            }
+            completion = M.write_selection_outputs(out, rows, manifest)
+            self.assertEqual(completion["completion_version"], 1)
+            self.assertEqual(completion["results_sha256"], M.sha256(out / "results.ndjson"))
+            self.assertEqual(completion["manifest_sha256"], M.sha256(out / "manifest.json"))
+            self.assertEqual(json.loads((out / "complete.json").read_text()), completion)
+            # A stale completion marker is removed before any replacement payload is committed.
+            (out / "complete.json").write_text("stale")
+            M.write_selection_outputs(out, rows, manifest)
+            self.assertNotEqual((out / "complete.json").read_text(), "stale")
+
     def test_fails_closed_on_wrong_admission_policy(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
