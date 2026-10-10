@@ -121,10 +121,20 @@ def _median(values: Iterable[float]) -> float:
     return float(statistics.median(seq))
 
 
-def audit(run_dir: Path, additional_runs: Iterable[Path] = ()) -> dict[str, Any]:
+def audit(
+    run_dir: Path,
+    additional_runs: Iterable[Path] = (),
+    *,
+    expected_admission_policy: str | None = None,
+) -> dict[str, Any]:
     support = read_json(run_dir / "support.json")
     if support.get("lane") != "kv-concurrency":
         raise ValueError(f"expected kv-concurrency support, got {support.get('lane')!r}")
+    if expected_admission_policy is not None and support.get("admission_policy") != expected_admission_policy:
+        raise ValueError(
+            f"unexpected admission policy: {support.get('admission_policy')!r}; "
+            f"expected {expected_admission_policy!r}"
+        )
     jobs = parse_jobs(run_dir, support)
     extra_runs = list(additional_runs)
     rows = read_cases(run_dir)
@@ -331,8 +341,13 @@ def main() -> int:
     parser.add_argument("--json-out", type=Path)
     parser.add_argument("--markdown-out", type=Path)
     parser.add_argument("--probe-plan-out", type=Path)
+    parser.add_argument("--expected-admission-policy")
     args = parser.parse_args()
-    report = audit(args.run_dir, args.additional_run)
+    report = audit(
+        args.run_dir,
+        args.additional_run,
+        expected_admission_policy=args.expected_admission_policy,
+    )
     if args.json_out:
         args.json_out.parent.mkdir(parents=True, exist_ok=True)
         args.json_out.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")

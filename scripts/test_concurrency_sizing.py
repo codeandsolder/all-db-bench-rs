@@ -119,6 +119,19 @@ class ConcurrencySizingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "partial result"):
             M.audit(self.make_run(jobs, [bad]))
 
+    def test_expected_admission_policy_is_enforced(self) -> None:
+        run = self.make_run(
+            ["primary|fast|sync|point-read|1|1"],
+            [row(workload="point-read", clients=1, trial=1, elapsed=1.0, rate=200_000)],
+        )
+        support_path = run / "support.json"
+        support = json.loads(support_path.read_text())
+        support["admission_policy"] = "pre-io+pre/post-external-v2"
+        support_path.write_text(json.dumps(support))
+        M.audit(run, expected_admission_policy="pre-io+pre/post-external-v2")
+        with self.assertRaisesRegex(ValueError, "unexpected admission policy"):
+            M.audit(run, expected_admission_policy="wrong-policy")
+
     def test_exact_plan_jobs_are_supported(self) -> None:
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
