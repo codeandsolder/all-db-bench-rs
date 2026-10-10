@@ -72,6 +72,7 @@ class FinalizeKvBaselineAdmissionRepairsTests(unittest.TestCase):
                 "benchmark_binary_sha256": "bin",
                 "lane": "kv", "profile": "quick", "trials": 3, "records": 100_000,
                 "noise_guard_sha256": "noise", "runner_sha256": "runner",
+                "initial_min_free_gib": 10, "case_min_free_gib": "10",
             }
             (run / "support.json").write_text(json.dumps(support))
             (run / "summary.json").write_text(json.dumps({"row_count": 3, "group_count": 1, "problems": []}))
@@ -104,7 +105,13 @@ class FinalizeKvBaselineAdmissionRepairsTests(unittest.TestCase):
             self.assertEqual(manifest["legacy_repaired_rejected_pressure_attempts"], 2)
             repaired = manifest["repaired_groups"][0]
             self.assertEqual(repaired["noise_guard_sha256"], "noise")
+            self.assertEqual(repaired["initial_min_free_gib"], 10)
+            self.assertEqual(repaired["case_min_free_gib"], "10")
+            self.assertEqual(manifest["repair_initial_min_free_gib"], 10)
+            self.assertEqual(manifest["repair_case_min_free_gib"], "10")
             self.assertEqual(manifest["sources"][0]["source"], "admission-v2-repair")
+            self.assertEqual(manifest["sources"][0]["initial_min_free_gib"], 10)
+            self.assertEqual(manifest["sources"][0]["case_min_free_gib"], "10")
 
     def test_fails_closed_on_wrong_admission_policy(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -140,6 +147,38 @@ class FinalizeKvBaselineAdmissionRepairsTests(unittest.TestCase):
                     thresholds={"read_only_workloads": [], "read_only_min_seconds": 2, "stateful_min_total_seconds": 0.1, "max_cv": 1, "max_relative_spread": 1},
                     expected_admission_policy=M.DEFAULT_ADMISSION_POLICY,
                     expected_bench_sha256="bin",
+                )
+
+    def test_fails_closed_on_missing_free_space_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            group = {
+                "engine": "bad", "durability": "relaxed", "workload": "write-burst",
+                "records": 100_000, "suggested_effective_ops": 50_000, "suggested_trials": 1,
+                "legacy_run_id": "legacy", "legacy_rejected_pressure_attempts": 1,
+            }
+            rid = M.run_id(group, "fresh")
+            run = root / "results" / "runs" / rid
+            run.mkdir(parents=True)
+            (run / "results.ndjson").write_text(json.dumps(row("bad", 1)) + "\n")
+            (run / "support.json").write_text(json.dumps({
+                "admission_policy": M.DEFAULT_ADMISSION_POLICY, "benchmark_binary_sha256": "bin",
+                "lane": "kv", "profile": "quick", "trials": 1, "records": 100_000,
+                "noise_guard_sha256": "n", "runner_sha256": "r",
+            }))
+            (run / "summary.json").write_text(json.dumps({"row_count": 1, "group_count": 1, "problems": []}))
+            with self.assertRaisesRegex(ValueError, "free-space provenance"):
+                M.finalize(
+                    base_rows=[row("bad", 1)],
+                    base_manifest={"complete": True, "sources": [{
+                        "engine": "bad", "durability": "relaxed", "workload": "write-burst",
+                        "final_status": "accepted", "rejected_pressure_attempts": 1,
+                    }]},
+                    base_manifest_sha256="m", base_results_sha256="r",
+                    plan={"admission_repair_policy_version": 1, "source_manifest_sha256": "m", "suspect_source_count": 1, "groups": [group]},
+                    plan_sha256="p", repair_repo=root, run_prefix="fresh",
+                    thresholds={"read_only_workloads": [], "read_only_min_seconds": 2, "stateful_min_total_seconds": 0.1, "max_cv": 1, "max_relative_spread": 1},
+                    expected_admission_policy=M.DEFAULT_ADMISSION_POLICY, expected_bench_sha256="bin",
                 )
 
 

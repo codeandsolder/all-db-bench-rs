@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import statistics
 from collections import defaultdict
 from pathlib import Path
@@ -103,6 +104,8 @@ def finalize(
     support_hashes: set[str] = set()
     noise_hashes: set[str] = set()
     runner_hashes: set[str] = set()
+    initial_min_free_values: set[int] = set()
+    case_min_free_values: set[str] = set()
 
     for group in plan.get("groups", []):
         key = identity(group)
@@ -143,6 +146,16 @@ def finalize(
             raise ValueError(f"missing runner/noise provenance for {rid}")
         noise_hashes.add(noise_hash)
         runner_hashes.add(runner_hash)
+        try:
+            initial_min_free_gib = int(support["initial_min_free_gib"])
+            case_min_free_gib = str(support["case_min_free_gib"])
+            case_min_free_value = float(case_min_free_gib)
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError(f"missing/invalid free-space provenance for {rid}") from error
+        if initial_min_free_gib < 0 or not math.isfinite(case_min_free_value) or case_min_free_value < 0:
+            raise ValueError(f"invalid free-space provenance for {rid}")
+        initial_min_free_values.add(initial_min_free_gib)
+        case_min_free_values.add(case_min_free_gib)
 
         summary = json.loads(summary_path.read_text())
         if summary.get("row_count") != expected_trials or summary.get("group_count") != 1 or summary.get("problems"):
@@ -179,6 +192,8 @@ def finalize(
             "support_sha256": sha256(support_path),
             "noise_guard_sha256": noise_hash,
             "runner_sha256": runner_hash,
+            "initial_min_free_gib": initial_min_free_gib,
+            "case_min_free_gib": case_min_free_gib,
             "legacy_run_id": group["legacy_run_id"],
             "legacy_rejected_pressure_attempts": int(group["legacy_rejected_pressure_attempts"]),
             "rejected_pressure_attempts": 0,
@@ -196,6 +211,8 @@ def finalize(
                 "support_sha256": sha256(support_path),
                 "noise_guard_sha256": noise_hash,
                 "runner_sha256": runner_hash,
+                "initial_min_free_gib": initial_min_free_gib,
+                "case_min_free_gib": case_min_free_gib,
             }
         )
 
@@ -205,6 +222,11 @@ def finalize(
     if len(noise_hashes) != 1 or len(runner_hashes) != 1:
         raise ValueError(
             f"repair runs do not share one runner/noise identity: runners={runner_hashes}, noise={noise_hashes}"
+        )
+    if len(initial_min_free_values) != 1 or len(case_min_free_values) != 1:
+        raise ValueError(
+            "repair runs do not share one free-space admission identity: "
+            f"initial={initial_min_free_values}, case={case_min_free_values}"
         )
 
     final_rows: list[dict[str, Any]] = []
@@ -238,6 +260,8 @@ def finalize(
         "repair_benchmark_binary_sha256": expected_bench_sha256,
         "repair_noise_guard_sha256": next(iter(noise_hashes), None),
         "repair_runner_sha256": next(iter(runner_hashes), None),
+        "repair_initial_min_free_gib": next(iter(initial_min_free_values), None),
+        "repair_case_min_free_gib": next(iter(case_min_free_values), None),
         "repair_support_sha256": sorted(support_hashes),
         "repaired_groups": repair_records,
         "selected_followup_rejected_pressure_attempts": sum(
