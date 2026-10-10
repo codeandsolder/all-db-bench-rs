@@ -16,6 +16,51 @@ SPEC.loader.exec_module(M)
 
 
 class RefineRecordFinalConfirmationPlanTests(unittest.TestCase):
+    def test_second_round_adds_hard_floor_safety_margin(self) -> None:
+        groups = [
+            {
+                "engine": engine, "durability": "sync", "workload": "point-read",
+                "records": 100, "suggested_effective_ops": 100,
+                "runner_ops_override": 100, "suggested_trials": 5,
+                "quality_repair_required": True, "resize_strategy": "quality-repair",
+            }
+            for engine in ("fast", "slow")
+        ]
+        plan = {
+            "quality_policy_version": 1,
+            "strategy": "final-five-trial-common-work-v5",
+            "common_effective_ops": {"sync/point-read": 100},
+            "sizing_rule": {"slowest_ceiling_seconds": 15.0},
+            "groups": groups,
+        }
+        thresholds = {
+            "read_only_workloads": ["point-read"],
+            "read_only_min_seconds": 2.0, "read_only_target_seconds": 3.0,
+            "stateful_min_total_seconds": 0.75, "stateful_target_total_seconds": 1.0,
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for group in groups:
+                rid = M.run_id(group, "final"); d = root / rid; d.mkdir()
+                elapsed = 0.5 if group["engine"] == "fast" else (100.0 / 30.0)
+                rate = 200.0 if group["engine"] == "fast" else 30.0
+                rows = [{
+                    "engine": group["engine"], "durability": group["durability"],
+                    "workload": group["workload"], "records": group["records"],
+                    "ops_requested": 100, "trial": trial,
+                    "elapsed_s": elapsed, "ops_per_s": rate,
+                } for trial in range(1, 6)]
+                (d / "results.ndjson").write_text("".join(json.dumps(row) + "\n" for row in rows))
+                (d / "summary.json").write_text(json.dumps({"row_count": 5, "group_count": 1, "problems": []}))
+            refined = M.refine_plan(
+                plan, base_plan_sha256="b" * 64, run_root=root,
+                thresholds=thresholds, run_prefix="final",
+            )
+        self.assertEqual(refined["strategy"], "final-five-trial-common-work-v6")
+        self.assertEqual({g["suggested_effective_ops"] for g in refined["groups"]}, {500})
+        self.assertEqual(refined["refinement_policy"]["hard_min_safety_factor"], 1.10)
+        self.assertFalse(refined["refined_families"]["sync/point-read"]["slowest_ceiling_feasible"])
+
     def test_refines_whole_undersized_family_and_preserves_other_family(self) -> None:
         groups = []
         for engine in ("fast", "slow"):

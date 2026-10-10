@@ -99,6 +99,13 @@ def refine_plan(
     if not isinstance(sizing_rule, dict) or "slowest_ceiling_seconds" not in sizing_rule:
         raise ValueError("base final-confirmation plan is missing slowest_ceiling_seconds")
     slowest_ceiling_seconds = float(sizing_rule["slowest_ceiling_seconds"])
+    parent_strategy = str(base_plan.get("strategy", ""))
+    hard_min_safety_factor = 1.10 if parent_strategy == "final-five-trial-common-work-v5" else 1.0
+    next_strategy = (
+        "final-five-trial-common-work-v6"
+        if hard_min_safety_factor > 1.0
+        else "final-five-trial-common-work-v5"
+    )
 
     for durability, workload in sorted(undersized_families):
         family_groups = [g for g in groups if str(g["durability"]) == durability and str(g["workload"]) == workload]
@@ -127,7 +134,7 @@ def refine_plan(
             if read_only
             else float(thresholds["stateful_target_total_seconds"]) / trial_count
         )
-        raw_min_ops = fastest_rate * min_per_trial
+        raw_min_ops = fastest_rate * min_per_trial * hard_min_safety_factor
         raw_target_ops = fastest_rate * target_per_trial
         raw_ceiling_ops = slowest_rate * slowest_ceiling_seconds
         quantum_basis = max(raw_min_ops, min(raw_target_ops, raw_ceiling_ops))
@@ -167,13 +174,13 @@ def refine_plan(
         refined_groups.append(item)
 
     out = dict(base_plan)
-    out["strategy"] = "final-five-trial-common-work-v5"
+    out["strategy"] = next_strategy
     out["parent_plan_sha256"] = base_plan_sha256
     out["source_confirmation_results_sha256"] = result_hashes
     out["refined_families"] = refined_families
     out["common_effective_ops"] = common
     out["groups"] = refined_groups
-    out["refinement_policy"] = {
+    refinement_policy = {
         "trigger": "hard-sizing-threshold",
         "common_ops_per_durability_workload": True,
         "hard_minimum": "read_only_min_seconds or stateful_min_total_seconds",
@@ -181,6 +188,9 @@ def refine_plan(
         "slowest_ceiling_seconds": slowest_ceiling_seconds,
         "rounding": "ceil minimum/target and floor ceiling to 100-or-1000-op quanta; hard minimum wins if infeasible",
     }
+    if hard_min_safety_factor > 1.0:
+        refinement_policy["hard_min_safety_factor"] = hard_min_safety_factor
+    out["refinement_policy"] = refinement_policy
     return out
 
 

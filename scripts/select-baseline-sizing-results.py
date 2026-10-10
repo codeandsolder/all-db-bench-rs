@@ -36,7 +36,7 @@ IDENTITY_FIELDS = (
 )
 AUDIT_FIELDS = ("engine", "engine_version", "durability", "workload", "read_materialization", "write_materialization", "records", "ops_requested")
 FINAL_CONFIRMATION_KEY_FIELDS = ("engine", "durability", "workload", "records")
-FINAL_CONFIRMATION_STRATEGIES = {"final-five-trial-common-work-v3", "final-common-work-v3", "final-five-trial-common-work-v4", "final-five-trial-common-work-v5"}
+FINAL_CONFIRMATION_STRATEGIES = {"final-five-trial-common-work-v3", "final-common-work-v3", "final-five-trial-common-work-v4", "final-five-trial-common-work-v5", "final-five-trial-common-work-v6"}
 
 
 def slug(value: str) -> str:
