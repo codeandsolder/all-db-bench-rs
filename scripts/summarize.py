@@ -57,6 +57,8 @@ def group_key(r: dict) -> tuple:
         r.get("state_evolution", "growth"),
         r.get("bounded_churn_slots", 0),
         r["txn_size"],
+        r.get("indexed_read_limit", 100),
+        r.get("sql_cache_kib"),
         r.get("read_materialization", "legacy-read-v0"),
         r.get("write_materialization", "legacy-return-v0"),
         r.get("scan_len"),
@@ -128,6 +130,8 @@ def main() -> None:
             state_evolution,
             bounded_churn_slots,
             txn_size,
+            indexed_read_limit,
+            sql_cache_kib,
             read_materialization,
             write_materialization,
             scan_len,
@@ -177,6 +181,8 @@ def main() -> None:
                 "state_evolution": state_evolution,
                 "bounded_churn_slots": bounded_churn_slots,
                 "txn_size": txn_size,
+                "indexed_read_limit": indexed_read_limit,
+                "sql_cache_kib": sql_cache_kib,
                 "read_materialization": read_materialization,
                 "write_materialization": write_materialization,
                 "scan_len": scan_len,
@@ -197,7 +203,12 @@ def main() -> None:
                             f"access={access_pattern} miss={miss_percent}% "
                             f"write={write_pattern} settle={settle_ms}ms"
                             if lane == "kv"
-                            else f"payload={value_bytes} txn={txn_size}"
+                            else (
+                                f"payload={value_bytes} txn={txn_size} indexed_limit={indexed_read_limit} "
+                                f"sql_cache_kib={sql_cache_kib if sql_cache_kib is not None else 'default'}"
+                                if workload == "indexed-read"
+                                else f"payload={value_bytes} txn={txn_size}"
+                            )
                         )
                     )
                 ),

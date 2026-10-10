@@ -65,6 +65,10 @@ struct Args {
     payload_bytes: usize,
     #[arg(long, default_value_t = 100)]
     txn_size: usize,
+    #[arg(long, default_value_t = 100)]
+    indexed_read_limit: usize,
+    #[arg(long)]
+    sql_cache_kib: Option<u32>,
     #[arg(long, default_value_t = 1)]
     trial: u32,
     #[arg(long, default_value_t = 0x5eed_2026)]
@@ -167,6 +171,9 @@ struct Measurement {
     ops_completed: u64,
     payload_bytes: usize,
     txn_size: usize,
+    indexed_read_limit: usize,
+    sql_cache_kib: Option<u32>,
+    sql_cache_pragma_value: Option<i64>,
     read_materialization: &'static str,
     write_materialization: &'static str,
     trial: u32,
@@ -402,12 +409,52 @@ impl Engine {
         }
     }
 
+    async fn sql_cache_pragma_value(&self) -> Result<Option<i64>> {
+        match self {
+            Self::Surreal(_) => Ok(None),
+            Self::Turso(conn) => {
+                let mut stmt = conn.prepare("PRAGMA cache_size").await?;
+                let mut rows = stmt.query(()).await?;
+                let row = rows
+                    .next()
+                    .await?
+                    .context("Turso PRAGMA cache_size returned no row")?;
+                Ok(Some(row.get(0)?))
+            }
+            Self::Sqlite(conn) => Ok(Some(
+                conn.query_row("PRAGMA cache_size", [], |row| row.get(0))?,
+            )),
+        }
+    }
+
+    async fn set_sql_cache_kib(&self, cache_kib: Option<u32>) -> Result<()> {
+        let Some(cache_kib) = cache_kib else {
+            return Ok(());
+        };
+        match self {
+            Self::Surreal(_) => bail!("--sql-cache-kib is only valid for sqlite/turso diagnostics"),
+            Self::Turso(conn) => {
+                conn.execute(&format!("PRAGMA cache_size=-{cache_kib}"), ())
+                    .await?;
+            }
+            Self::Sqlite(conn) => {
+                conn.pragma_update(None, "cache_size", -i64::from(cache_kib))?;
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) async fn indexed_read(&self, group: u32) -> Result<IndexedRead> {
+        self.indexed_read_with_limit(group, 100).await
+    }
+
+    async fn indexed_read_with_limit(&self, group: u32, limit: usize) -> Result<IndexedRead> {
         match self {
             Self::Surreal(db) => {
                 let mut resp = db
-                    .query("SELECT bucket, payload FROM item WHERE bucket = $bucket LIMIT 100")
+                    .query("SELECT bucket, payload FROM item WHERE bucket = $bucket LIMIT $limit")
                     .bind(("bucket", group))
+                    .bind(("limit", limit as i64))
                     .await?;
                 let rows: Vec<RecordData> = resp.take(0)?;
                 let checksum = rows.iter().fold(0u64, |acc, row| {
@@ -420,9 +467,9 @@ impl Engine {
             }
             Self::Turso(conn) => {
                 let mut stmt = conn
-                    .prepare("SELECT grp, payload FROM item WHERE grp=?1 LIMIT 100")
+                    .prepare("SELECT grp, payload FROM item WHERE grp=?1 LIMIT ?2")
                     .await?;
-                let mut rows = stmt.query((group as i64,)).await?;
+                let mut rows = stmt.query((group as i64, limit as i64)).await?;
                 let mut n = 0usize;
                 let mut checksum = 0u64;
                 while let Some(row) = rows.next().await? {
@@ -437,8 +484,8 @@ impl Engine {
             }
             Self::Sqlite(conn) => {
                 let mut stmt =
-                    conn.prepare("SELECT grp, payload FROM item WHERE grp=?1 LIMIT 100")?;
-                let mut rows = stmt.query([group as i64])?;
+                    conn.prepare("SELECT grp, payload FROM item WHERE grp=?1 LIMIT ?2")?;
+                let mut rows = stmt.query(params![group as i64, limit as i64])?;
                 let mut n = 0usize;
                 let mut checksum = 0u64;
                 while let Some(row) = rows.next()? {
@@ -626,7 +673,9 @@ async fn run(
             while done < args.ops {
                 let group = rng.random_range(0..100);
                 let t = Instant::now();
-                let read = engine.indexed_read(group).await?;
+                let read = engine
+                    .indexed_read_with_limit(group, args.indexed_read_limit)
+                    .await?;
                 std::hint::black_box(read);
                 record(op_hist, t.elapsed());
                 done += 1;
@@ -782,6 +831,12 @@ async fn main() -> Result<()> {
     if args.records == 0 {
         bail!("--records must be greater than zero");
     }
+    if args.indexed_read_limit == 0 {
+        bail!("--indexed-read-limit must be greater than zero");
+    }
+    if args.sql_cache_kib == Some(0) {
+        bail!("--sql-cache-kib must be greater than zero");
+    }
     if args.progress_file.is_some()
         && !matches!(args.workload, Workload::TinyTxn | Workload::WriteBurst)
     {
@@ -789,13 +844,16 @@ async fn main() -> Result<()> {
     }
 
     let run_name = format!(
-        "{:?}-{:?}-{:?}-n{}-p{}-tx{}-trial{}",
+        "{:?}-{:?}-{:?}-n{}-p{}-tx{}-il{}-ck{}-trial{}",
         args.engine,
         args.durability,
         args.workload,
         args.records,
         args.payload_bytes,
         args.txn_size,
+        args.indexed_read_limit,
+        args.sql_cache_kib
+            .map_or_else(|| "default".to_string(), |value| value.to_string()),
         args.trial
     )
     .to_lowercase()
@@ -822,6 +880,16 @@ async fn main() -> Result<()> {
 
     let open_started = Instant::now();
     let engine = Engine::open(args.engine, args.durability, &path).await?;
+    engine.set_sql_cache_kib(args.sql_cache_kib).await?;
+    let sql_cache_pragma_value = engine.sql_cache_pragma_value().await?;
+    if let Some(cache_kib) = args.sql_cache_kib {
+        let expected = -i64::from(cache_kib);
+        if sql_cache_pragma_value != Some(expected) {
+            bail!(
+                "SQL cache PRAGMA did not round-trip: requested {expected}, got {sql_cache_pragma_value:?}"
+            );
+        }
+    }
     let open_s = open_started.elapsed().as_secs_f64();
     let prefill_s = if args.skip_prefill {
         0.0
@@ -865,7 +933,7 @@ async fn main() -> Result<()> {
     let db_bytes = dir_size(&path);
 
     let result = Measurement {
-        format_version: 7,
+        format_version: 8,
         lane: "record",
         engine: args.engine,
         engine_version: args.engine.version(),
@@ -877,6 +945,9 @@ async fn main() -> Result<()> {
         ops_completed: completed,
         payload_bytes: args.payload_bytes,
         txn_size: args.txn_size,
+        indexed_read_limit: args.indexed_read_limit,
+        sql_cache_kib: args.sql_cache_kib,
+        sql_cache_pragma_value,
         read_materialization: READ_MATERIALIZATION,
         write_materialization: WRITE_MATERIALIZATION,
         trial: args.trial,
