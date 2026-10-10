@@ -64,6 +64,7 @@ def record_handoff_dropin() -> str:
     # also has a hard v5 condition; the legacy direct handoff is harmlessly
     # skipped until this repair succeeds.
     return f"""[Unit]
+ConditionPathExists=!{RECORD_READY}
 OnSuccess={SERVICE}
 """
 

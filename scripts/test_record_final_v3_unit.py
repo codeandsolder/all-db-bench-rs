@@ -38,6 +38,7 @@ class RecordFinalV3UnitTests(unittest.TestCase):
         self.assertEqual(text.count('refine-record-final-confirmation-plan.py'), 2)
         self.assertIn('verify-record-ready.py', text)
         self.assertIn('--expected-admission-policy pre-io+pre/post-external-v2', text)
+        self.assertIn("ConditionPathExists=!/srv/scratch/db-bench-work/record-full-v1/ready.json", text)
         self.assertIn('OnSuccess=all-db-bench-kv-baseline-admission-repair.service', text)
 
     def test_wrong_semantics_fail_closed(self):

@@ -41,7 +41,7 @@ class KvBaselineAdmissionRepairUnitTests(unittest.TestCase):
     def test_record_handoff_adds_repair_target(self) -> None:
         self.assertEqual(
             M.record_handoff_dropin(),
-            "[Unit]\nOnSuccess=all-db-bench-kv-baseline-admission-repair.service\n",
+            "[Unit]\nConditionPathExists=!/srv/scratch/db-bench-work/record-full-v1/ready.json\nOnSuccess=all-db-bench-kv-baseline-admission-repair.service\n",
         )
 
     def test_kv_gate_requires_v5_manifest(self) -> None:
