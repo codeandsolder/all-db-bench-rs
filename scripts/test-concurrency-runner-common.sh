@@ -12,6 +12,13 @@ DATA_DIR="$tmp"
 ! rg -q "concurrency_scrub_case_pressure" "$ROOT/scripts/run-kv-concurrency-matrix.sh"
 ! rg -q "concurrency_scrub_case_pressure" "$ROOT/scripts/run-record-concurrency-plan.sh"
 ! rg -q "concurrency_scrub_case_pressure" "$ROOT/scripts/run-record-concurrency-matrix.sh"
+[[ "$CONCURRENCY_ADMISSION_POLICY" == "pre-io+pre/continuous/post-external-v3" ]]
+rg -q 'run-with-continuous-noise.py' "$ROOT/scripts/concurrency-runner-common.sh"
+for runner in run-kv-concurrency-plan.sh run-kv-concurrency-matrix.sh run-record-concurrency-plan.sh run-record-concurrency-matrix.sh; do
+  rg -q 'continuous_noise_guard_sha256' "$ROOT/scripts/$runner"
+  rg -q 'noise_during=' "$ROOT/scripts/$runner"
+  rg -q 'concurrency_preserve_noise_rejection' "$ROOT/scripts/$runner"
+done
 
 set +e
 PERFORMANCE_MIN_FREE_GIB=1000000 concurrency_check_io_quiet quick low-space >/dev/null 2>&1
@@ -25,11 +32,23 @@ CASE_MIN_FREE_GIB=1000000
 set +e
 concurrency_check_io_quiet quick profile-floor >/dev/null 2>&1
 profile_floor_rc=$?
-PERFORMANCE_MIN_FREE_GIB=0 CASE_MIN_FREE_GIB=0 concurrency_check_io_quiet quick explicit-override >/dev/null 2>&1
+ALLOW_BUSY=1 PERFORMANCE_MIN_FREE_GIB=0 CASE_MIN_FREE_GIB=0 concurrency_check_io_quiet quick explicit-override >/dev/null 2>&1
 explicit_override_rc=$?
 set -e
 [[ $profile_floor_rc -eq 75 ]]
 [[ $explicit_override_rc -ne 75 ]]
 unset CASE_MIN_FREE_GIB
 PERFORMANCE_MIN_FREE_GIB=1000000 concurrency_check_io_quiet smoke smoke-bypass
+# Preserve all three admission snapshots for each rejected attempt instead of
+# overwriting retry evidence.
+reject_dir="$tmp/reject"
+mkdir -p "$reject_dir"
+printf {}n > "$reject_dir/before.json"
+printf {contaminated:true}n > "$reject_dir/during.json"
+printf {}n > "$reject_dir/after.json"
+concurrency_preserve_noise_rejection "$reject_dir" synthetic-case continuous \
+  "$reject_dir/before.json" "$reject_dir/during.json" "$reject_dir/after.json"
+[[ $(wc -l < "$reject_dir/noise/rejections.ndjson") -eq 1 ]]
+rg -q '"reason":"continuous"' "$reject_dir/noise/rejections.ndjson"
+[[ $(find "$reject_dir/noise/rejected" -type f | wc -l) -eq 3 ]]
 echo concurrency-runner-common-ok

@@ -60,6 +60,7 @@ fi
 
 RUNNER_SHA=$(sha256sum "$ROOT/scripts/run-record-concurrency-plan.sh" | awk '{print $1}')
 NOISE_SHA=$(sha256sum "$ROOT/scripts/check-external-noise.py" | awk '{print $1}')
+CONTINUOUS_NOISE_SHA=$(sha256sum "$ROOT/scripts/run-with-continuous-noise.py" | awk '{print $1}')
 POLICY_SHA=$(sha256sum "$ROOT/scripts/concurrency-matrix-policy.sh" | awk '{print $1}')
 HOST_NAME=$(hostname)
 MACHINE_ID_SHA256=$(sha256sum /etc/machine-id | awk '{print $1}')
@@ -106,8 +107,8 @@ json.dump({
  "build_profile":"$BUILD_PROFILE","benchmark_binary_sha256":"$BIN_SHA","benchmark_source_commit":"$BENCH_SOURCE_COMMIT",
  "rocks_build_profile":"$ROCKS_BUILD_PROFILE","surrealdb_rocksdb_binary_sha256":"$ROCKS_BIN_SHA",
  "surrealdb_rocksdb_source_commit":"$ROCKS_BENCH_SOURCE_COMMIT","harness_commit":"$HARNESS_COMMIT",
- "runner_sha256":"$RUNNER_SHA","concurrency_policy_sha256":"$POLICY_SHA","noise_guard_sha256":"$NOISE_SHA",
- "admission_policy":"pre-io+pre/post-external-v2","initial_min_free_gib":$MIN_FREE_GIB,"case_min_free_gib":"$CASE_MIN_FREE_GIB","case_timeout_s":$CASE_TIMEOUT_S,
+ "runner_sha256":"$RUNNER_SHA","concurrency_policy_sha256":"$POLICY_SHA","noise_guard_sha256":"$NOISE_SHA","continuous_noise_guard_sha256":"$CONTINUOUS_NOISE_SHA",
+ "admission_policy":"$CONCURRENCY_ADMISSION_POLICY","continuous_noise_sample_ms":$CONTINUOUS_NOISE_SAMPLE_MS,"continuous_noise_max_cpu_percent":$CONTINUOUS_NOISE_MAX_CPU_PERCENT,"continuous_noise_max_io_average_mib_s":$CONTINUOUS_NOISE_MAX_IO_AVERAGE_MIB_S,"continuous_noise_max_io_rate_mib_s":$CONTINUOUS_NOISE_MAX_IO_RATE_MIB_S,"initial_min_free_gib":$MIN_FREE_GIB,"case_min_free_gib":"$CASE_MIN_FREE_GIB","case_timeout_s":$CASE_TIMEOUT_S,
  "hostname":"$HOST_NAME","machine_id_sha256":"$MACHINE_ID_SHA256","filesystem":"$FILESYSTEM","source":"$SOURCE",
  "total_work_semantics":"each plan family keeps identical records and total ops across client counts",
  "state_evolution_semantics":"bounded tiny/write updates the prefilled record universe; growth preserves append diagnostics",
@@ -143,6 +144,7 @@ for job in "${ORDERED[@]}"; do
   out="$RUN_DIR/cases/$case_id.json"
   err="$RUN_DIR/stderr/$case_id.log"
   noise_before="$RUN_DIR/noise/$case_id.before.json"
+  noise_during="$RUN_DIR/noise/$case_id.during.json"
   noise_after="$RUN_DIR/noise/$case_id.after.json"
   if [[ -s "$out" ]]; then clear_failure "$case_id"; continue; fi
 
@@ -152,8 +154,8 @@ for job in "${ORDERED[@]}"; do
   CASE_BIN="$BIN"
   [[ "$engine" == surrealdb-rocksdb ]] && CASE_BIN="$ROCKS_BIN"
   rm -f "$out"
-  timeout --signal=TERM --kill-after=5s "${CASE_TIMEOUT_S}s" \
-    "$CASE_BIN" --engine "$engine" --durability "$durability" --workload "$workload" \
+  concurrency_run_with_continuous_noise "$ROOT" "$noise_during" \
+    timeout --signal=TERM --kill-after=5s "${CASE_TIMEOUT_S}s" "$CASE_BIN" --engine "$engine" --durability "$durability" --workload "$workload" \
     --state-evolution "$state_evolution" --clients "$clients" --records "$records" --ops "$ops" \
     --payload-bytes "$payload" --txn-size "$txn" --trial "$trial" --seed 1592606758 \
     --scenario "$scenario" --warmup-reads 5000 --root "$DATA_DIR" --output "$out" --keep-db 2>"$err"
@@ -161,9 +163,16 @@ for job in "${ORDERED[@]}"; do
 
   noise_rc=0; concurrency_check_external_noise "$ROOT" "$PROFILE" "after:$case_id" "$noise_after" || noise_rc=$?
   if (( noise_rc != 0 )); then
+    concurrency_preserve_noise_rejection "$RUN_DIR" "$case_id" post-external "$noise_before" "$noise_during" "$noise_after"
     if [[ -s "$out" ]]; then record_cleanup_result_db "$out" "$DATA_DIR" || true; fi
     rm -f "$out"; clear_failure "$case_id"
     exit "$noise_rc"
+  fi
+  if (( rc == 75 )) && concurrency_continuous_rejected "$noise_during"; then
+    concurrency_preserve_noise_rejection "$RUN_DIR" "$case_id" continuous "$noise_before" "$noise_during" "$noise_after"
+    if [[ -s "$out" ]]; then record_cleanup_result_db "$out" "$DATA_DIR" || true; fi
+    rm -f "$out"; clear_failure "$case_id"
+    exit 75
   fi
   if (( rc == 0 )) && [[ -s "$out" ]] && [[ $(wc -l < "$out") -eq 1 ]]; then
     record_cleanup_result_db "$out" "$DATA_DIR" || rc=$?
