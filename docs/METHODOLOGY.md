@@ -153,6 +153,7 @@ Result NDJSON, summaries and provenance metadata are durable. Per-run database d
 ## Performance admission
 
 Performance cases are admitted only from a clean **starting** host state: the pre-case gate requires I/O PSI `full avg10 <= 5%` and explicit external-process sampling below the foreign-work threshold. After the measured child exits, external-process sampling runs again and can reject the case if attributable foreign work appeared during the measurement window.
+Kernel worker threads are excluded from the foreign-process classifier and reported only as diagnostics: storage workers such as ZFS `z_wr_iss` can be activity caused by the benchmark itself, so post-selecting on them would recreate the same causality bug through a different signal. Pre-case I/O PSI remains the guard for a storage stack that is already busy before measurement.
 
 The harness never post-selects on post-case I/O PSI, runqueue wait, or CPU PSI. All three can be induced by the database engine/runtime being measured, so rejecting on them would condition the accepted sample on the benchmark's own behavior. They remain recorded diagnostic outputs. Short trials are made longer by sizing/calibration policy rather than retried until an in-window pressure metric happens to look favorable.
 
