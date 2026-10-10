@@ -34,11 +34,16 @@ class KvBaselineAdmissionRepairUnitTests(unittest.TestCase):
         self.assertIn("finalize-kv-baseline-admission-repairs.py", text)
         self.assertIn("OnSuccess=all-db-bench-concurrency-sizing.service", text)
 
-    def test_record_handoff_resets_old_target(self) -> None:
-        text = M.record_handoff_dropin()
+    def test_record_handoff_adds_repair_target(self) -> None:
         self.assertEqual(
-            text,
-            "[Unit]\nOnSuccess=\nOnSuccess=all-db-bench-kv-baseline-admission-repair.service\n",
+            M.record_handoff_dropin(),
+            "[Unit]\nOnSuccess=all-db-bench-kv-baseline-admission-repair.service\n",
+        )
+
+    def test_kv_gate_requires_v5_manifest(self) -> None:
+        self.assertEqual(
+            M.kv_v5_gate_dropin(),
+            "[Unit]\nConditionPathExists=/srv/scratch/db-bench-work/kv-sizing-audit/selected-final-v5/manifest.json\n",
         )
 
 

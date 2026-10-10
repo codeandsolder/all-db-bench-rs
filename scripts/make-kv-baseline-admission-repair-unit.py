@@ -50,22 +50,34 @@ WantedBy=multi-user.target
 
 
 def record_handoff_dropin() -> str:
+    # OnSuccess dependencies are additive in drop-ins. The KV unit therefore
+    # also has a hard v5 condition; the legacy direct handoff is harmlessly
+    # skipped until this repair succeeds.
     return f"""[Unit]
-OnSuccess=
 OnSuccess={SERVICE}
 """
 
 
+def kv_v5_gate_dropin() -> str:
+    return f"""[Unit]
+ConditionPathExists={OUT_SELECTED / 'manifest.json'}
+"""
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Generate the KV baseline admission-repair unit and record handoff drop-in")
+    parser = argparse.ArgumentParser(
+        description="Generate the KV baseline admission-repair unit and handoff gates"
+    )
     parser.add_argument("--runtime", type=Path, required=True)
     parser.add_argument("--unit-out", type=Path, required=True)
     parser.add_argument("--record-dropin-out", type=Path, required=True)
+    parser.add_argument("--kv-gate-dropin-out", type=Path, required=True)
     args = parser.parse_args()
-    args.unit_out.parent.mkdir(parents=True, exist_ok=True)
-    args.record_dropin_out.parent.mkdir(parents=True, exist_ok=True)
+    for path in (args.unit_out, args.record_dropin_out, args.kv_gate_dropin_out):
+        path.parent.mkdir(parents=True, exist_ok=True)
     args.unit_out.write_text(unit_text(args.runtime))
     args.record_dropin_out.write_text(record_handoff_dropin())
+    args.kv_gate_dropin_out.write_text(kv_v5_gate_dropin())
     return 0
 
 

@@ -47,7 +47,7 @@ Description=all-db-bench record final v3 five-trial confirmation
 After=local-fs.target
 ConditionPathExists={MANIFEST}
 ConditionPathExists={SIZING_RESULTS}
-OnSuccess=all-db-bench-concurrency-sizing.service
+OnSuccess=all-db-bench-kv-baseline-admission-repair.service
 
 [Service]
 Type=oneshot
