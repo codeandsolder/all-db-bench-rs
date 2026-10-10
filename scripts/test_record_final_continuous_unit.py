@@ -30,10 +30,20 @@ class RecordFinalContinuousUnitTests(unittest.TestCase):
 
     def test_unit_runs_one_homogeneous_continuous_confirmation(self) -> None:
         text = M.unit_text(self.manifest(), Path("/x/runtime"))
-        self.assertIn("After=local-fs.target all-db-bench-record-final-v3.service", text)
-        self.assertIn("ConditionPathExists=/srv/scratch/db-bench-work/record-full-v1/ready.json", text)
+        self.assertIn("After=local-fs.target", text)
+        self.assertNotIn("After=local-fs.target all-db-bench-record-final-v3.service", text)
+        self.assertNotIn(
+            "ConditionPathExists=/srv/scratch/db-bench-work/record-full-v1/ready.json", text
+        )
+        self.assertNotIn("selected-final-v3/manifest.json", text)
         self.assertIn(
-            "ConditionPathExists=/srv/scratch/db-bench-work/record-full-v1/selected-final-v3/manifest.json",
+            "ConditionPathExists=/srv/scratch/db-bench-work/record-full-v1/runtime/results/runs/"
+            "20261010-record-full-v1-stock-v2/results.ndjson",
+            text,
+        )
+        self.assertIn(
+            "ConditionPathExists=/srv/scratch/db-bench-work/record-full-v1/"
+            "20261010-record-full-v1-stock-v2-sizing-v3.json",
             text,
         )
         self.assertIn("ConditionPathExists=!/srv/scratch/db-bench-work/record-full-v1/ready-v4.json", text)

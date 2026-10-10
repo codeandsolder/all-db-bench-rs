@@ -49,9 +49,9 @@ def unit_text(manifest: dict, runtime: Path = RUNTIME) -> str:
     rocks = manifest["binaries"]["surrealdb-rocksdb-recordbench"]
     return f"""[Unit]
 Description=all-db-bench record final v4 continuous-admission confirmation
-After=local-fs.target all-db-bench-record-final-v3.service
-ConditionPathExists={HISTORICAL_READY}
-ConditionPathExists={HISTORICAL_SELECTED / 'manifest.json'}
+After=local-fs.target
+ConditionPathExists={STOCK_RESULTS}
+ConditionPathExists={STOCK_AUDIT}
 ConditionPathExists={PLAN}
 ConditionPathExists={MANIFEST}
 ConditionPathExists=!{READY}
