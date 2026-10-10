@@ -35,6 +35,7 @@ class RefineRecordFinalConfirmationPlanTests(unittest.TestCase):
             "quality_policy_version": 1,
             "strategy": "final-five-trial-common-work-v3",
             "common_effective_ops": {"sync/point-read": 100, "sync/write-burst": 100},
+            "sizing_rule": {"slowest_ceiling_seconds": 15.0},
             "groups": groups,
         }
         thresholds = {
@@ -51,8 +52,8 @@ class RefineRecordFinalConfirmationPlanTests(unittest.TestCase):
                 d = root / rid
                 d.mkdir()
                 if group["workload"] == "point-read":
-                    elapsed = 0.5 if group["engine"] == "fast" else 1.0
-                    rate = 200.0 if group["engine"] == "fast" else 100.0
+                    elapsed = 0.5 if group["engine"] == "fast" else (100.0 / 30.0)
+                    rate = 200.0 if group["engine"] == "fast" else 30.0
                 else:
                     elapsed = 1.0
                     rate = 100.0
@@ -81,12 +82,14 @@ class RefineRecordFinalConfirmationPlanTests(unittest.TestCase):
                 run_prefix="final",
             )
 
-        self.assertEqual(refined["strategy"], "final-five-trial-common-work-v4")
+        self.assertEqual(refined["strategy"], "final-five-trial-common-work-v5")
         self.assertEqual(set(refined["refined_families"]), {"sync/point-read"})
         self.assertEqual(
             {g["suggested_effective_ops"] for g in refined["groups"] if g["workload"] == "point-read"},
-            {600},
+            {400},
         )
+        self.assertTrue(refined["refined_families"]["sync/point-read"]["slowest_ceiling_feasible"])
+        self.assertLessEqual(refined["refined_families"]["sync/point-read"]["estimated_slowest_seconds"], 15.0)
         self.assertEqual(
             {g["suggested_effective_ops"] for g in refined["groups"] if g["workload"] == "write-burst"},
             {100},

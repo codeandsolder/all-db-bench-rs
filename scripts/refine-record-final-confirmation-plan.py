@@ -95,6 +95,10 @@ def refine_plan(
     common = dict(base_plan.get("common_effective_ops", {}))
     new_ops_by_family: dict[tuple[str, str], int] = {}
     refined_families: dict[str, dict[str, Any]] = {}
+    sizing_rule = base_plan.get("sizing_rule")
+    if not isinstance(sizing_rule, dict) or "slowest_ceiling_seconds" not in sizing_rule:
+        raise ValueError("base final-confirmation plan is missing slowest_ceiling_seconds")
+    slowest_ceiling_seconds = float(sizing_rule["slowest_ceiling_seconds"])
 
     for durability, workload in sorted(undersized_families):
         family_groups = [g for g in groups if str(g["durability"]) == durability and str(g["workload"]) == workload]
@@ -107,26 +111,45 @@ def refine_plan(
             for g in family_groups
         ]
         fastest_rate = max(rates)
+        slowest_rate = min(rates)
         trial_counts = {int(g["suggested_trials"]) for g in family_groups}
         if len(trial_counts) != 1:
             raise ValueError(f"trial count differs within family: {durability}/{workload}")
         trial_count = next(iter(trial_counts))
         read_only = workload in set(thresholds["read_only_workloads"])
+        min_per_trial = (
+            float(thresholds["read_only_min_seconds"])
+            if read_only
+            else float(thresholds["stateful_min_total_seconds"]) / trial_count
+        )
         target_per_trial = (
             float(thresholds["read_only_target_seconds"])
             if read_only
             else float(thresholds["stateful_target_total_seconds"]) / trial_count
         )
-        raw_ops = fastest_rate * target_per_trial
-        quantum = 100 if raw_ops < 100_000 else 1000
-        new_ops = max(old_ops + quantum, math.ceil(raw_ops / quantum) * quantum)
+        raw_min_ops = fastest_rate * min_per_trial
+        raw_target_ops = fastest_rate * target_per_trial
+        raw_ceiling_ops = slowest_rate * slowest_ceiling_seconds
+        quantum_basis = max(raw_min_ops, min(raw_target_ops, raw_ceiling_ops))
+        quantum = 100 if quantum_basis < 100_000 else 1000
+        min_ops = math.ceil(raw_min_ops / quantum) * quantum
+        target_ops = math.ceil(raw_target_ops / quantum) * quantum
+        ceiling_ops = math.floor(raw_ceiling_ops / quantum) * quantum
+        ceiling_feasible = ceiling_ops >= min_ops
+        new_ops = max(old_ops + quantum, min(target_ops, ceiling_ops) if ceiling_feasible else min_ops)
         new_ops_by_family[(durability, workload)] = new_ops
         common[f"{durability}/{workload}"] = new_ops
         refined_families[f"{durability}/{workload}"] = {
             "old_effective_ops": old_ops,
             "new_effective_ops": new_ops,
             "fastest_observed_ops_per_s": fastest_rate,
+            "slowest_observed_ops_per_s": slowest_rate,
+            "hard_min_seconds_per_trial": min_per_trial,
             "target_seconds_per_trial": target_per_trial,
+            "slowest_ceiling_seconds": slowest_ceiling_seconds,
+            "estimated_fastest_seconds": new_ops / fastest_rate,
+            "estimated_slowest_seconds": new_ops / slowest_rate,
+            "slowest_ceiling_feasible": ceiling_feasible,
             "reason": "hard-sizing-threshold",
         }
 
@@ -144,7 +167,7 @@ def refine_plan(
         refined_groups.append(item)
 
     out = dict(base_plan)
-    out["strategy"] = "final-five-trial-common-work-v4"
+    out["strategy"] = "final-five-trial-common-work-v5"
     out["parent_plan_sha256"] = base_plan_sha256
     out["source_confirmation_results_sha256"] = result_hashes
     out["refined_families"] = refined_families
@@ -153,8 +176,10 @@ def refine_plan(
     out["refinement_policy"] = {
         "trigger": "hard-sizing-threshold",
         "common_ops_per_durability_workload": True,
+        "hard_minimum": "read_only_min_seconds or stateful_min_total_seconds",
         "target": "read_only_target_seconds or stateful_target_total_seconds",
-        "rounding": "ceil-to-100-or-1000-ops",
+        "slowest_ceiling_seconds": slowest_ceiling_seconds,
+        "rounding": "ceil minimum/target and floor ceiling to 100-or-1000-op quanta; hard minimum wins if infeasible",
     }
     return out
 
