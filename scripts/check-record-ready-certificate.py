@@ -8,6 +8,7 @@ from pathlib import Path
 
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
+CONTINUOUS_ADMISSION_POLICY = "pre-io+pre/continuous/post-external-v3"
 
 
 def validate_certificate(
@@ -18,8 +19,11 @@ def validate_certificate(
     expected_groups: int = 40,
     expected_rows: int = 200,
 ) -> None:
-    if int(ready.get("ready_version", -1)) < 4:
-        raise ValueError(f"readiness version is too old: {ready.get('ready_version')!r}")
+    required_version = 5 if expected_admission_policy == CONTINUOUS_ADMISSION_POLICY else 4
+    if int(ready.get("ready_version", -1)) < required_version:
+        raise ValueError(
+            f"readiness version is too old for admission policy: {ready.get('ready_version')!r} < {required_version}"
+        )
     binary_commit = ready.get("binary_repo_commit")
     if binary_commit != expected_binary_commit or ready.get("repo_commit") != expected_binary_commit:
         raise ValueError("readiness binary commit mismatch")
@@ -45,10 +49,30 @@ def validate_certificate(
     ):
         if not HEX64.fullmatch(str(ready.get(field, ""))):
             raise ValueError(f"readiness {field} is missing or malformed")
+
+    if expected_admission_policy == CONTINUOUS_ADMISSION_POLICY:
+        if not HEX64.fullmatch(str(ready.get("selected_continuous_noise_guard_sha256", ""))):
+            raise ValueError("readiness continuous noise guard is missing or malformed")
+        for field in (
+            "continuous_noise_sample_ms",
+            "continuous_noise_max_cpu_percent",
+            "continuous_noise_max_io_bytes",
+            "continuous_noise_max_io_rate_mib_s",
+        ):
+            value = ready.get(field)
+            if not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0:
+                raise ValueError(f"readiness {field} is missing or invalid")
+        if float(ready["continuous_noise_sample_ms"]) <= 0:
+            raise ValueError("readiness continuous noise sample interval must be positive")
+
     supports = ready.get("source_support_sha256")
     if not isinstance(supports, dict) or len(supports) < expected_groups:
         raise ValueError("readiness source support provenance is incomplete")
-    bad_supports = [name for name, digest in supports.items() if not name or not HEX64.fullmatch(str(digest))]
+    bad_supports = [
+        name
+        for name, digest in supports.items()
+        if not name or not HEX64.fullmatch(str(digest))
+    ]
     if bad_supports:
         raise ValueError(f"readiness source support hashes are malformed: {bad_supports[:3]}")
 
@@ -74,14 +98,19 @@ def main() -> int:
         )
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
-    print(json.dumps({
-        "ready": str(args.ready),
-        "ready_version": ready["ready_version"],
-        "binary_repo_commit": ready["binary_repo_commit"],
-        "runner_repo_commit": ready["runner_repo_commit"],
-        "group_count": ready["group_count"],
-        "row_count": ready["row_count"],
-    }, sort_keys=True))
+    print(
+        json.dumps(
+            {
+                "ready": str(args.ready),
+                "ready_version": ready["ready_version"],
+                "binary_repo_commit": ready["binary_repo_commit"],
+                "runner_repo_commit": ready["runner_repo_commit"],
+                "group_count": ready["group_count"],
+                "row_count": ready["row_count"],
+            },
+            sort_keys=True,
+        )
+    )
     return 0
 
 
