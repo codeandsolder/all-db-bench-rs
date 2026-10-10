@@ -13,7 +13,7 @@ DATA_DIR="$tmp"
 ! rg -q "concurrency_scrub_case_pressure" "$ROOT/scripts/run-record-concurrency-plan.sh"
 ! rg -q "concurrency_scrub_case_pressure" "$ROOT/scripts/run-record-concurrency-matrix.sh"
 [[ "$CONCURRENCY_ADMISSION_POLICY" == "pre-io+pre/continuous/post-external-v3" ]]
-rg -q 'run-with-continuous-noise.py' "$ROOT/scripts/concurrency-runner-common.sh"
+rg -q 'run-with-continuous-noise.py' "$ROOT/scripts/continuous-noise-runner-common.sh"
 for runner in run-kv-concurrency-plan.sh run-kv-concurrency-matrix.sh run-record-concurrency-plan.sh run-record-concurrency-matrix.sh; do
   rg -q 'continuous_noise_guard_sha256' "$ROOT/scripts/$runner"
   rg -q 'noise_during=' "$ROOT/scripts/$runner"

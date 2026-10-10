@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 
+COMMON_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=continuous-noise-runner-common.sh
+source "$COMMON_DIR/continuous-noise-runner-common.sh"
+PERFORMANCE_ADMISSION_POLICY=${PERFORMANCE_ADMISSION_POLICY:-$CONTINUOUS_ADMISSION_POLICY}
+
 performance_check_free_space() {
   local profile=$1 phase=$2 path=${3:-${PERFORMANCE_FREE_SPACE_PATH:-${DATA_DIR:-$PWD}}}
   [[ "$profile" == smoke ]] && return 0
@@ -58,4 +63,16 @@ performance_prepare_order() {
   if [[ "$resume_policy" == reshuffle-remaining ]]; then
     mapfile -t ORDERED < <(printf '%s\n' "${ORDERED[@]}" | shuf)
   fi
+}
+
+performance_run_with_continuous_noise() {
+  continuous_noise_run "$@"
+}
+
+performance_continuous_rejected() {
+  continuous_noise_rejected "$@"
+}
+
+performance_preserve_noise}rejection() {
+  continuous_noise_preserve}rejection "$@"
 }

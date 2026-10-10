@@ -41,7 +41,7 @@ class KvBaselineAdmissionRepairUnitTests(unittest.TestCase):
             text,
         )
         self.assertIn(
-            "--expected-admission-policy pre-io+pre/post-external-v2 --expected-bench-sha256",
+            "--expected-admission-policy pre-io+pre/continuous/post-external-v3 --expected-bench-sha256",
             text,
         )
         self.assertIn("--quality-only", text)

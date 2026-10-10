@@ -34,7 +34,16 @@ for runner in "${runners[@]}"; do
       rg -Fq 'ADMISSION_POLICY=pre-io+pre/continuous/post-external-v3' "$path" && \
       rg -q 'continuous_noise_guard_sha256' "$path" && \
       rg -q 'run-with-continuous-noise.py' "$path" || {
-        echo "missing continuous record admission provenance in $runner" >&2
+        echo "missing continuous record-baseline admission provenance in $runner" >&2
+        exit 1
+      }
+      ;;
+    run-kv-matrix.sh)
+      rg -q 'PERFORMANCE_ADMISSION_POLICY' "$path" && \
+      rg -q 'continuous_noise_guard_sha256' "$path" && \
+      rg -q 'noise_during=' "$path" && \
+      rg -q 'performance_run_with_continuous_noise' "$path" || {
+        echo "missing continuous KV-baseline admission provenance in $runner" >&2
         exit 1
       }
       ;;
@@ -70,7 +79,7 @@ for common in performance-runner-common.sh concurrency-runner-common.sh; do
   }
 done
 
-for baseline in run-kv-matrix.sh run-record-matrix.sh; do
+for baseline in run-record-matrix.sh; do
   rg -Fq 'CASE_MIN_FREE_GIB=${PERFORMANCE_MIN_FREE_GIB:-$MIN_FREE_GIB}' "$ROOT/scripts/$baseline" && \
   rg -Fq 'min_gib=${CASE_MIN_FREE_GIB}' "$ROOT/scripts/$baseline" || {
     echo "missing profile-aware free-space admission floor in $baseline" >&2
