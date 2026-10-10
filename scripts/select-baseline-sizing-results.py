@@ -35,6 +35,8 @@ IDENTITY_FIELDS = (
     "configuration",
 )
 AUDIT_FIELDS = ("engine", "engine_version", "durability", "workload", "read_materialization", "write_materialization", "records", "ops_requested")
+FINAL_CONFIRMATION_KEY_FIELDS = ("engine", "durability", "workload", "records")
+FINAL_CONFIRMATION_STRATEGIES = {"final-five-trial-common-work-v3", "final-common-work-v3"}
 
 
 def slug(value: str) -> str:
@@ -73,6 +75,10 @@ def identity(row: dict[str, Any]) -> tuple[Any, ...]:
 
 def audit_key(row: dict[str, Any]) -> tuple[Any, ...]:
     return tuple(_identity_value(row, field) for field in AUDIT_FIELDS)
+
+
+def final_confirmation_key(row: dict[str, Any]) -> tuple[Any, ...]:
+    return tuple(_identity_value(row, field) for field in FINAL_CONFIRMATION_KEY_FIELDS)
 
 
 def read_ndjson(path: Path) -> list[dict[str, Any]]:
@@ -153,12 +159,19 @@ def select_rows(
 
     audit_groups = {audit_key(group): group for group in audit["groups"]}
     quality_groups: dict[tuple[Any, ...], dict[str, Any]] = {}
+    quality_lookup = audit_key
     if quality_repair_plan is not None:
         if quality_repair_plan.get("quality_policy_version") != 1:
             raise ValueError(
                 f"unsupported stock quality policy: {quality_repair_plan.get('quality_policy_version')!r}"
             )
-        quality_groups = {audit_key(group): group for group in quality_repair_plan.get("groups", [])}
+        if quality_repair_plan.get("strategy") in FINAL_CONFIRMATION_STRATEGIES:
+            quality_lookup = final_confirmation_key
+        for group in quality_repair_plan.get("groups", []):
+            key = quality_lookup(group)
+            if key in quality_groups:
+                raise ValueError(f"duplicate quality-repair identity: {key}")
+            quality_groups[key] = group
     output: list[dict[str, Any]] = []
     selected_stock = 0
     selected_resize = 0
@@ -178,7 +191,7 @@ def select_rows(
         if group is None:
             raise ValueError(f"stock group missing from audit: {key}")
 
-        quality_group = quality_groups.get(key)
+        quality_group = quality_groups.get(quality_lookup(first))
         if quality_group is not None:
             rid = run_id(quality_group, resize_prefix)
             results_path = resize_root / rid / "results.ndjson"

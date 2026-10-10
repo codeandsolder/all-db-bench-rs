@@ -186,6 +186,51 @@ class SelectBaselineSizingResultsTests(unittest.TestCase):
         self.assertEqual(manifest["sources"][0]["source"], "quality-repair")
         self.assertEqual(manifest["sources"][0]["final_status"], "accepted")
 
+    def test_final_confirmation_overrides_undersized_group_with_different_ops(self) -> None:
+        stock = [row("sqlite", "point-read", t, 100, elapsed=0.2) for t in (1, 2, 3)]
+        target = audit_group("sqlite", "point-read", 100, "undersized", 300, 3, "more-ops")
+        plan = audit(target)
+        confirmation = {
+            **target,
+            "suggested_effective_ops": 200,
+            "suggested_trials": 5,
+            "resize_strategy": "quality-repair",
+            "quality_repair_required": True,
+        }
+        quality_plan = {
+            "quality_policy_version": 1,
+            "strategy": "final-five-trial-common-work-v3",
+            "source_selection": "selected-final-v2-sizing-only",
+            "groups": [confirmation],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run = root / run_id(confirmation, "20261010-record-final-v3")
+            run.mkdir()
+            repaired = [
+                row("sqlite", "point-read", t, 200, elapsed=1.0, rate=200.0 + t)
+                for t in range(1, 6)
+            ]
+            (run / "results.ndjson").write_text(
+                "".join(json.dumps(item) + "\n" for item in repaired)
+            )
+            (run / "summary.json").write_text(
+                json.dumps({"row_count": 5, "group_count": 1, "problems": []})
+            )
+            selected, manifest = select_rows(
+                stock,
+                plan,
+                root,
+                resize_prefix="20261010-record-final-v3",
+                allow_missing_resize=False,
+                quality_repair_plan=quality_plan,
+            )
+        self.assertEqual(len(selected), 5)
+        self.assertEqual({int(item["ops_requested"]) for item in selected}, {200})
+        self.assertEqual(manifest["selected_stock_groups"], 0)
+        self.assertEqual(manifest["selected_resize_groups"], 0)
+        self.assertEqual(manifest["selected_quality_repair_groups"], 1)
+
     def test_policy_v3_requires_explicit_record_semantics(self) -> None:
         stock = [dict(row("sqlite", "point-read", trial, 100), lane="record") for trial in (1, 2, 3)]
         group = audit_group("sqlite", "point-read", 100, "accepted")
