@@ -14,11 +14,19 @@ SPEC.loader.exec_module(M)
 
 
 class KvBaselineAdmissionRepairUnitTests(unittest.TestCase):
-    def test_unit_is_fail_closed_and_hands_off_to_kv(self) -> None:
+    def test_unit_requires_continuously_guarded_record_baseline_and_hands_off_to_kv(self) -> None:
         runtime = Path("/srv/runtime")
         text = M.unit_text(runtime)
         self.assertIn(
-            "ConditionPathExists=/srv/scratch/db-bench-work/record-full-v1/ready.json",
+            "After=local-fs.target all-db-bench-record-final-continuous.service",
+            text,
+        )
+        self.assertIn(
+            "ConditionPathExists=/srv/scratch/db-bench-work/record-full-v1/ready-v4.json",
+            text,
+        )
+        self.assertIn(
+            "ConditionPathExists=/srv/scratch/db-bench-work/record-full-v1/selected-final-v4/manifest.json",
             text,
         )
         self.assertIn(
@@ -26,9 +34,16 @@ class KvBaselineAdmissionRepairUnitTests(unittest.TestCase):
             text,
         )
         self.assertIn("verify-record-ready.py", text)
-        self.assertIn("--selected /srv/scratch/db-bench-work/record-full-v1/selected-final-v3", text)
-        self.assertIn("--repo /srv/scratch/db-bench-work/record-full-v1/runtime", text)
-        self.assertIn("--expected-commit 01b8a5c4ecfd79e69f0c98cef823d7fe79401d25", text)
+        self.assertIn("--selected /srv/scratch/db-bench-work/record-full-v1/selected-final-v4", text)
+        self.assertIn("--repo /srv/scratch/db-bench-work/record-final-continuous-runtime", text)
+        self.assertIn(
+            "--expected-admission-policy pre-io+pre/continuous/post-external-v3",
+            text,
+        )
+        self.assertIn(
+            "--expected-admission-policy pre-io+pre/post-external-v2 --expected-bench-sha256",
+            text,
+        )
         self.assertIn("--quality-only", text)
         self.assertIn("--run-prefix 20261010-kv-admission-v2-repair", text)
         self.assertIn(
@@ -38,15 +53,18 @@ class KvBaselineAdmissionRepairUnitTests(unittest.TestCase):
         self.assertIn("finalize-kv-baseline-admission-repairs.py", text)
         self.assertIn("OnSuccess=all-db-bench-concurrency-sizing.service", text)
 
-    def test_record_handoff_adds_repair_target(self) -> None:
+    def test_record_handoff_targets_continuous_confirmation(self) -> None:
         self.assertEqual(
             M.record_handoff_dropin(),
-            "[Unit]\nConditionPathExists=!/srv/scratch/db-bench-work/record-full-v1/ready.json\nOnSuccess=all-db-bench-kv-baseline-admission-repair.service\n",
+            "[Unit]\nConditionPathExists=!/srv/scratch/db-bench-work/record-full-v1/ready.json\nOnSuccess=all-db-bench-record-final-continuous.service\n",
         )
 
     def test_kv_gate_requires_verified_v5_completion(self) -> None:
         text = M.kv_v5_gate_dropin(Path("/srv/runtime"))
-        self.assertIn("ConditionPathExists=/srv/scratch/db-bench-work/kv-sizing-audit/selected-final-v5/complete.json", text)
+        self.assertIn(
+            "ConditionPathExists=/srv/scratch/db-bench-work/kv-sizing-audit/selected-final-v5/complete.json",
+            text,
+        )
         self.assertIn("/srv/runtime/scripts/check-kv-baseline-selection-ready.py", text)
         self.assertIn("--expected-rows 1046 --expected-groups 180 --expected-repairs 5", text)
 
