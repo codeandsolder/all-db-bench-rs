@@ -23,6 +23,7 @@ case "$PROFILE" in
     ;;
   *) echo "usage: $0 [smoke|quick|full]" >&2; exit 2 ;;
 esac
+CASE_MIN_FREE_GIB=${PERFORMANCE_MIN_FREE_GIB:-$MIN_FREE_GIB}
 
 ROOT=${ROOT:-"$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"}
 # shellcheck source=concurrency-matrix-policy.sh
@@ -125,7 +126,7 @@ json.dump({
  "relaxed_clients":"${RELAXED_CLIENTS[*]}","stress_clients":"${STRESS_CLIENTS[*]}","tx_clients":"${TX_CLIENTS[*]}",
  "stress_payload":$STRESS_PAYLOAD,"hot_records":$HOT_RECORDS,"resume_order_policy":"$RESUME_ORDER_POLICY",
  "build_profile":"$BUILD_PROFILE","benchmark_binary_sha256":"$BIN_SHA","rocks_build_profile":"$ROCKS_BUILD_PROFILE","surrealdb_rocksdb_binary_sha256":"$ROCKS_BIN_SHA",
- "runner_sha256":"$RUNNER_SHA","concurrency_policy_sha256":"$CONCURRENCY_POLICY_SHA","noise_guard_sha256":"$NOISE_SHA","admission_policy":"pre-io+pre/post-external-v2","case_timeout_s":$CASE_TIMEOUT_S,
+ "runner_sha256":"$RUNNER_SHA","concurrency_policy_sha256":"$CONCURRENCY_POLICY_SHA","noise_guard_sha256":"$NOISE_SHA","admission_policy":"pre-io+pre/post-external-v2","initial_min_free_gib":$MIN_FREE_GIB,"case_min_free_gib":"$CASE_MIN_FREE_GIB","case_timeout_s":$CASE_TIMEOUT_S,
  "hostname":"$HOST_NAME","machine_id_sha256":"$MACHINE_ID_SHA256","filesystem":"$FILESYSTEM","source":"$SOURCE",
  "total_work_semantics":"ops is total logical work across all clients; it is not multiplied by client count",
  "writer_semantics":"write-burst partitions whole transactions only; clients never receive a benchmark-manufactured partial transaction",

@@ -43,15 +43,29 @@ for supervisor in run-record-quick-idle.py run-record-sizing-followups.py run-kv
 done
 
 for common in performance-runner-common.sh concurrency-runner-common.sh; do
-  rg -q 'PERFORMANCE_MIN_FREE_GIB:-8' "$ROOT/scripts/$common" || {
-    echo "missing 8 GiB free-space admission floor in $common" >&2
+  rg -Fq '${CASE_MIN_FREE_GIB:-${PERFORMANCE_MIN_FREE_GIB:-${MIN_FREE_GIB:-8}}}' "$ROOT/scripts/$common" || {
+    echo "missing profile-aware free-space admission floor in $common" >&2
     exit 1
   }
 done
 
 for baseline in run-kv-matrix.sh run-record-matrix.sh; do
-  rg -q 'PERFORMANCE_MIN_FREE_GIB:-8' "$ROOT/scripts/$baseline" || {
-    echo "missing 8 GiB free-space admission floor in $baseline" >&2
+  rg -Fq 'CASE_MIN_FREE_GIB=${PERFORMANCE_MIN_FREE_GIB:-$MIN_FREE_GIB}' "$ROOT/scripts/$baseline" && \
+  rg -Fq 'min_gib=${CASE_MIN_FREE_GIB}' "$ROOT/scripts/$baseline" || {
+    echo "missing profile-aware free-space admission floor in $baseline" >&2
+    exit 1
+  }
+done
+
+for runner in \
+  run-kv-matrix.sh run-record-matrix.sh \
+  run-kv-concurrency-matrix.sh run-kv-concurrency-plan.sh \
+  run-record-concurrency-matrix.sh run-record-concurrency-plan.sh \
+  run-kv-sustained-matrix.sh run-record-sustained-matrix.sh run-reopen-matrix.sh
+do
+  rg -q '"initial_min_free_gib"' "$ROOT/scripts/$runner" && \
+  rg -q '"case_min_free_gib"' "$ROOT/scripts/$runner" || {
+    echo "missing free-space provenance in $runner" >&2
     exit 1
   }
 done

@@ -5,6 +5,8 @@ PLAN=${1:?usage: run-kv-concurrency-plan.sh PLAN.json [RUN_ID]}
 RUN_ID=${2:-"$(date -u +%Y%m%dT%H%M%SZ)-kv-concurrency-probe"}
 ROOT=${ROOT:-"$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"}
 PROFILE=quick
+MIN_FREE_GIB=10
+CASE_MIN_FREE_GIB=${PERFORMANCE_MIN_FREE_GIB:-$MIN_FREE_GIB}
 # shellcheck source=concurrency-matrix-policy.sh
 source "$ROOT/scripts/concurrency-matrix-policy.sh"
 # shellcheck source=concurrency-runner-common.sh
@@ -22,7 +24,7 @@ RUN_DIR="$ROOT/results/runs/$RUN_ID"
 DATA_DIR="$ROOT/data/runs/$RUN_ID"
 mkdir -p "$RUN_DIR"/{cases,stderr,noise} "$DATA_DIR"
 free_bytes=$(df -B1 --output=avail "$DATA_DIR" | tail -n1 | tr -d ' ')
-min_free_bytes=$((10 * 1024 * 1024 * 1024))
+min_free_bytes=$((MIN_FREE_GIB * 1024 * 1024 * 1024))
 (( free_bytes >= min_free_bytes )) || { echo "refusing concurrency plan: free=$free_bytes required=$min_free_bytes" >&2; exit 75; }
 [[ -s "$RUN_DIR/host-start.txt" ]] || "$ROOT/scripts/capture-host-metadata.sh" "$RUN_DIR/host-start.txt" "$ROOT"
 
@@ -93,7 +95,7 @@ json.dump({
  "lane":"$SUPPORT_LANE","profile":"quick","case_count":$TOTAL,"trials":$EXPECT_TRIALS,"expect_trials":$EXPECT_TRIALS,"plan_version":$PLAN_VERSION,"plan_kind":"$PLAN_KIND",
  "clients":"1 2 4 8","range_clients":"1 4 8","delete_clients":"1 4 8","relaxed_clients":"1 4 8",
  "plan_path":"$PLAN","plan_sha256":"$PLAN_SHA","build_profile":"$BUILD_PROFILE","benchmark_binary_sha256":"$BIN_SHA","benchmark_source_commit":"$BENCH_SOURCE_COMMIT","harness_commit":"$HARNESS_COMMIT",
- "runner_sha256":"$RUNNER_SHA","concurrency_policy_sha256":"$CONCURRENCY_POLICY_SHA","noise_guard_sha256":"$NOISE_SHA","admission_policy":"pre-io+pre/post-external-v2",
+ "runner_sha256":"$RUNNER_SHA","concurrency_policy_sha256":"$CONCURRENCY_POLICY_SHA","noise_guard_sha256":"$NOISE_SHA","admission_policy":"pre-io+pre/post-external-v2","initial_min_free_gib":$MIN_FREE_GIB,"case_min_free_gib":"$CASE_MIN_FREE_GIB",
  "case_timeout_s":$CASE_TIMEOUT_S,"persy_lock_timeout_ms":$PERSY_LOCK_TIMEOUT_MS,
  "prepared_db_protocol":"$PREPARED_DB_PROTOCOL",
  "hostname":"$HOST_NAME","machine_id_sha256":"$MACHINE_ID_SHA256","filesystem":"$FILESYSTEM","source":"$SOURCE",

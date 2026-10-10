@@ -20,6 +20,7 @@ case "$PROFILE" in
     ;;
   *) echo "usage: $0 [smoke|quick|full]" >&2; exit 2 ;;
 esac
+CASE_MIN_FREE_GIB=${PERFORMANCE_MIN_FREE_GIB:-$MIN_FREE_GIB}
 
 ROOT=${ROOT:-"$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"}
 # shellcheck source=kv-matrix-policy.sh
@@ -110,7 +111,7 @@ json.dump({
  "range_clients":"${RANGE_CLIENTS[*]}","delete_clients":"${DELETE_CLIENTS[*]}","relaxed_clients":"${RELAXED_CLIENTS[*]}",
  "resume_order_policy":"$RESUME_ORDER_POLICY","build_profile":"$BUILD_PROFILE","benchmark_binary_sha256":"$BIN_SHA",
  "runner_sha256":"$RUNNER_SHA","kv_matrix_policy_sha256":"$KV_POLICY_SHA","concurrency_policy_sha256":"$CONCURRENCY_POLICY_SHA",
- "noise_guard_sha256":"$NOISE_SHA","admission_policy":"pre-io+pre/post-external-v2",
+ "noise_guard_sha256":"$NOISE_SHA","admission_policy":"pre-io+pre/post-external-v2","initial_min_free_gib":$MIN_FREE_GIB,"case_min_free_gib":"$CASE_MIN_FREE_GIB",
  "case_timeout_s":$CASE_TIMEOUT_S,"persy_lock_timeout_ms":$PERSY_LOCK_TIMEOUT_MS,
  "state_evolution":"growth","write_pattern":"append",
  "persy_timeout_retry_policy":"typed PrepareError::TransactionTimeout only; max 100 retries; deterministic micro-backoff; retry cost is timed",

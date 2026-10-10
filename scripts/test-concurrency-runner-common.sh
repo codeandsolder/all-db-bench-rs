@@ -21,5 +21,15 @@ allow_busy_low_space_rc=$?
 set -e
 [[ $low_space_rc -eq 75 ]]
 [[ $allow_busy_low_space_rc -eq 75 ]]
+CASE_MIN_FREE_GIB=1000000
+set +e
+concurrency_check_io_quiet quick profile-floor >/dev/null 2>&1
+profile_floor_rc=$?
+PERFORMANCE_MIN_FREE_GIB=0 CASE_MIN_FREE_GIB=0 concurrency_check_io_quiet quick explicit-override >/dev/null 2>&1
+explicit_override_rc=$?
+set -e
+[[ $profile_floor_rc -eq 75 ]]
+[[ $explicit_override_rc -ne 75 ]]
+unset CASE_MIN_FREE_GIB
 PERFORMANCE_MIN_FREE_GIB=1000000 concurrency_check_io_quiet smoke smoke-bypass
 echo concurrency-runner-common-ok

@@ -5,6 +5,8 @@ PLAN=${1:?usage: run-record-concurrency-plan.sh PLAN.json [RUN_ID]}
 RUN_ID=${2:-"$(date -u +%Y%m%dT%H%M%SZ)-record-concurrency-plan"}
 ROOT=${ROOT:-"$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"}
 PROFILE=quick
+MIN_FREE_GIB=10
+CASE_MIN_FREE_GIB=${PERFORMANCE_MIN_FREE_GIB:-$MIN_FREE_GIB}
 # shellcheck source=concurrency-matrix-policy.sh
 source "$ROOT/scripts/concurrency-matrix-policy.sh"
 # shellcheck source=concurrency-runner-common.sh
@@ -21,7 +23,7 @@ RUN_DIR="$ROOT/results/runs/$RUN_ID"
 DATA_DIR="$ROOT/data/runs/$RUN_ID"
 mkdir -p "$RUN_DIR"/{cases,stderr,noise} "$DATA_DIR"
 free_bytes=$(df -B1 --output=avail "$DATA_DIR" | tail -n1 | tr -d ' ')
-min_free_bytes=$((10 * 1024 * 1024 * 1024))
+min_free_bytes=$((MIN_FREE_GIB * 1024 * 1024 * 1024))
 (( free_bytes >= min_free_bytes )) || { echo "refusing record concurrency plan: free=$free_bytes required=$min_free_bytes" >&2; exit 75; }
 "$ROOT/scripts/ensure-sqlite-3.53.4.sh" >/dev/null
 [[ -s "$RUN_DIR/host-start.txt" ]] || "$ROOT/scripts/capture-host-metadata.sh" "$RUN_DIR/host-start.txt" "$ROOT"
@@ -105,7 +107,7 @@ json.dump({
  "rocks_build_profile":"$ROCKS_BUILD_PROFILE","surrealdb_rocksdb_binary_sha256":"$ROCKS_BIN_SHA",
  "surrealdb_rocksdb_source_commit":"$ROCKS_BENCH_SOURCE_COMMIT","harness_commit":"$HARNESS_COMMIT",
  "runner_sha256":"$RUNNER_SHA","concurrency_policy_sha256":"$POLICY_SHA","noise_guard_sha256":"$NOISE_SHA",
- "admission_policy":"pre-io+pre/post-external-v2","case_timeout_s":$CASE_TIMEOUT_S,
+ "admission_policy":"pre-io+pre/post-external-v2","initial_min_free_gib":$MIN_FREE_GIB,"case_min_free_gib":"$CASE_MIN_FREE_GIB","case_timeout_s":$CASE_TIMEOUT_S,
  "hostname":"$HOST_NAME","machine_id_sha256":"$MACHINE_ID_SHA256","filesystem":"$FILESYSTEM","source":"$SOURCE",
  "total_work_semantics":"each plan family keeps identical records and total ops across client counts",
  "state_evolution_semantics":"bounded tiny/write updates the prefilled record universe; growth preserves append diagnostics",

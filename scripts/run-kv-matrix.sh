@@ -8,6 +8,7 @@ case "$PROFILE" in
   full)  RECORDS=1000000; OPS=250000; TRIALS=7; MIN_FREE_GIB=30 ;;
   *) echo "usage: $0 [smoke|quick|full]" >&2; exit 2 ;;
 esac
+CASE_MIN_FREE_GIB=${PERFORMANCE_MIN_FREE_GIB:-$MIN_FREE_GIB}
 TRIALS=${KV_TRIALS_OVERRIDE:-$TRIALS}
 RECORDS=${KV_RECORDS_OVERRIDE:-$RECORDS}
 OPS=${KV_OPS_OVERRIDE:-$OPS}
@@ -70,7 +71,7 @@ if [[ "${MATRIX_RESUME_SHUFFLE_REMAINING:-0}" == 1 ]]; then RESUME_ORDER_POLICY=
 
 check_free_space() {
   [[ "$PROFILE" == smoke ]] && return 0
-  local phase=$1 min_gib=${PERFORMANCE_MIN_FREE_GIB:-8} free_kib min_kib
+  local phase=$1 min_gib=${CASE_MIN_FREE_GIB} free_kib min_kib
   free_kib=$(df -Pk -- "$DATA_DIR" | awk 'NR==2 {print $4}') || return 2
   min_kib=$(awk -v g="$min_gib" 'BEGIN { if (g < 0) exit 2; printf "%.0f", g * 1024 * 1024 }') || return 2
   if (( free_kib < min_kib )); then
@@ -132,7 +133,7 @@ json.dump({
   "imported_cases_manifest_sha256":"$IMPORTED_CASES_MANIFEST_SHA",
   "engines":"${ENGINES[*]}", "workloads":"${WORKLOADS[*]}", "durabilities":"${DURABILITIES[*]}",
   "resume_order_policy":"$RESUME_ORDER_POLICY", "build_profile":"$BUILD_PROFILE",
-  "benchmark_binary_sha256":"$BIN_SHA", "runner_sha256":"$RUNNER_SHA", "kv_matrix_policy_sha256":"$POLICY_SHA", "noise_guard_sha256":"$NOISE_SHA", "admission_policy":"pre-io+pre/post-external-v2",
+  "benchmark_binary_sha256":"$BIN_SHA", "runner_sha256":"$RUNNER_SHA", "kv_matrix_policy_sha256":"$POLICY_SHA", "noise_guard_sha256":"$NOISE_SHA", "admission_policy":"pre-io+pre/post-external-v2","initial_min_free_gib":$MIN_FREE_GIB,"case_min_free_gib":"$CASE_MIN_FREE_GIB",
   "hostname":"$HOST_NAME", "machine_id_sha256":"$MACHINE_ID_SHA256", "filesystem":"$FILESYSTEM", "source":"$SOURCE"
 }, open(sys.argv[1], "w"), sort_keys=True, separators=(",",":"))
 PY_SUPPORT

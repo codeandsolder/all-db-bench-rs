@@ -8,6 +8,7 @@ case "$PROFILE" in
   full) TRIALS=7; RECORDS=1000000; OPS=25000; MIN_FREE_GIB=30 ;;
   *) echo "usage: $0 [smoke|quick|full] [warm|cold]" >&2; exit 2 ;;
 esac
+CASE_MIN_FREE_GIB=${PERFORMANCE_MIN_FREE_GIB:-$MIN_FREE_GIB}
 case "$CACHE" in
   warm) ;;
   cold)
@@ -81,7 +82,7 @@ EXPECTED=$((50 * TRIALS))
 RESUME_ORDER_POLICY=fixed-initial; [[ "${MATRIX_RESUME_SHUFFLE_REMAINING:-0}" == 1 ]] && RESUME_ORDER_POLICY=reshuffle-remaining
 SUPPORT_NEW="$RUN_DIR/support.json.new"
 cat > "$SUPPORT_NEW" <<JSON
-{"lane":"kv-reopen","profile":"$PROFILE","cache_mode":"$CACHE","trials":$TRIALS,"records":$RECORDS,"default_ops":$OPS,"case_count":$TOTAL,"build_profile":"$BUILD_PROFILE","benchmark_binary_sha256":"$BIN_SHA","runner_sha256":"$RUNNER_SHA","kv_matrix_policy_sha256":"$KV_POLICY_SHA","performance_common_sha256":"$COMMON_SHA","noise_guard_sha256":"$NOISE_SHA","admission_policy":"pre-io+pre/post-external-v2","resume_order_policy":"$RESUME_ORDER_POLICY","hostname":"$HOST_NAME","machine_id_sha256":"$MACHINE_ID_SHA256","filesystem":"$FILESYSTEM","source":"$SOURCE","open_pressure_evidence":"format v7 open_process + open_system_delta retained as diagnostic evidence; never used for acceptance","prepare_semantics":"fresh prefill with one discarded read; measured process reopens same DB with prefill and warmup skipped","cold_cache_semantics":"root-only global sync + drop_caches; never simulated"}
+{"lane":"kv-reopen","profile":"$PROFILE","cache_mode":"$CACHE","trials":$TRIALS,"records":$RECORDS,"default_ops":$OPS,"case_count":$TOTAL,"build_profile":"$BUILD_PROFILE","benchmark_binary_sha256":"$BIN_SHA","runner_sha256":"$RUNNER_SHA","kv_matrix_policy_sha256":"$KV_POLICY_SHA","performance_common_sha256":"$COMMON_SHA","noise_guard_sha256":"$NOISE_SHA","admission_policy":"pre-io+pre/post-external-v2","initial_min_free_gib":$MIN_FREE_GIB,"case_min_free_gib":"$CASE_MIN_FREE_GIB","resume_order_policy":"$RESUME_ORDER_POLICY","hostname":"$HOST_NAME","machine_id_sha256":"$MACHINE_ID_SHA256","filesystem":"$FILESYSTEM","source":"$SOURCE","open_pressure_evidence":"format v7 open_process + open_system_delta retained as diagnostic evidence; never used for acceptance","prepare_semantics":"fresh prefill with one discarded read; measured process reopens same DB with prefill and warmup skipped","cold_cache_semantics":"root-only global sync + drop_caches; never simulated"}
 JSON
 EXISTING_CASES=$(find "$RUN_DIR/cases" -type f -name '*.json' | wc -l)
 if [[ -s "$RUN_DIR/support.json" ]]; then

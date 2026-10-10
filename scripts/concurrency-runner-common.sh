@@ -3,7 +3,7 @@
 concurrency_check_free_space() {
   local profile=$1 phase=$2 path=${3:-${PERFORMANCE_FREE_SPACE_PATH:-${DATA_DIR:-$PWD}}}
   [[ "$profile" == smoke ]] && return 0
-  local min_gib=${PERFORMANCE_MIN_FREE_GIB:-8} free_kib min_kib
+  local min_gib=${CASE_MIN_FREE_GIB:-${PERFORMANCE_MIN_FREE_GIB:-${MIN_FREE_GIB:-8}}} free_kib min_kib
   free_kib=$(df -Pk -- "$path" | awk 'NR==2 {print $4}') || return 2
   min_kib=$(awk -v g="$min_gib" 'BEGIN { if (g < 0) exit 2; printf "%.0f", g * 1024 * 1024 }') || return 2
   if (( free_kib < min_kib )); then
