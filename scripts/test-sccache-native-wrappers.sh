@@ -2,6 +2,15 @@
 set -euo pipefail
 
 ROOT=$(cd -- "$(dirname -- "$0")/.." && pwd)
+
+# Keep the managed-server/client split reproducible in Git.
+grep -Fx 'Environment=SCCACHE_SERVER_PORT=4237' "$ROOT/scripts/sccache-native-root.service"
+grep -Fx 'Environment=SCCACHE_START_SERVER=1' "$ROOT/scripts/sccache-native-root.service"
+grep -Fx 'Environment=SCCACHE_NO_DAEMON=1' "$ROOT/scripts/sccache-native-root.service"
+grep -Fx 'Environment=SCCACHE_IDLE_TIMEOUT=0' "$ROOT/scripts/sccache-native-root.service"
+grep -Fx 'Restart=on-failure' "$ROOT/scripts/sccache-native-root.service"
+grep -Fx 'basedirs = ["/srv/scratch", "/home/jan"]' "$ROOT/scripts/sccache-native-local.conf"
+! grep -q '^\[dist\]' "$ROOT/scripts/sccache-native-local.conf"
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
