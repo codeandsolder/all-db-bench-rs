@@ -45,8 +45,12 @@ def support_provenance(s:dict[str,Any],rid:str,binsha:str)->dict[str,Any]:
     for key in ("runner_sha256","kv_matrix_policy_sha256","performance_common_sha256","continuous_noise_common_sha256","noise_guard_sha256","continuous_noise_guard_sha256","machine_id_sha256"):
         if not HEX64.fullmatch(str(out[key])): raise ValueError(f"malformed {key}: {rid}")
     if out["build_profile"]!="external": raise ValueError(f"unexpected build profile: {rid}")
-    for key in ("continuous_noise_sample_ms","continuous_noise_max_cpu_percent","continuous_noise_max_io_average_mib_s","continuous_noise_max_io_rate_mib_s","initial_min_free_gib","case_min_free_gib"):
-        if float(out[key]) <= 0: raise ValueError(f"non-positive {key}: {rid}")
+    numeric={key:float(out[key]) for key in ("continuous_noise_sample_ms","continuous_noise_max_cpu_percent","continuous_noise_max_io_average_mib_s","continuous_noise_max_io_rate_mib_s","initial_min_free_gib","case_min_free_gib")}
+    expected={"continuous_noise_sample_ms":250.0,"continuous_noise_max_cpu_percent":50.0,"continuous_noise_max_io_average_mib_s":2.0,"continuous_noise_max_io_rate_mib_s":8.0}
+    for key,value in expected.items():
+        if numeric[key] != value: raise ValueError(f"unexpected {key}: {rid}: {numeric[key]} != {value}")
+    if numeric["initial_min_free_gib"] < 10 or numeric["case_min_free_gib"] < 10:
+        raise ValueError(f"KV v6 free-space floor below 10 GiB: {rid}")
     return out
 
 def finalize(source:Path,auditp:Path,planp:Path,repo:Path,prefix:str,out:Path,binsha:str)->dict[str,Any]:

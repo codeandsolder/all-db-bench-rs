@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, TextIO
 
 from idle_supervisor_common import storage_preflight, write_status as supervisor_write_status
+from performance_support_provenance import support_identity, verify_binary_manifest
 
 DEFAULT_LOCK = Path("/run/lock/all-db-bench-performance.lock")
 DEFAULT_STATUS = Path("/srv/scratch/db-bench-work/reopen-quick/idle-status.json")
@@ -83,6 +84,13 @@ def preflight_host(repo: Path, *, max_io_full_avg10: float = 5.0) -> int:
 
 def load_and_verify_binary(path: Path) -> dict[str, Any]:
     data = json.loads(path.read_text())
+    source_commit = data.get("repo_commit")
+    if (
+        not isinstance(source_commit, str)
+        or len(source_commit) != 40
+        or any(ch not in "0123456789abcdef" for ch in source_commit)
+    ):
+        raise RuntimeError("reopen binary manifest has invalid repo_commit")
     item = data["kv"]
     binary = Path(item["path"])
     if not binary.is_file() or not os.access(binary, os.X_OK):
@@ -93,7 +101,25 @@ def load_and_verify_binary(path: Path) -> dict[str, Any]:
     return data
 
 
-def run_complete(repo: Path, run_id: str) -> bool:
+def support_matches_runtime(repo: Path, support_path: Path, manifest: dict[str, Any]) -> bool:
+    try:
+        support = json.loads(support_path.read_text())
+        identity = support_identity(
+            support,
+            expected_lane="kv-reopen",
+            repo=repo,
+            runner_name="run-reopen-matrix.sh",
+            min_free_gib=10,
+            expected_cache_mode="warm",
+            label=str(support_path),
+        )
+        verify_binary_manifest(identity, manifest)
+    except (OSError, ValueError, json.JSONDecodeError, subprocess.CalledProcessError):
+        return False
+    return True
+
+
+def run_complete(repo: Path, run_id: str, manifest: dict[str, Any] | None = None) -> bool:
     run_dir = repo / "results" / "runs" / run_id
     summary_path = run_dir / "summary.json"
     support_path = run_dir / "support.json"
@@ -109,6 +135,8 @@ def run_complete(repo: Path, run_id: str) -> bool:
     trials = int(support.get("trials", 0))
     case_count = sum(1 for case in cases_dir.glob("*.json") if case.is_file())
     failures = run_dir / "failures.ndjson"
+    if manifest is not None and not support_matches_runtime(repo, support_path, manifest):
+        return False
     return (
         expected > 0
         and trials > 0
@@ -130,6 +158,7 @@ def stage_env(repo: Path, manifest: dict[str, Any]) -> dict[str, str]:
         "MATRIX_RESUME_SHUFFLE_REMAINING": "1",
         "BENCH_BIN": item["path"],
         "BENCH_BIN_SHA256": item["sha256"],
+        "BENCH_SOURCE_COMMIT": manifest["repo_commit"],
     })
     return env
 
@@ -155,7 +184,7 @@ def main() -> int:
             print(error, flush=True)
             return 2
         print(f"pinned reopen binary verified at source commit {manifest.get('repo_commit')}", flush=True)
-        if run_complete(args.repo, RUN_ID):
+        if run_complete(args.repo, RUN_ID, manifest):
             write_status(args.status_file, state="complete", run_id=RUN_ID)
             return 0
         busy_events = 0
@@ -175,7 +204,7 @@ def main() -> int:
             write_status(args.status_file, state="running", run_id=RUN_ID, busy_events=busy_events)
             proc = subprocess.run([str(runner), "quick", "warm"], cwd=args.repo, env=stage_env(args.repo, manifest), check=False)
             if proc.returncode == 0:
-                if not run_complete(args.repo, RUN_ID):
+                if not run_complete(args.repo, RUN_ID, manifest):
                     write_status(args.status_file, state="failed", run_id=RUN_ID, error="runner returned success but final validation failed")
                     return 2
                 write_status(args.status_file, state="complete", run_id=RUN_ID, busy_events=busy_events)

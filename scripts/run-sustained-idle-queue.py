@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, TextIO
 
 from idle_supervisor_common import storage_preflight, write_status as supervisor_write_status
+from performance_support_provenance import support_identity, verify_binary_manifest
 
 DEFAULT_LOCK = Path("/run/lock/all-db-bench-performance.lock")
 DEFAULT_STATUS = Path("/srv/scratch/db-bench-work/sustained-quick/idle-status.json")
@@ -84,6 +85,16 @@ def preflight_host(repo: Path, *, max_io_full_avg10: float = 5.0) -> int:
 
 def load_and_verify_binaries(path: Path) -> dict[str, Any]:
     data = json.loads(path.read_text())
+    sources = data.get("source_commits")
+    if not isinstance(sources, dict) or any(
+        not isinstance(sources.get(key), str)
+        or len(sources[key]) != 40
+        or any(ch not in "0123456789abcdef" for ch in sources[key])
+        for key in ("kv", "record", "record_rocksdb")
+    ):
+        raise RuntimeError("sustained binary manifest has invalid source_commits")
+    if data.get("read_materialization") != "full-record-v1" or data.get("write_materialization") != "no-return-v1":
+        raise RuntimeError("sustained binary manifest has wrong record materialization identity")
     for key in ("kv", "record", "record_rocksdb"):
         item = data[key]
         binary = Path(item["path"])
@@ -95,7 +106,26 @@ def load_and_verify_binaries(path: Path) -> dict[str, Any]:
     return data
 
 
-def run_complete(repo: Path, run_id: str) -> bool:
+def support_matches_runtime(repo: Path, support_path: Path, manifest: dict[str, Any], lane: str) -> bool:
+    expected_lane = "kv-sustained" if lane == "kv" else "record-sustained"
+    runner = "run-kv-sustained-matrix.sh" if lane == "kv" else "run-record-sustained-matrix.sh"
+    try:
+        support = json.loads(support_path.read_text())
+        identity = support_identity(
+            support,
+            expected_lane=expected_lane,
+            repo=repo,
+            runner_name=runner,
+            min_free_gib=20,
+            label=str(support_path),
+        )
+        verify_binary_manifest(identity, manifest)
+    except (OSError, ValueError, json.JSONDecodeError, subprocess.CalledProcessError):
+        return False
+    return True
+
+
+def run_complete(repo: Path, run_id: str, manifest: dict[str, Any] | None = None, lane: str | None = None) -> bool:
     run_dir = repo / "results" / "runs" / run_id
     summary_path = run_dir / "summary.json"
     support_path = run_dir / "support.json"
@@ -111,11 +141,15 @@ def run_complete(repo: Path, run_id: str) -> bool:
     trials = int(support.get("trials", 0))
     case_count = sum(1 for case in cases_dir.glob("*.json") if case.is_file())
     failures = run_dir / "failures.ndjson"
+    if manifest is not None:
+        if lane not in {"kv", "record"} or not support_matches_runtime(repo, support_path, manifest, lane):
+            return False
     return (
         expected_rows > 0
         and trials > 0
         and expected_rows % trials == 0
         and case_count == expected_rows
+        and summary.get("row_count") == expected_rows
         and summary.get("group_count") == expected_rows // trials
         and not summary.get("problems")
         and (not failures.exists() or failures.stat().st_size == 0)
@@ -132,12 +166,14 @@ def stage_env(repo: Path, binaries: dict[str, Any], *, lane: str, run_id: str) -
             "MATRIX_RESUME_SHUFFLE_REMAINING": "1",
             "BENCH_BIN": item["path"],
             "BENCH_BIN_SHA256": item["sha256"],
+            "BENCH_SOURCE_COMMIT": binaries["source_commits"][lane],
         }
     )
     if lane == "record":
         rocks = binaries["record_rocksdb"]
         env["BENCH_ROCKS_BIN"] = rocks["path"]
         env["BENCH_ROCKS_BIN_SHA256"] = rocks["sha256"]
+        env["ROCKS_BENCH_SOURCE_COMMIT"] = binaries["source_commits"]["record_rocksdb"]
     return env
 
 
@@ -150,7 +186,7 @@ def run_stage(
     status_file: Path,
     busy_sleep: float,
 ) -> int:
-    if run_complete(repo, run_id):
+    if run_complete(repo, run_id, binaries, lane):
         print(f"skip complete sustained stage: {run_id}", flush=True)
         return 0
     runner = repo / "scripts" / ("run-kv-sustained-matrix.sh" if lane == "kv" else "run-record-sustained-matrix.sh")
@@ -176,7 +212,7 @@ def run_stage(
             check=False,
         )
         if proc.returncode == 0:
-            if not run_complete(repo, run_id):
+            if not run_complete(repo, run_id, binaries, lane):
                 write_status(status_file, state="failed", lane=lane, run_id=run_id, error="runner returned success but final validation failed")
                 return 2
             write_status(status_file, state="stage-complete", lane=lane, run_id=run_id, busy_events=busy_events)

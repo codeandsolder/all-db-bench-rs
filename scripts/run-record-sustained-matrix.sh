@@ -48,17 +48,32 @@ else
   CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" build --release --locked --features record --bin recordsustained || exit $?
 fi
 if [[ -n "${BENCH_ROCKS_BIN:-}" ]]; then
-  ROCKS_BIN="$BENCH_ROCKS_BIN"
+  ROCKS_BIN="$BENCH_ROCKS_BIN"; ROCKS_BUILD_PROFILE=external
   [[ -x "$ROCKS_BIN" ]] || { echo "BENCH_ROCKS_BIN is not executable: $ROCKS_BIN" >&2; exit 2; }
 elif [[ "$PROFILE" == smoke ]]; then
-  ROCKS_BIN="$ROCKS_TARGET_DIR/debug/surrealdb-rocksdb-recordsustained"
+  ROCKS_BIN="$ROCKS_TARGET_DIR/debug/surrealdb-rocksdb-recordsustained"; ROCKS_BUILD_PROFILE=debug
   CARGO_TARGET_DIR="$ROCKS_TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" build --locked --manifest-path "$ROCKS_MANIFEST" --bin surrealdb-rocksdb-recordsustained || exit $?
 else
-  ROCKS_BIN="$ROCKS_TARGET_DIR/release/surrealdb-rocksdb-recordsustained"
+  ROCKS_BIN="$ROCKS_TARGET_DIR/release/surrealdb-rocksdb-recordsustained"; ROCKS_BUILD_PROFILE=release
   CARGO_TARGET_DIR="$ROCKS_TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" build --release --locked --manifest-path "$ROCKS_MANIFEST" --bin surrealdb-rocksdb-recordsustained || exit $?
 fi
 if [[ -n "${BENCH_BIN_SHA256:-}" ]]; then BIN_SHA="$BENCH_BIN_SHA256"; else BIN_SHA=$(sha256sum "$BIN" | awk '{print $1}'); fi
 if [[ -n "${BENCH_ROCKS_BIN_SHA256:-}" ]]; then ROCKS_BIN_SHA="$BENCH_ROCKS_BIN_SHA256"; else ROCKS_BIN_SHA=$(sha256sum "$ROCKS_BIN" | awk '{print $1}'); fi
+HARNESS_COMMIT=$(git -C "$ROOT" rev-parse HEAD)
+if [[ "$BUILD_PROFILE" == external ]]; then
+  BENCH_SOURCE_COMMIT=${BENCH_SOURCE_COMMIT:-}
+else
+  BENCH_SOURCE_COMMIT=${BENCH_SOURCE_COMMIT:-$HARNESS_COMMIT}
+fi
+if [[ "$ROCKS_BUILD_PROFILE" == external ]]; then
+  ROCKS_BENCH_SOURCE_COMMIT=${ROCKS_BENCH_SOURCE_COMMIT:-}
+else
+  ROCKS_BENCH_SOURCE_COMMIT=${ROCKS_BENCH_SOURCE_COMMIT:-$HARNESS_COMMIT}
+fi
+[[ "$BENCH_SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo "invalid or missing BENCH_SOURCE_COMMIT=$BENCH_SOURCE_COMMIT" >&2; exit 2; }
+[[ "$ROCKS_BENCH_SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo "invalid or missing ROCKS_BENCH_SOURCE_COMMIT=$ROCKS_BENCH_SOURCE_COMMIT" >&2; exit 2; }
+READ_MATERIALIZATION=full-record-v1
+WRITE_MATERIALIZATION=no-return-v1
 RUNNER_SHA=$(sha256sum "$ROOT/scripts/run-record-sustained-matrix.sh" | awk '{print $1}')
 POLICY_SHA=$(sha256sum "$ROOT/scripts/sustained-matrix-policy.sh" | awk '{print $1}')
 COMMON_SHA=$(sha256sum "$ROOT/scripts/performance-runner-common.sh" | awk '{print $1}')
@@ -94,7 +109,7 @@ EXPECTED=$(record_sustained_expected_cases "$PROFILE") || exit 2
 RESUME_ORDER_POLICY=fixed-initial; [[ "${MATRIX_RESUME_SHUFFLE_REMAINING:-0}" == 1 ]] && RESUME_ORDER_POLICY=reshuffle-remaining
 SUPPORT_NEW="$RUN_DIR/support.json.new"
 cat > "$SUPPORT_NEW" <<JSON
-{"lane":"record-sustained","profile":"$PROFILE","trials":$TRIALS,"case_count":$TOTAL,"build_profile":"$BUILD_PROFILE","benchmark_binary_sha256":"$BIN_SHA","rocksdb_benchmark_binary_sha256":"$ROCKS_BIN_SHA","runner_sha256":"$RUNNER_SHA","sustained_policy_sha256":"$POLICY_SHA","performance_common_sha256":"$COMMON_SHA","continuous_noise_common_sha256":"$CONTINUOUS_NOISE_COMMON_SHA","noise_guard_sha256":"$NOISE_SHA","continuous_noise_guard_sha256":"$CONTINUOUS_NOISE_SHA","admission_policy":"$PERFORMANCE_ADMISSION_POLICY","continuous_noise_sample_ms":$CONTINUOUS_NOISE_SAMPLE_MS,"continuous_noise_max_cpu_percent":$CONTINUOUS_NOISE_MAX_CPU_PERCENT,"continuous_noise_max_io_average_mib_s":$CONTINUOUS_NOISE_MAX_IO_AVERAGE_MIB_S,"continuous_noise_max_io_rate_mib_s":$CONTINUOUS_NOISE_MAX_IO_RATE_MIB_S,"initial_min_free_gib":$MIN_FREE_GIB,"case_min_free_gib":"$CASE_MIN_FREE_GIB","resume_order_policy":"$RESUME_ORDER_POLICY","hostname":"$HOST_NAME","machine_id_sha256":"$MACHINE_ID_SHA256","filesystem":"$FILESYSTEM","source":"$SOURCE","engines":"${ENGINES[*]}","core":{"records":$CORE_RECORDS,"ops":$CORE_OPS,"window_ops":$CORE_WINDOW,"payload_bytes":$CORE_PAYLOAD},"stress":{"records":$STRESS_RECORDS,"ops":$STRESS_OPS,"window_ops":$STRESS_WINDOW,"payload_bytes":$STRESS_PAYLOAD},"relaxed":{"records":$RELAXED_RECORDS,"ops":$RELAXED_OPS,"window_ops":$RELAXED_WINDOW,"payload_bytes":$RELAXED_PAYLOAD},"txn1":{"records":$TX1_RECORDS,"ops":$TX1_OPS,"window_ops":$TX1_WINDOW,"payload_bytes":$TX1_PAYLOAD},"txn1000":{"records":$TX1000_RECORDS,"ops":$TX1000_OPS,"window_ops":$TX1000_WINDOW,"payload_bytes":$TX1000_PAYLOAD},"window_method":"fixed logical-op windows; no recursive database-size scan between windows","churn_transaction_semantics":"40/30/30 update/insert/delete operations are shuffled and committed as one mixed transaction per batch","logical_mutated_bytes":"estimated logical record bytes: id(8)+bucket(4)+payload for upsert; id(8) for delete","threshold_interpretation":"75/50/25% baseline ratios are reporting diagnostics, not pass/fail criteria","baseline_method":"median throughput and p99 latency of the first min(3, window_count) windows","targeted_sweeps":["4KiB payload stress","relaxed durability","txn-size extremes 1 and 1000"],"backend_coverage":"SurrealDB/SurrealKV, SurrealDB/RocksDB, Turso, SQLite","post_workload_settle_ms":$SETTLE_MS}
+{"lane":"record-sustained","profile":"$PROFILE","trials":$TRIALS,"case_count":$TOTAL,"build_profile":"$BUILD_PROFILE","benchmark_binary_sha256":"$BIN_SHA","benchmark_source_commit":"$BENCH_SOURCE_COMMIT","rocks_build_profile":"$ROCKS_BUILD_PROFILE","rocksdb_benchmark_binary_sha256":"$ROCKS_BIN_SHA","surrealdb_rocksdb_source_commit":"$ROCKS_BENCH_SOURCE_COMMIT","harness_commit":"$HARNESS_COMMIT","read_materialization":"$READ_MATERIALIZATION","write_materialization":"$WRITE_MATERIALIZATION","runner_sha256":"$RUNNER_SHA","sustained_policy_sha256":"$POLICY_SHA","performance_common_sha256":"$COMMON_SHA","continuous_noise_common_sha256":"$CONTINUOUS_NOISE_COMMON_SHA","noise_guard_sha256":"$NOISE_SHA","continuous_noise_guard_sha256":"$CONTINUOUS_NOISE_SHA","admission_policy":"$PERFORMANCE_ADMISSION_POLICY","continuous_noise_sample_ms":$CONTINUOUS_NOISE_SAMPLE_MS,"continuous_noise_max_cpu_percent":$CONTINUOUS_NOISE_MAX_CPU_PERCENT,"continuous_noise_max_io_average_mib_s":$CONTINUOUS_NOISE_MAX_IO_AVERAGE_MIB_S,"continuous_noise_max_io_rate_mib_s":$CONTINUOUS_NOISE_MAX_IO_RATE_MIB_S,"initial_min_free_gib":$MIN_FREE_GIB,"case_min_free_gib":"$CASE_MIN_FREE_GIB","resume_order_policy":"$RESUME_ORDER_POLICY","hostname":"$HOST_NAME","machine_id_sha256":"$MACHINE_ID_SHA256","filesystem":"$FILESYSTEM","source":"$SOURCE","engines":"${ENGINES[*]}","core":{"records":$CORE_RECORDS,"ops":$CORE_OPS,"window_ops":$CORE_WINDOW,"payload_bytes":$CORE_PAYLOAD},"stress":{"records":$STRESS_RECORDS,"ops":$STRESS_OPS,"window_ops":$STRESS_WINDOW,"payload_bytes":$STRESS_PAYLOAD},"relaxed":{"records":$RELAXED_RECORDS,"ops":$RELAXED_OPS,"window_ops":$RELAXED_WINDOW,"payload_bytes":$RELAXED_PAYLOAD},"txn1":{"records":$TX1_RECORDS,"ops":$TX1_OPS,"window_ops":$TX1_WINDOW,"payload_bytes":$TX1_PAYLOAD},"txn1000":{"records":$TX1000_RECORDS,"ops":$TX1000_OPS,"window_ops":$TX1000_WINDOW,"payload_bytes":$TX1000_PAYLOAD},"window_method":"fixed logical-op windows; no recursive database-size scan between windows","churn_transaction_semantics":"40/30/30 update/insert/delete operations are shuffled and committed as one mixed transaction per batch","logical_mutated_bytes":"estimated logical record bytes: id(8)+bucket(4)+payload for upsert; id(8) for delete","threshold_interpretation":"75/50/25% baseline ratios are reporting diagnostics, not pass/fail criteria","baseline_method":"median throughput and p99 latency of the first min(3, window_count) windows","targeted_sweeps":["4KiB payload stress","relaxed durability","txn-size extremes 1 and 1000"],"backend_coverage":"SurrealDB/SurrealKV, SurrealDB/RocksDB, Turso, SQLite","post_workload_settle_ms":$SETTLE_MS}
 JSON
 EXISTING_CASES=$(find "$RUN_DIR/cases" -type f -name '*.json' | wc -l)
 if [[ -s "$RUN_DIR/support.json" ]]; then

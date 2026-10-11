@@ -10,6 +10,12 @@ from typing import Any
 CONTINUOUS_ADMISSION = "pre-io+pre/continuous/post-external-v3"
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
+EXPECTED_CONTINUOUS = {
+    "continuous_noise_sample_ms": 250.0,
+    "continuous_noise_max_cpu_percent": 50.0,
+    "continuous_noise_max_io_average_mib_s": 2.0,
+    "continuous_noise_max_io_rate_mib_s": 8.0,
+}
 
 
 def sha256(path: Path) -> str:
@@ -112,11 +118,18 @@ def support_identity(
         "case_timeout_s",
     ):
         identity[key] = _positive(_required(support, key, label), key, label)
+    for key, expected in EXPECTED_CONTINUOUS.items():
+        if identity[key] != expected:
+            raise ValueError(f"unexpected {key} in {label}: {identity[key]} != {expected}")
+    if identity["initial_min_free_gib"] < 10 or identity["case_min_free_gib"] < 10:
+        raise ValueError(f"concurrency free-space floor below 10 GiB in {label}")
 
     if expected_lane == "kv-concurrency":
         identity["persy_lock_timeout_ms"] = _positive(
             _required(support, "persy_lock_timeout_ms", label), "persy_lock_timeout_ms", label
         )
+        if identity["persy_lock_timeout_ms"] != 250:
+            raise ValueError(f"unexpected persy_lock_timeout_ms in {label}")
         protocol = str(_required(support, "prepared_db_protocol", label))
         if protocol != "case-private-clean-close-v1":
             raise ValueError(f"unexpected prepared_db_protocol in {label}: {protocol!r}")

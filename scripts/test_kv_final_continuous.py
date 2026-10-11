@@ -57,7 +57,7 @@ class KvFinalContinuousTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "wrong admission"):
             FINAL.support_provenance(support, "run-a", "b" * 64)
         support = self._support(); support["case_min_free_gib"] = 0
-        with self.assertRaisesRegex(ValueError, "non-positive case_min_free_gib"):
+        with self.assertRaisesRegex(ValueError, "KV v6 free-space floor below 10 GiB"):
             FINAL.support_provenance(support, "run-a", "b" * 64)
         support = self._support(); support["imported_from_run"] = "historical-run"
         with self.assertRaisesRegex(ValueError, "imported cases are forbidden"):
