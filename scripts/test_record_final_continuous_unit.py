@@ -58,7 +58,7 @@ class RecordFinalContinuousUnitTests(unittest.TestCase):
         self.assertIn("--record-out-dir /srv/scratch/db-bench-work/record-full-v1/selected-final-v4", text)
         self.assertIn("--expected-admission-policy pre-io+pre/continuous/post-external-v3", text)
         self.assertIn("--out /srv/scratch/db-bench-work/record-full-v1/ready-v4.json", text)
-        self.assertIn("OnSuccess=all-db-bench-kv-baseline-admission-repair.service", text)
+        self.assertIn("OnSuccess=all-db-bench-kv-final-continuous.service", text)
 
     def test_v2_handoff_targets_continuous_service(self) -> None:
         text = M.v2_handoff_dropin()

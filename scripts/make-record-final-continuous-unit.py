@@ -26,7 +26,7 @@ RUN_PREFIX = "20261010-record-final-v4-continuous"
 LOCK = "/run/lock/all-db-bench-performance.lock"
 ADMISSION = "pre-io+pre/continuous/post-external-v3"
 BINARY_COMMIT = "01b8a5c4ecfd79e69f0c98cef823d7fe79401d25"
-REPAIR_SERVICE = "all-db-bench-kv-baseline-admission-repair.service"
+REPAIR_SERVICE = "all-db-bench-kv-final-continuous.service"
 
 
 def load_manifest(path: Path) -> dict:
