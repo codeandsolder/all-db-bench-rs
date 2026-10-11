@@ -11,6 +11,8 @@ import math
 from pathlib import Path
 from typing import Any, Iterable
 
+from concurrency_support_provenance import canonical_identity_sha256, support_identity
+
 FIXED_WORKLOADS = {"point-read", "range-scan", "read-heavy"}
 BOUNDED_WORKLOADS = {"balanced", "tiny-txn", "write-burst", "churn"}
 DELETE_WORKLOAD = "delete-burst"
@@ -55,7 +57,7 @@ def family_key(item: dict[str, Any]) -> tuple[str, str, str, str]:
 def load_complete_audit(path: Path) -> dict[str, Any]:
     audit = json.loads(path.read_text())
     if audit.get("concurrency_sizing_policy_version") != 1:
-        raise ValueError(f"unsupported sizing audit version: {audit.get(concurrency_sizing_policy_version)!r}")
+        raise ValueError(f"unsupported sizing audit version: {audit.get("concurrency_sizing_policy_version")!r}")
     if int(audit.get("missing_probe_case_count", -1)) != 0:
         raise ValueError(f"sizing audit still has {audit.get("missing_probe_case_count")} missing client groups")
     families = audit.get("families")
@@ -64,6 +66,8 @@ def load_complete_audit(path: Path) -> dict[str, Any]:
     pending = [family_key(f) for f in families if f.get("status") == "needs-probe" or f.get("missing_clients")]
     if pending:
         raise ValueError(f"sizing audit contains incomplete families: {pending[:5]}")
+    if not isinstance(audit.get("measurement_identity"), dict):
+        raise ValueError("sizing audit is missing measurement identity")
     return audit
 
 
@@ -141,6 +145,8 @@ def build_calibration_plan(audit_path: Path) -> dict[str, Any]:
         "expect_trials": 1,
         "source_sizing_audit_sha256": sha256(audit_path),
         "source_sizing_policy_version": audit["concurrency_sizing_policy_version"],
+        "expected_measurement_identity": audit["measurement_identity"],
+        "expected_measurement_identity_sha256": canonical_identity_sha256(audit["measurement_identity"]),
         "target_seconds": target_s,
         "bounded_churn_slots": DEFAULT_BOUNDED_CHURN_SLOTS,
         "family_count": len(calibrated_families),
@@ -170,10 +176,25 @@ def load_calibration_results(plan_path: Path, run_dir: Path) -> tuple[dict[tuple
     support = json.loads(support_path.read_text())
     plan_sha = sha256(plan_path)
     if support.get("plan_sha256") != plan_sha:
-        raise ValueError(f"calibration support plan SHA mismatch: {support.get("plan_sha256")} != {plan_sha}")
+        raise ValueError(f"calibration support plan SHA mismatch: {support.get('plan_sha256')} != {plan_sha}")
+    expected_identity = plan.get("expected_measurement_identity")
+    if not isinstance(expected_identity, dict):
+        raise ValueError("calibration plan is missing measurement identity")
+    actual_identity = support_identity(
+        support,
+        expected_lane="kv-concurrency",
+        repo=Path(__file__).resolve().parents[1],
+        runner_name="run-kv-concurrency-plan.sh",
+        label=str(support_path),
+    )
+    if actual_identity != expected_identity:
+        raise ValueError(
+            "calibration measurement identity differs from sizing source: "
+            f"{canonical_identity_sha256(actual_identity)} != {canonical_identity_sha256(expected_identity)}"
+        )
     case_paths = sorted((run_dir / "cases").glob("*.json"))
     if len(case_paths) != int(plan["case_count"]):
-        raise ValueError(f"calibration incomplete: {len(case_paths)} / {plan[case_count]} cases")
+        raise ValueError(f"calibration incomplete: {len(case_paths)} / {plan["case_count"]} cases")
     planned = {_result_identity(item): item for item in plan["cases"]}
     if len(planned) != len(plan["cases"]):
         raise ValueError("duplicate calibration plan identity")
@@ -200,6 +221,8 @@ def load_calibration_results(plan_path: Path, run_dir: Path) -> tuple[dict[tuple
         "calibration_plan_sha256": plan_sha,
         "calibration_support_sha256": sha256(support_path),
         "calibration_case_set_sha256": case_set_sha256(case_paths),
+        "expected_measurement_identity": expected_identity,
+        "expected_measurement_identity_sha256": canonical_identity_sha256(expected_identity),
     }
     return results, provenance
 

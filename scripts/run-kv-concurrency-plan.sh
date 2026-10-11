@@ -92,7 +92,7 @@ TOTAL=${#JOBS[@]}
 (( TOTAL % EXPECT_TRIALS == 0 )) || { echo "plan case count is not divisible by expect_trials" >&2; exit 2; }
 
 SUPPORT_NEW="$RUN_DIR/support.json.new"
-python3 - "$SUPPORT_NEW" <<PY_SUPPORT
+uv run --no-project python - "$SUPPORT_NEW" <<PY_SUPPORT
 import json
 json.dump({
  "lane":"$SUPPORT_LANE","profile":"quick","case_count":$TOTAL,"trials":$EXPECT_TRIALS,"expect_trials":$EXPECT_TRIALS,"plan_version":$PLAN_VERSION,"plan_kind":"$PLAN_KIND",
@@ -113,9 +113,17 @@ if [[ -s "$RUN_DIR/support.json" ]]; then
   else rm -f "$SUPPORT_NEW"; fi
 else mv "$SUPPORT_NEW" "$RUN_DIR/support.json"; fi
 
+if (( PLAN_VERSION >= 2 )); then
+  uv run --script "$ROOT/scripts/check-concurrency-support-identity.py"     --support "$RUN_DIR/support.json" --plan "$PLAN" --repo "$ROOT"     --runner run-kv-concurrency-plan.sh --lane kv-concurrency || exit $?
+fi
+
 RESUME_ORDER_POLICY=fixed-initial
 [[ "${MATRIX_RESUME_SHUFFLE_REMAINING:-1}" == 1 ]] && RESUME_ORDER_POLICY=reshuffle-remaining
 concurrency_prepare_order "$RUN_DIR" "$RESUME_ORDER_POLICY" "${JOBS[@]}" || exit $?
+if [[ "${MATRIX_PLAN_ONLY:-0}" == 1 ]]; then
+  printf 'run=%s total=%s plan_only=1 support=%s\n' "$RUN_ID" "$TOTAL" "$RUN_DIR/support.json"
+  exit 0
+fi
 
 clear_failure() {
   local case_id=$1 failures="$RUN_DIR/failures.ndjson" tmp

@@ -132,3 +132,17 @@ for runner in run-kv-concurrency-matrix.sh run-kv-concurrency-plan.sh run-record
     exit 1
   }
 done
+
+for runner in run-kv-concurrency-plan.sh run-record-concurrency-plan.sh; do
+  rg -Fq 'MATRIX_PLAN_ONLY' "$ROOT/scripts/$runner" || {
+    echo "concurrency plan runner lost plan-only support: $runner" >&2
+    exit 1
+  }
+done
+
+for runner in run-kv-concurrency-plan.sh run-record-concurrency-plan.sh; do
+  rg -Fq 'check-concurrency-support-identity.py' "$ROOT/scripts/$runner" || {
+    echo "concurrency plan runner lost support-identity gate: $runner" >&2
+    exit 1
+  }
+done

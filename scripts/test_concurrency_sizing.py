@@ -14,6 +14,31 @@ M = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = M
 SPEC.loader.exec_module(M)
 
+from concurrency_support_provenance import CONTINUOUS_ADMISSION, git_head, sha256
+
+REPO = SCRIPT.parent.parent
+
+def publication_support() -> dict:
+    return {
+        "lane": "kv-concurrency", "profile": "quick", "trials": 3,
+        "records": 100_000, "default_ops": 50_000,
+        "admission_policy": CONTINUOUS_ADMISSION,
+        "runner_sha256": sha256(REPO / "scripts/run-kv-concurrency-plan.sh"),
+        "concurrency_runner_common_sha256": sha256(REPO / "scripts/concurrency-runner-common.sh"),
+        "continuous_noise_common_sha256": sha256(REPO / "scripts/continuous-noise-runner-common.sh"),
+        "concurrency_policy_sha256": sha256(REPO / "scripts/concurrency-matrix-policy.sh"),
+        "noise_guard_sha256": sha256(REPO / "scripts/check-external-noise.py"),
+        "continuous_noise_guard_sha256": sha256(REPO / "scripts/run-with-continuous-noise.py"),
+        "benchmark_binary_sha256": "a" * 64, "build_profile": "external",
+        "hostname": "test-host", "machine_id_sha256": "b" * 64,
+        "filesystem": "zfs", "source": "testpool/scratch",
+        "benchmark_source_commit": "c" * 40, "harness_commit": git_head(REPO),
+        "continuous_noise_sample_ms": 250, "continuous_noise_max_cpu_percent": 50,
+        "continuous_noise_max_io_average_mib_s": 2, "continuous_noise_max_io_rate_mib_s": 8,
+        "initial_min_free_gib": 10, "case_min_free_gib": "10", "case_timeout_s": 600,
+        "persy_lock_timeout_ms": 250, "prepared_db_protocol": "case-private-clean-close-v1",
+    }
+
 
 def row(*, workload: str, clients: int, trial: int, elapsed: float, rate: float, engine: str = "fast") -> dict:
     ops = 200_000 if workload == "point-read" else 1_000 if workload in {"range-scan", "tiny-txn"} else 50_000
@@ -38,10 +63,7 @@ class ConcurrencySizingTests(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         run = Path(tmp.name)
         (run / "cases").mkdir()
-        (run / "support.json").write_text(json.dumps({
-            "lane": "kv-concurrency", "profile": "quick", "trials": 3,
-            "records": 100_000, "default_ops": 50_000,
-        }))
+        (run / "support.json").write_text(json.dumps(publication_support()))
         (run / "jobs.txt").write_text("\n".join(jobs) + "\n")
         for i, item in enumerate(rows):
             (run / "cases" / f"r{i}.json").write_text(json.dumps(item))
@@ -137,7 +159,7 @@ class ConcurrencySizingTests(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         run = Path(tmp.name)
         (run / "cases").mkdir()
-        (run / "support.json").write_text(json.dumps({"lane": "kv-concurrency", "profile": "quick", "trials": 1}))
+        (run / "support.json").write_text(json.dumps({**publication_support(), "trials": 1}))
         (run / "jobs.txt").write_text("concurrency-primary|fast|sync|point-read|1|100000|200000|1|growth|append|0\n")
         (run / "cases" / "r0.json").write_text(json.dumps(row(workload="point-read", clients=1, trial=1, elapsed=1.0, rate=200_000)))
         report = M.audit(run)

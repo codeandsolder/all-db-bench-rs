@@ -8,6 +8,8 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
+from concurrency_support_provenance import canonical_identity_sha256, support_identity
+
 TARGET_SECONDS=3.0
 MAX_SLOW_SECONDS=15.0
 FINAL_TRIALS=3
@@ -41,6 +43,13 @@ def load_results(plan_path:Path,run_dir:Path):
     if not support_path.is_file() or not summary_path.is_file(): raise ValueError("calibration run incomplete")
     support=json.loads(support_path.read_text()); summary=json.loads(summary_path.read_text()); plan_sha=sha256(plan_path)
     if support.get("plan_sha256")!=plan_sha: raise ValueError("calibration support plan SHA mismatch")
+    measurement_identity=support_identity(
+        support,
+        expected_lane="record-concurrency",
+        repo=Path(__file__).resolve().parents[1],
+        runner_name="run-record-concurrency-plan.sh",
+        label=str(support_path),
+    )
     paths=sorted((run_dir/"cases").glob("*.json")); expected=int(plan["case_count"])
     if len(paths)!=expected or int(summary.get("row_count",-1))!=expected or int(summary.get("group_count",-1))!=expected or summary.get("problems"): raise ValueError("calibration case/summary count mismatch")
     failures=run_dir/"failures.ndjson"
@@ -60,7 +69,7 @@ def load_results(plan_path:Path,run_dir:Path):
         if not math.isfinite(elapsed) or elapsed<=0 or not math.isfinite(rate) or rate<=0: raise ValueError(f"invalid calibration timing: {p.name}")
         results[key]=row
     if set(results)!=set(planned): raise ValueError("calibration results do not exactly cover plan")
-    return plan,results,{"calibration_plan_sha256":plan_sha,"calibration_support_sha256":sha256(support_path),"calibration_summary_sha256":sha256(summary_path),"calibration_case_set_sha256":case_set_sha256(paths)}
+    return plan,results,{"calibration_plan_sha256":plan_sha,"calibration_support_sha256":sha256(support_path),"calibration_summary_sha256":sha256(summary_path),"calibration_case_set_sha256":case_set_sha256(paths),"expected_measurement_identity":measurement_identity,"expected_measurement_identity_sha256":canonical_identity_sha256(measurement_identity)}
 
 def choose_ops(cases:list[dict[str,Any]],results:dict[tuple[Any,...],dict[str,Any]]):
     current={int(x["ops"]) for x in cases}

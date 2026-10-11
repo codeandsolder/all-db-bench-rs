@@ -13,6 +13,8 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Iterable
 
+from concurrency_support_provenance import support_identity
+
 SAFE_OP_SCALE_WORKLOADS = {"point-read", "range-scan", "read-heavy"}
 STATE_CHANGING_WORKLOADS = {"balanced", "tiny-txn", "write-burst", "churn", "delete-burst"}
 TARGET_SECONDS = 3.0
@@ -130,15 +132,34 @@ def audit(
     support = read_json(run_dir / "support.json")
     if support.get("lane") != "kv-concurrency":
         raise ValueError(f"expected kv-concurrency support, got {support.get('lane')!r}")
-    if expected_admission_policy is not None and support.get("admission_policy") != expected_admission_policy:
-        raise ValueError(
-            f"unexpected admission policy: {support.get('admission_policy')!r}; "
-            f"expected {expected_admission_policy!r}"
+    measurement_identity = None
+    if expected_admission_policy is not None:
+        measurement_identity = support_identity(
+            support,
+            expected_lane="kv-concurrency",
+            repo=Path(__file__).resolve().parents[1],
+            runner_name="run-kv-concurrency-plan.sh",
+            expected_admission=expected_admission_policy,
+            label=str(run_dir / "support.json"),
         )
     jobs = parse_jobs(run_dir, support)
     extra_runs = list(additional_runs)
     rows = read_cases(run_dir)
     for extra in extra_runs:
+        if measurement_identity is not None:
+            extra_support_path = extra / "support.json"
+            if not extra_support_path.is_file():
+                raise ValueError(f"missing additional-run support: {extra_support_path}")
+            extra_identity = support_identity(
+                read_json(extra_support_path),
+                expected_lane="kv-concurrency",
+                repo=Path(__file__).resolve().parents[1],
+                runner_name="run-kv-concurrency-plan.sh",
+                expected_admission=expected_admission_policy,
+                label=str(extra_support_path),
+            )
+            if extra_identity != measurement_identity:
+                raise ValueError(f"additional run measurement identity differs: {extra}")
         rows.extend(read_cases(extra))
     seen_rows: set[tuple[Any, ...]] = set()
     for row in rows:
@@ -280,6 +301,7 @@ def audit(
         "run_dir": str(run_dir),
         "additional_run_dirs": [str(path) for path in extra_runs],
         "source_support": support,
+        "measurement_identity": measurement_identity,
         "thresholds": {
             "floor_seconds": FLOOR_SECONDS,
             "target_seconds": TARGET_SECONDS,

@@ -12,6 +12,31 @@ assert SPEC is not None and SPEC.loader is not None
 M = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(M)
 
+from concurrency_support_provenance import CONTINUOUS_ADMISSION, git_head, sha256, support_identity
+
+REPO = SCRIPT.parent.parent
+
+def kv_support() -> dict:
+    return {
+        "lane": "kv-concurrency", "profile": "quick", "admission_policy": CONTINUOUS_ADMISSION,
+        "runner_sha256": sha256(REPO / "scripts/run-kv-concurrency-plan.sh"),
+        "concurrency_runner_common_sha256": sha256(REPO / "scripts/concurrency-runner-common.sh"),
+        "continuous_noise_common_sha256": sha256(REPO / "scripts/continuous-noise-runner-common.sh"),
+        "concurrency_policy_sha256": sha256(REPO / "scripts/concurrency-matrix-policy.sh"),
+        "noise_guard_sha256": sha256(REPO / "scripts/check-external-noise.py"),
+        "continuous_noise_guard_sha256": sha256(REPO / "scripts/run-with-continuous-noise.py"),
+        "benchmark_binary_sha256": "a" * 64, "build_profile": "external",
+        "hostname": "test-host", "machine_id_sha256": "b" * 64, "filesystem": "zfs", "source": "testpool/scratch",
+        "benchmark_source_commit": "c" * 40, "harness_commit": git_head(REPO),
+        "continuous_noise_sample_ms": 250, "continuous_noise_max_cpu_percent": 50,
+        "continuous_noise_max_io_average_mib_s": 2, "continuous_noise_max_io_rate_mib_s": 8,
+        "initial_min_free_gib": 10, "case_min_free_gib": "10", "case_timeout_s": 600,
+        "persy_lock_timeout_ms": 250, "prepared_db_protocol": "case-private-clean-close-v1",
+    }
+
+def kv_identity() -> dict:
+    return support_identity(kv_support(), expected_lane="kv-concurrency", repo=REPO, runner_name="run-kv-concurrency-plan.sh")
+
 
 def family(workload: str, *, status: str, rate: float, ops: int = 50_000, clients=(1, 8)) -> dict:
     fixed = workload in M.FIXED_WORKLOADS
@@ -32,6 +57,7 @@ def write_audit(path: Path, families: list[dict], *, missing: int = 0) -> None:
     path.write_text(json.dumps({
         "concurrency_sizing_policy_version": 1, "missing_probe_case_count": missing,
         "planned_family_count": len(families), "thresholds": {"target_seconds": 3.0}, "families": families,
+        "measurement_identity": kv_identity(),
     }))
 
 
@@ -75,7 +101,7 @@ class SteadyPlannerTests(unittest.TestCase):
             calibration = M.build_calibration_plan(audit)
             plan_path = root/"plan.json"; M.write_json(plan_path, calibration)
             run = root/"run"; (run/"cases").mkdir(parents=True)
-            (run/"support.json").write_text(json.dumps({"plan_sha256": M.sha256(plan_path)}))
+            (run/"support.json").write_text(json.dumps({**kv_support(), "plan_sha256": M.sha256(plan_path)}))
             for i, case in enumerate(calibration["cases"]):
                 row = dict(case)
                 row["ops_requested"] = row.pop("ops")
@@ -99,11 +125,21 @@ class SteadyPlannerTests(unittest.TestCase):
             self.assertEqual(steady["expect_trials"], 3)
             self.assertEqual({c["trial"] for c in steady["cases"]}, {1,2,3})
 
+    def test_calibration_support_must_match_sizing_measurement_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root=Path(td); audit=root/"audit.json"; write_audit(audit,[family("balanced",status="sized",rate=1000)])
+            plan=M.build_calibration_plan(audit); pp=root/"plan.json"; M.write_json(pp,plan)
+            run=root/"run"; (run/"cases").mkdir(parents=True)
+            support=kv_support(); support["hostname"]="other-host"; support["plan_sha256"]=M.sha256(pp)
+            (run/"support.json").write_text(json.dumps(support))
+            with self.assertRaisesRegex(ValueError,"measurement identity differs"):
+                M.load_calibration_results(pp,run)
+
     def test_calibration_support_must_bind_plan(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root=Path(td); audit=root/"audit.json"; write_audit(audit,[family("balanced",status="sized",rate=1000)])
             plan=M.build_calibration_plan(audit); pp=root/"plan.json"; M.write_json(pp,plan)
-            run=root/"run"; (run/"cases").mkdir(parents=True); (run/"support.json").write_text(json.dumps({"plan_sha256":"bad"}))
+            run=root/"run"; (run/"cases").mkdir(parents=True); (run/"support.json").write_text(json.dumps({**kv_support(), "plan_sha256":"bad"}))
             with self.assertRaisesRegex(ValueError,"plan SHA mismatch"):
                 M.load_calibration_results(pp,run)
 

@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, TextIO
 
 from idle_supervisor_common import storage_preflight, write_status as supervisor_write_status
+from concurrency_support_provenance import support_identity
 
 
 def sha256(path: Path) -> str:
@@ -84,12 +85,32 @@ def verify_binary(path: Path, expected_sha256: str) -> None:
         raise RuntimeError(f"pinned binary SHA-256 mismatch: expected {expected_sha256}, got {actual}")
 
 
-def run_complete(repo: Path, run_id: str) -> bool:
-    run = repo / "results" / "runs" / run_id
+def support_matches_plan(repo: Path, support_path: Path, plan_path: Path) -> bool:
     try:
-        support = json.loads((run / "support.json").read_text())
+        support = json.loads(support_path.read_text())
+        plan = json.loads(plan_path.read_text())
+        identity = support_identity(
+            support,
+            expected_lane="record-concurrency",
+            repo=repo,
+            runner_name="run-record-concurrency-plan.sh",
+            label=str(support_path),
+        )
+    except (OSError, ValueError, json.JSONDecodeError, subprocess.CalledProcessError):
+        return False
+    expected = plan.get("expected_measurement_identity")
+    return expected is None or identity == expected
+
+
+def run_complete(repo: Path, run_id: str, plan_path: Path | None = None) -> bool:
+    run = repo / "results" / "runs" / run_id
+    support_path = run / "support.json"
+    try:
+        support = json.loads(support_path.read_text())
         summary = json.loads((run / "summary.json").read_text())
     except (OSError, json.JSONDecodeError):
+        return False
+    if plan_path is not None and not support_matches_plan(repo, support_path, plan_path):
         return False
     failures = run / "failures.ndjson"
     expected = int(support.get("case_count", -1))
@@ -135,7 +156,7 @@ def main() -> int:
             print(error, flush=True)
             return 2
 
-        if run_complete(args.repo, args.run_id):
+        if run_complete(args.repo, args.run_id, args.plan):
             write_status(args.status_file, state="complete", run_id=args.run_id, busy_events=0)
             print(f"skip complete record concurrency plan: {args.run_id}", flush=True)
             return 0
@@ -195,7 +216,7 @@ def main() -> int:
                 check=False,
             )
             if proc.returncode == 0:
-                if not run_complete(args.repo, args.run_id):
+                if not run_complete(args.repo, args.run_id, args.plan):
                     write_status(
                         args.status_file,
                         state="failed",

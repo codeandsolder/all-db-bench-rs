@@ -18,6 +18,29 @@ SPEC.loader.exec_module(MOD)
 READ_MATERIALIZATION = "full-record-v1"
 WRITE_MATERIALIZATION = "no-return-v1"
 
+from concurrency_support_provenance import CONTINUOUS_ADMISSION, git_head, sha256
+
+REPO = SCRIPT.parent.parent
+
+def record_support() -> dict:
+    return {
+        "lane": "record-concurrency", "profile": "quick", "admission_policy": CONTINUOUS_ADMISSION,
+        "runner_sha256": sha256(REPO / "scripts/run-record-concurrency-plan.sh"),
+        "concurrency_runner_common_sha256": sha256(REPO / "scripts/concurrency-runner-common.sh"),
+        "continuous_noise_common_sha256": sha256(REPO / "scripts/continuous-noise-runner-common.sh"),
+        "concurrency_policy_sha256": sha256(REPO / "scripts/concurrency-matrix-policy.sh"),
+        "noise_guard_sha256": sha256(REPO / "scripts/check-external-noise.py"),
+        "continuous_noise_guard_sha256": sha256(REPO / "scripts/run-with-continuous-noise.py"),
+        "benchmark_binary_sha256": "a" * 64, "build_profile": "external",
+        "surrealdb_rocksdb_binary_sha256": "b" * 64, "rocks_build_profile": "external",
+        "hostname": "test-host", "machine_id_sha256": "c" * 64, "filesystem": "zfs", "source": "testpool/scratch",
+        "benchmark_source_commit": "d" * 40, "surrealdb_rocksdb_source_commit": "d" * 40, "harness_commit": git_head(REPO),
+        "continuous_noise_sample_ms": 250, "continuous_noise_max_cpu_percent": 50,
+        "continuous_noise_max_io_average_mib_s": 2, "continuous_noise_max_io_rate_mib_s": 8,
+        "initial_min_free_gib": 10, "case_min_free_gib": "10", "case_timeout_s": 600,
+        "read_materialization": READ_MATERIALIZATION, "write_materialization": WRITE_MATERIALIZATION,
+    }
+
 
 def case(*, workload: str, state: str, txn: int, clients: int, ops: int) -> dict[str, object]:
     return {
@@ -62,7 +85,7 @@ def write_run(root: Path, source_plan: dict[str, object], cases: list[dict[str, 
         row["ops_per_s"] = rate
         (run / "cases" / f"{i}.json").write_text(json.dumps(row))
     sha = hashlib.sha256(plan_path.read_bytes()).hexdigest()
-    (run / "support.json").write_text(json.dumps({"plan_sha256": sha}))
+    (run / "support.json").write_text(json.dumps({**record_support(), "plan_sha256": sha}))
     (run / "summary.json").write_text(
         json.dumps({"row_count": len(cases), "group_count": len(cases), "problems": []})
     )

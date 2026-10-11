@@ -4,6 +4,7 @@ import importlib.util
 import json
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 SCRIPT = Path(__file__).with_name("run-record-concurrency-plan-idle.py")
@@ -22,6 +23,16 @@ class RecordConcurrencyIdleTests(unittest.TestCase):
             (run / "support.json").write_text(json.dumps({"case_count": 12, "expect_trials": 3}))
             (run / "summary.json").write_text(json.dumps({"row_count": 12, "group_count": 4, "problems": []}))
             self.assertTrue(M.run_complete(repo, "x"))
+
+    def test_complete_run_is_rejected_when_plan_identity_mismatches(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td); run = repo / "results" / "runs" / "x"; run.mkdir(parents=True)
+            (run / "support.json").write_text(json.dumps({"case_count": 12, "expect_trials": 3}))
+            (run / "summary.json").write_text(json.dumps({"row_count": 12, "group_count": 4, "problems": []}))
+            with mock.patch.object(M, "support_matches_plan", return_value=False):
+                self.assertFalse(M.run_complete(repo, "x", Path("plan.json")))
+            with mock.patch.object(M, "support_matches_plan", return_value=True):
+                self.assertTrue(M.run_complete(repo, "x", Path("plan.json")))
 
     def test_run_complete_rejects_failure_file(self):
         with tempfile.TemporaryDirectory() as td:
