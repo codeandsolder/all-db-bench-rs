@@ -59,6 +59,8 @@ KV_POLICY_SHA=$(sha256sum "$ROOT/scripts/kv-matrix-policy.sh" | awk '{print $1}'
 CONCURRENCY_POLICY_SHA=$(sha256sum "$ROOT/scripts/concurrency-matrix-policy.sh" | awk '{print $1}')
 NOISE_SHA=$(sha256sum "$ROOT/scripts/check-external-noise.py" | awk '{print $1}')
 CONTINUOUS_NOISE_SHA=$(sha256sum "$ROOT/scripts/run-with-continuous-noise.py" | awk '{print $1}')
+CONCURRENCY_RUNNER_COMMON_SHA=$(sha256sum "$ROOT/scripts/concurrency-runner-common.sh" | awk '{print $1}')
+CONTINUOUS_NOISE_COMMON_SHA=$(sha256sum "$ROOT/scripts/continuous-noise-runner-common.sh" | awk '{print $1}')
 HOST_NAME=$(hostname); MACHINE_ID_SHA256=$(sha256sum /etc/machine-id | awk '{print $1}')
 FILESYSTEM=$(findmnt -n -o FSTYPE --target "$DATA_DIR"); SOURCE=$(findmnt -n -o SOURCE --target "$DATA_DIR")
 IMPORT_MANIFEST="$RUN_DIR/import-manifest.json"
@@ -111,7 +113,7 @@ json.dump({
  "engines":"${ENGINES[*]}","clients":"${CLIENTS[*]}","core_workloads":"${CORE_WORKLOADS[*]}",
  "range_clients":"${RANGE_CLIENTS[*]}","delete_clients":"${DELETE_CLIENTS[*]}","relaxed_clients":"${RELAXED_CLIENTS[*]}",
  "resume_order_policy":"$RESUME_ORDER_POLICY","build_profile":"$BUILD_PROFILE","benchmark_binary_sha256":"$BIN_SHA",
- "runner_sha256":"$RUNNER_SHA","kv_matrix_policy_sha256":"$KV_POLICY_SHA","concurrency_policy_sha256":"$CONCURRENCY_POLICY_SHA",
+ "runner_sha256":"$RUNNER_SHA","concurrency_runner_common_sha256":"$CONCURRENCY_RUNNER_COMMON_SHA","continuous_noise_common_sha256":"$CONTINUOUS_NOISE_COMMON_SHA","kv_matrix_policy_sha256":"$KV_POLICY_SHA","concurrency_policy_sha256":"$CONCURRENCY_POLICY_SHA",
  "noise_guard_sha256":"$NOISE_SHA","continuous_noise_guard_sha256":"$CONTINUOUS_NOISE_SHA","admission_policy":"$CONCURRENCY_ADMISSION_POLICY","continuous_noise_sample_ms":$CONTINUOUS_NOISE_SAMPLE_MS,"continuous_noise_max_cpu_percent":$CONTINUOUS_NOISE_MAX_CPU_PERCENT,"continuous_noise_max_io_average_mib_s":$CONTINUOUS_NOISE_MAX_IO_AVERAGE_MIB_S,"continuous_noise_max_io_rate_mib_s":$CONTINUOUS_NOISE_MAX_IO_RATE_MIB_S,"initial_min_free_gib":$MIN_FREE_GIB,"case_min_free_gib":"$CASE_MIN_FREE_GIB",
  "case_timeout_s":$CASE_TIMEOUT_S,"persy_lock_timeout_ms":$PERSY_LOCK_TIMEOUT_MS,
  "state_evolution":"growth","write_pattern":"append",

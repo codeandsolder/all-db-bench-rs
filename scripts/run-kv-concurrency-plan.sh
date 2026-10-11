@@ -49,6 +49,8 @@ fi
 RUNNER_SHA=$(sha256sum "$ROOT/scripts/run-kv-concurrency-plan.sh" | awk '{print $1}')
 NOISE_SHA=$(sha256sum "$ROOT/scripts/check-external-noise.py" | awk '{print $1}')
 CONTINUOUS_NOISE_SHA=$(sha256sum "$ROOT/scripts/run-with-continuous-noise.py" | awk '{print $1}')
+CONCURRENCY_RUNNER_COMMON_SHA=$(sha256sum "$ROOT/scripts/concurrency-runner-common.sh" | awk '{print $1}')
+CONTINUOUS_NOISE_COMMON_SHA=$(sha256sum "$ROOT/scripts/continuous-noise-runner-common.sh" | awk '{print $1}')
 CONCURRENCY_POLICY_SHA=$(sha256sum "$ROOT/scripts/concurrency-matrix-policy.sh" | awk '{print $1}')
 HOST_NAME=$(hostname); MACHINE_ID_SHA256=$(sha256sum /etc/machine-id | awk '{print $1}')
 FILESYSTEM=$(findmnt -n -o FSTYPE --target "$DATA_DIR"); SOURCE=$(findmnt -n -o SOURCE --target "$DATA_DIR")
@@ -96,7 +98,7 @@ json.dump({
  "lane":"$SUPPORT_LANE","profile":"quick","case_count":$TOTAL,"trials":$EXPECT_TRIALS,"expect_trials":$EXPECT_TRIALS,"plan_version":$PLAN_VERSION,"plan_kind":"$PLAN_KIND",
  "clients":"1 2 4 8","range_clients":"1 4 8","delete_clients":"1 4 8","relaxed_clients":"1 4 8",
  "plan_path":"$PLAN","plan_sha256":"$PLAN_SHA","build_profile":"$BUILD_PROFILE","benchmark_binary_sha256":"$BIN_SHA","benchmark_source_commit":"$BENCH_SOURCE_COMMIT","harness_commit":"$HARNESS_COMMIT",
- "runner_sha256":"$RUNNER_SHA","concurrency_policy_sha256":"$CONCURRENCY_POLICY_SHA","noise_guard_sha256":"$NOISE_SHA","continuous_noise_guard_sha256":"$CONTINUOUS_NOISE_SHA","admission_policy":"$CONCURRENCY_ADMISSION_POLICY","continuous_noise_sample_ms":$CONTINUOUS_NOISE_SAMPLE_MS,"continuous_noise_max_cpu_percent":$CONTINUOUS_NOISE_MAX_CPU_PERCENT,"continuous_noise_max_io_average_mib_s":$CONTINUOUS_NOISE_MAX_IO_AVERAGE_MIB_S,"continuous_noise_max_io_rate_mib_s":$CONTINUOUS_NOISE_MAX_IO_RATE_MIB_S,"initial_min_free_gib":$MIN_FREE_GIB,"case_min_free_gib":"$CASE_MIN_FREE_GIB",
+ "runner_sha256":"$RUNNER_SHA","concurrency_runner_common_sha256":"$CONCURRENCY_RUNNER_COMMON_SHA","continuous_noise_common_sha256":"$CONTINUOUS_NOISE_COMMON_SHA","concurrency_policy_sha256":"$CONCURRENCY_POLICY_SHA","noise_guard_sha256":"$NOISE_SHA","continuous_noise_guard_sha256":"$CONTINUOUS_NOISE_SHA","admission_policy":"$CONCURRENCY_ADMISSION_POLICY","continuous_noise_sample_ms":$CONTINUOUS_NOISE_SAMPLE_MS,"continuous_noise_max_cpu_percent":$CONTINUOUS_NOISE_MAX_CPU_PERCENT,"continuous_noise_max_io_average_mib_s":$CONTINUOUS_NOISE_MAX_IO_AVERAGE_MIB_S,"continuous_noise_max_io_rate_mib_s":$CONTINUOUS_NOISE_MAX_IO_RATE_MIB_S,"initial_min_free_gib":$MIN_FREE_GIB,"case_min_free_gib":"$CASE_MIN_FREE_GIB",
  "case_timeout_s":$CASE_TIMEOUT_S,"persy_lock_timeout_ms":$PERSY_LOCK_TIMEOUT_MS,
  "prepared_db_protocol":"$PREPARED_DB_PROTOCOL",
  "hostname":"$HOST_NAME","machine_id_sha256":"$MACHINE_ID_SHA256","filesystem":"$FILESYSTEM","source":"$SOURCE",

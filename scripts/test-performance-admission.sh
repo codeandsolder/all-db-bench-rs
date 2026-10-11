@@ -115,3 +115,20 @@ rg -Fq 'MATRIX_PLAN_ONLY' "$ROOT/scripts/run-kv-matrix.sh" || {
   echo "raw-KV runner lost plan-only support" >&2
   exit 1
 }
+
+for runner in \
+  run-kv-matrix.sh run-kv-concurrency-matrix.sh run-kv-concurrency-plan.sh \
+  run-record-concurrency-matrix.sh run-record-concurrency-plan.sh \
+  run-kv-sustained-matrix.sh run-record-sustained-matrix.sh run-reopen-matrix.sh
+do
+  rg -q 'continuous_noise_common_sha256' "$ROOT/scripts/$runner" || {
+    echo "continuous helper provenance missing in $runner" >&2
+    exit 1
+  }
+done
+for runner in run-kv-concurrency-matrix.sh run-kv-concurrency-plan.sh run-record-concurrency-matrix.sh run-record-concurrency-plan.sh; do
+  rg -q 'concurrency_runner_common_sha256' "$ROOT/scripts/$runner" || {
+    echo "concurrency common provenance missing in $runner" >&2
+    exit 1
+  }
+done
