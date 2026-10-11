@@ -27,6 +27,11 @@ LOCK = "/run/lock/all-db-bench-performance.lock"
 ADMISSION = "pre-io+pre/continuous/post-external-v3"
 BINARY_COMMIT = "01b8a5c4ecfd79e69f0c98cef823d7fe79401d25"
 REPAIR_SERVICE = "all-db-bench-kv-final-continuous.service"
+KV_READY = Path("/srv/scratch/db-bench-work/kv-sizing-audit/ready-v6.json")
+KV_DELETE_SCALING = Path("/srv/scratch/db-bench-work/concurrency-steady-runtime/results/runs/20261010-kv-concurrency-delete-diagnostic-v4/scaling.json")
+RECORD_CALIBRATION_SUMMARY = Path("/srv/scratch/db-bench-work/record-concurrency-steady-runtime/results/runs/20261010-record-concurrency-semantic-calibration-v3/summary.json")
+RECORD_FINAL_SCALING = Path("/srv/scratch/db-bench-work/record-concurrency-steady-runtime/results/runs/20261010-record-concurrency-steady-final-v3/scaling.json")
+SUSTAINED_MANIFEST = Path("/srv/scratch/db-bench-work/sustained-quick/bin/manifest.json")
 
 
 def load_manifest(path: Path) -> dict:
@@ -81,11 +86,13 @@ OnSuccess=all-db-bench-record-final-continuous.service
 """
 
 
-def record_ready_v5_dropin(runtime: Path) -> str:
+def record_ready_v5_dropin(runtime: Path, prerequisite: Path) -> str:
     checker = runtime / "scripts/check-record-ready-certificate.py"
     return f"""[Unit]
 ConditionPathExists=
+ConditionPathExists={prerequisite}
 ConditionPathExists={READY}
+ConditionPathExists={KV_READY}
 
 [Service]
 ExecStartPre=/usr/bin/uv run --script {checker} {READY} --expected-binary-commit {BINARY_COMMIT} --expected-admission-policy {ADMISSION} --expected-groups 40 --expected-rows 200
@@ -95,9 +102,11 @@ ExecStartPre=/usr/bin/uv run --script {checker} {READY} --expected-binary-commit
 def sustained_ready_v5_dropin() -> str:
     return f"""[Unit]
 ConditionPathExists=
+ConditionPathExists={RECORD_FINAL_SCALING}
+ConditionPathExists={SUSTAINED_MANIFEST}
 ConditionPathExists={READY}
+ConditionPathExists={KV_READY}
 """
-
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Generate record continuous confirmation and v5 readiness gates")
@@ -114,10 +123,12 @@ def main() -> int:
         args.unit_out: unit_text(manifest, args.runtime),
         args.v2_handoff_out: v2_handoff_dropin(),
         args.record_calibration_dropin_out: record_ready_v5_dropin(
-            Path("/srv/scratch/db-bench-work/record-concurrency-steady-runtime")
+            Path("/srv/scratch/db-bench-work/record-concurrency-steady-runtime"),
+            KV_DELETE_SCALING,
         ),
         args.record_final_dropin_out: record_ready_v5_dropin(
-            Path("/srv/scratch/db-bench-work/record-concurrency-steady-runtime")
+            Path("/srv/scratch/db-bench-work/record-concurrency-steady-runtime"),
+            RECORD_CALIBRATION_SUMMARY,
         ),
         args.sustained_dropin_out: sustained_ready_v5_dropin(),
     }

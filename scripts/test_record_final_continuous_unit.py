@@ -67,18 +67,21 @@ class RecordFinalContinuousUnitTests(unittest.TestCase):
         self.assertNotIn("kv-baseline-admission-repair", text)
 
     def test_record_downstream_dropin_requires_v5_continuous_certificate(self) -> None:
-        text = M.record_ready_v5_dropin(Path("/record/runtime"))
+        text = M.record_ready_v5_dropin(Path("/record/runtime"), M.KV_DELETE_SCALING)
         self.assertIn("[Unit]\nConditionPathExists=\n", text)
+        self.assertIn("ConditionPathExists=/srv/scratch/db-bench-work/concurrency-steady-runtime/results/runs/20261010-kv-concurrency-delete-diagnostic-v4/scaling.json", text)
         self.assertIn("ConditionPathExists=/srv/scratch/db-bench-work/record-full-v1/ready-v4.json", text)
+        self.assertIn("ConditionPathExists=/srv/scratch/db-bench-work/kv-sizing-audit/ready-v6.json", text)
         self.assertIn("/record/runtime/scripts/check-record-ready-certificate.py", text)
         self.assertIn("--expected-admission-policy pre-io+pre/continuous/post-external-v3", text)
 
-    def test_sustained_gate_requires_v4_ready_file(self) -> None:
-        self.assertEqual(
-            M.sustained_ready_v5_dropin(),
-            "[Unit]\nConditionPathExists=\nConditionPathExists=/srv/scratch/db-bench-work/record-full-v1/ready-v4.json\n",
-        )
-
+    def test_sustained_gate_preserves_full_prerequisite_set(self) -> None:
+        text = M.sustained_ready_v5_dropin()
+        self.assertTrue(text.startswith("[Unit]\nConditionPathExists=\n"))
+        self.assertIn("ConditionPathExists=/srv/scratch/db-bench-work/record-concurrency-steady-runtime/results/runs/20261010-record-concurrency-steady-final-v3/scaling.json", text)
+        self.assertIn("ConditionPathExists=/srv/scratch/db-bench-work/sustained-quick/bin/manifest.json", text)
+        self.assertIn("ConditionPathExists=/srv/scratch/db-bench-work/record-full-v1/ready-v4.json", text)
+        self.assertIn("ConditionPathExists=/srv/scratch/db-bench-work/kv-sizing-audit/ready-v6.json", text)
 
 if __name__ == "__main__":
     unittest.main()
