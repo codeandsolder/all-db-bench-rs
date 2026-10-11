@@ -33,9 +33,24 @@ def verify(selected:Path,plan:Path,repo:Path,binsha:str)->dict:
     if c.get("plan_sha256")!=sha256(plan) or m.get("plan_sha256")!=sha256(plan): raise ValueError("KV v6 plan hash mismatch")
     ci=m.get("continuous_admission_identity"); req=("noise_guard_sha256","continuous_noise_guard_sha256","continuous_noise_sample_ms","continuous_noise_max_cpu_percent","continuous_noise_max_io_average_mib_s","continuous_noise_max_io_rate_mib_s")
     if not isinstance(ci,dict) or any(ci.get(k) in (None,"") for k in req): raise ValueError("KV v6 continuous provenance incomplete")
+    rp=m.get("run_provenance_identity")
+    if not isinstance(rp,dict): raise ValueError("KV v6 run provenance incomplete")
+    expected_files={
+        "runner_sha256": repo/"scripts"/"run-kv-matrix.sh",
+        "kv_matrix_policy_sha256": repo/"scripts"/"kv-matrix-policy.sh",
+        "performance_common_sha256": repo/"scripts"/"performance-runner-common.sh",
+        "continuous_noise_common_sha256": repo/"scripts"/"continuous-noise-runner-common.sh",
+        "noise_guard_sha256": repo/"scripts"/"check-external-noise.py",
+        "continuous_noise_guard_sha256": repo/"scripts"/"run-with-continuous-noise.py",
+    }
+    for key,path in expected_files.items():
+        if rp.get(key)!=sha256(path): raise ValueError(f"KV v6 runtime provenance mismatch: {key}")
+    if any(rp.get(key)!=ci.get(key) for key in req): raise ValueError("KV v6 continuous/run provenance disagreement")
+    if rp.get("build_profile")!="external" or float(rp.get("initial_min_free_gib",0))<10 or float(rp.get("case_min_free_gib",0))<10:
+        raise ValueError("KV v6 build/free-space provenance invalid")
     sh=m.get("source_support_sha256")
     if not isinstance(sh,dict) or len(sh)!=180: raise ValueError("KV v6 support provenance incomplete")
-    return {"ready_version":6,"runner_repo_commit":runner_commit(repo),"admission_policy":ADMISSION,"group_count":180,"row_count":expected,"benchmark_binary_sha256":binsha,"results_sha256":sha256(files["results"]),"selection_manifest_sha256":sha256(files["manifest"]),"summary_sha256":sha256(files["summary"]),"completion_sha256":sha256(files["complete"]),"plan_sha256":sha256(plan),"selected_noise_guard_sha256":ci["noise_guard_sha256"],"selected_continuous_noise_guard_sha256":ci["continuous_noise_guard_sha256"],"continuous_noise_sample_ms":ci["continuous_noise_sample_ms"],"continuous_noise_max_cpu_percent":ci["continuous_noise_max_cpu_percent"],"continuous_noise_max_io_average_mib_s":ci["continuous_noise_max_io_average_mib_s"],"continuous_noise_max_io_rate_mib_s":ci["continuous_noise_max_io_rate_mib_s"]}
+    return {"ready_version":6,"runner_repo_commit":runner_commit(repo),"admission_policy":ADMISSION,"group_count":180,"row_count":expected,"benchmark_binary_sha256":binsha,"results_sha256":sha256(files["results"]),"selection_manifest_sha256":sha256(files["manifest"]),"summary_sha256":sha256(files["summary"]),"completion_sha256":sha256(files["complete"]),"plan_sha256":sha256(plan),"runner_sha256":rp["runner_sha256"],"kv_matrix_policy_sha256":rp["kv_matrix_policy_sha256"],"performance_common_sha256":rp["performance_common_sha256"],"continuous_noise_common_sha256":rp["continuous_noise_common_sha256"],"hostname":rp["hostname"],"machine_id_sha256":rp["machine_id_sha256"],"filesystem":rp["filesystem"],"source":rp["source"],"selected_noise_guard_sha256":ci["noise_guard_sha256"],"selected_continuous_noise_guard_sha256":ci["continuous_noise_guard_sha256"],"continuous_noise_sample_ms":ci["continuous_noise_sample_ms"],"continuous_noise_max_cpu_percent":ci["continuous_noise_max_cpu_percent"],"continuous_noise_max_io_average_mib_s":ci["continuous_noise_max_io_average_mib_s"],"continuous_noise_max_io_rate_mib_s":ci["continuous_noise_max_io_rate_mib_s"]}
 
 def main()->int:
     p=argparse.ArgumentParser(); p.add_argument("--selected",type=Path,required=True); p.add_argument("--plan",type=Path,required=True); p.add_argument("--repo",type=Path,required=True); p.add_argument("--expected-bench-sha256",required=True); p.add_argument("--out",type=Path); a=p.parse_args()

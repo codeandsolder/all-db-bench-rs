@@ -59,6 +59,7 @@ RUNNER_SHA=$(sha256sum "$ROOT/scripts/run-kv-matrix.sh" | awk '{print $1}')
 POLICY_SHA=$(sha256sum "$ROOT/scripts/kv-matrix-policy.sh" | awk '{print $1}')
 NOISE_SHA=$(sha256sum "$ROOT/scripts/check-external-noise.py" | awk '{print $1}')
 CONTINUOUS_NOISE_SHA=$(sha256sum "$ROOT/scripts/run-with-continuous-noise.py" | awk '{print $1}')
+CONTINUOUS_NOISE_COMMON_SHA=$(sha256sum "$ROOT/scripts/continuous-noise-runner-common.sh" | awk '{print $1}')
 COMMON_SHA=$(sha256sum "$ROOT/scripts/performance-runner-common.sh" | awk '{print $1}')
 HOST_NAME=$(hostname)
 MACHINE_ID_SHA256=$(sha256sum /etc/machine-id | awk '{print $1}')
@@ -106,7 +107,7 @@ json.dump({
   "imported_cases_manifest_sha256":"$IMPORTED_CASES_MANIFEST_SHA",
   "engines":"${ENGINES[*]}", "workloads":"${WORKLOADS[*]}", "durabilities":"${DURABILITIES[*]}",
   "resume_order_policy":"$RESUME_ORDER_POLICY", "build_profile":"$BUILD_PROFILE",
-  "benchmark_binary_sha256":"$BIN_SHA", "runner_sha256":"$RUNNER_SHA", "kv_matrix_policy_sha256":"$POLICY_SHA", "performance_common_sha256":"$COMMON_SHA", "noise_guard_sha256":"$NOISE_SHA", "continuous_noise_guard_sha256":"$CONTINUOUS_NOISE_SHA", "admission_policy":"$PERFORMANCE_ADMISSION_POLICY","continuous_noise_sample_ms":$CONTINUOUS_NOISE_SAMPLE_MS,"continuous_noise_max_cpu_percent":$CONTINUOUS_NOISE_MAX_CPU_PERCENT,"continuous_noise_max_io_average_mib_s":$CONTINUOUS_NOISE_MAX_IO_AVERAGE_MIB_S,"continuous_noise_max_io_rate_mib_s":$CONTINUOUS_NOISE_MAX_IO_RATE_MIB_S,"initial_min_free_gib":$MIN_FREE_GIB,"case_min_free_gib":"$CASE_MIN_FREE_GIB",
+  "benchmark_binary_sha256":"$BIN_SHA", "runner_sha256":"$RUNNER_SHA", "kv_matrix_policy_sha256":"$POLICY_SHA", "performance_common_sha256":"$COMMON_SHA", "continuous_noise_common_sha256":"$CONTINUOUS_NOISE_COMMON_SHA", "noise_guard_sha256":"$NOISE_SHA", "continuous_noise_guard_sha256":"$CONTINUOUS_NOISE_SHA", "admission_policy":"$PERFORMANCE_ADMISSION_POLICY","continuous_noise_sample_ms":$CONTINUOUS_NOISE_SAMPLE_MS,"continuous_noise_max_cpu_percent":$CONTINUOUS_NOISE_MAX_CPU_PERCENT,"continuous_noise_max_io_average_mib_s":$CONTINUOUS_NOISE_MAX_IO_AVERAGE_MIB_S,"continuous_noise_max_io_rate_mib_s":$CONTINUOUS_NOISE_MAX_IO_RATE_MIB_S,"initial_min_free_gib":$MIN_FREE_GIB,"case_min_free_gib":"$CASE_MIN_FREE_GIB",
   "hostname":"$HOST_NAME", "machine_id_sha256":"$MACHINE_ID_SHA256", "filesystem":"$FILESYSTEM", "source":"$SOURCE"
 }, open(sys.argv[1], "w"), sort_keys=True, separators=(",",":"))
 PY_SUPPORT
@@ -128,6 +129,10 @@ else
 fi
 [[ "$RESUME_ORDER_POLICY" == reshuffle-remaining ]] && mapfile -t ORDERED < <(printf '%s\n' "${ORDERED[@]}" | shuf)
 TOTAL=${#ORDERED[@]}
+if [[ "${MATRIX_PLAN_ONLY:-0}" == 1 ]]; then
+  printf 'run=%s total=%s plan_only=1 support=%s\n' "$RUN_ID" "$TOTAL" "$RUN_DIR/support.json"
+  exit 0
+fi
 
 clear_failure() {
   local case_id=$1 failures="$RUN_DIR/failures.ndjson" tmp

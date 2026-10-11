@@ -110,3 +110,8 @@ rg -q 'continuous_noise_preserve_rejection' "$ROOT/scripts/performance-runner-co
   echo "performance rejection archive wrapper does not delegate to continuous helper" >&2
   exit 1
 }
+
+rg -Fq 'MATRIX_PLAN_ONLY' "$ROOT/scripts/run-kv-matrix.sh" || {
+  echo "raw-KV runner lost plan-only support" >&2
+  exit 1
+}
