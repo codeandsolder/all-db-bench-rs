@@ -73,6 +73,6 @@ performance_continuous_rejected() {
   continuous_noise_rejected "$@"
 }
 
-performance_preserve_noise}rejection() {
-  continuous_noise_preserve}rejection "$@"
+performance_preserve_noise_rejection() {
+  continuous_noise_preserve_rejection "$@"
 }

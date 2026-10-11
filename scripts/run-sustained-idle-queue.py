@@ -21,8 +21,8 @@ from idle_supervisor_common import storage_preflight, write_status as supervisor
 DEFAULT_LOCK = Path("/run/lock/all-db-bench-performance.lock")
 DEFAULT_STATUS = Path("/srv/scratch/db-bench-work/sustained-quick/idle-status.json")
 DEFAULT_MANIFEST = Path("/srv/scratch/db-bench-work/sustained-quick/bin/manifest.json")
-KV_RUN_ID = "20261007-kv-sustained-quick-v1"
-RECORD_RUN_ID = "20261007-record-sustained-quick-v1"
+KV_RUN_ID = "20261011-kv-sustained-quick-v2"
+RECORD_RUN_ID = "20261011-record-sustained-quick-v2"
 
 
 def sha256(path: Path) -> str:

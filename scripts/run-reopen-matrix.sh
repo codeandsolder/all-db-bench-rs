@@ -21,7 +21,7 @@ case "$CACHE" in
   *) echo "cache mode must be warm or cold" >&2; exit 2 ;;
 esac
 
-ROOT=${ROOT:-/srv/scratch/db-bench-2026-09-27}
+ROOT=${ROOT:-"$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"}
 # shellcheck source=kv-matrix-policy.sh
 source "$ROOT/scripts/kv-matrix-policy.sh"
 # shellcheck source=performance-runner-common.sh
@@ -29,10 +29,12 @@ source "$ROOT/scripts/performance-runner-common.sh"
 RUN_ID=${RUN_ID:-"$(date -u +%Y%m%dT%H%M%SZ)-reopen-$CACHE-$PROFILE"}
 RUN_DIR="$ROOT/results/runs/$RUN_ID"; DATA_DIR="$ROOT/data/runs/$RUN_ID"
 mkdir -p "$RUN_DIR"/{cases,stderr,noise} "$DATA_DIR"
-free_bytes=$(df -B1 --output=avail "$DATA_DIR" | tail -n1 | tr -d ' ')
-min_free_bytes=$((MIN_FREE_GIB * 1024 * 1024 * 1024))
-(( free_bytes >= min_free_bytes )) || { echo "refusing reopen run: free=$free_bytes required=$min_free_bytes" >&2; exit 75; }
-[[ -s "$RUN_DIR/host-start.txt" ]] || "$ROOT/scripts/capture-host-metadata.sh" "$RUN_DIR/host-start.txt" "$ROOT"
+if [[ "${MATRIX_PLAN_ONLY:-0}" != 1 ]]; then
+  free_bytes=$(df -B1 --output=avail "$DATA_DIR" | tail -n1 | tr -d ' ')
+  min_free_bytes=$((MIN_FREE_GIB * 1024 * 1024 * 1024))
+  (( free_bytes >= min_free_bytes )) || { echo "refusing reopen run: free=$free_bytes required=$min_free_bytes" >&2; exit 75; }
+  [[ -s "$RUN_DIR/host-start.txt" ]] || "$ROOT/scripts/capture-host-metadata.sh" "$RUN_DIR/host-start.txt" "$ROOT"
+fi
 
 TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target}
 if [[ -n "${BENCH_BIN:-}" ]]; then
@@ -47,6 +49,7 @@ RUNNER_SHA=$(sha256sum "$ROOT/scripts/run-reopen-matrix.sh" | awk '{print $1}')
 KV_POLICY_SHA=$(sha256sum "$ROOT/scripts/kv-matrix-policy.sh" | awk '{print $1}')
 COMMON_SHA=$(sha256sum "$ROOT/scripts/performance-runner-common.sh" | awk '{print $1}')
 NOISE_SHA=$(sha256sum "$ROOT/scripts/check-external-noise.py" | awk '{print $1}')
+CONTINUOUS_NOISE_SHA=$(sha256sum "$ROOT/scripts/run-with-continuous-noise.py" | awk '{print $1}')
 HOST_NAME=$(hostname); MACHINE_ID_SHA256=$(sha256sum /etc/machine-id | awk '{print $1}')
 FILESYSTEM=$(findmnt -n -o FSTYPE --target "$DATA_DIR"); SOURCE=$(findmnt -n -o SOURCE --target "$DATA_DIR")
 
@@ -82,7 +85,7 @@ EXPECTED=$((50 * TRIALS))
 RESUME_ORDER_POLICY=fixed-initial; [[ "${MATRIX_RESUME_SHUFFLE_REMAINING:-0}" == 1 ]] && RESUME_ORDER_POLICY=reshuffle-remaining
 SUPPORT_NEW="$RUN_DIR/support.json.new"
 cat > "$SUPPORT_NEW" <<JSON
-{"lane":"kv-reopen","profile":"$PROFILE","cache_mode":"$CACHE","trials":$TRIALS,"records":$RECORDS,"default_ops":$OPS,"case_count":$TOTAL,"build_profile":"$BUILD_PROFILE","benchmark_binary_sha256":"$BIN_SHA","runner_sha256":"$RUNNER_SHA","kv_matrix_policy_sha256":"$KV_POLICY_SHA","performance_common_sha256":"$COMMON_SHA","noise_guard_sha256":"$NOISE_SHA","admission_policy":"pre-io+pre/post-external-v2","initial_min_free_gib":$MIN_FREE_GIB,"case_min_free_gib":"$CASE_MIN_FREE_GIB","resume_order_policy":"$RESUME_ORDER_POLICY","hostname":"$HOST_NAME","machine_id_sha256":"$MACHINE_ID_SHA256","filesystem":"$FILESYSTEM","source":"$SOURCE","open_pressure_evidence":"format v7 open_process + open_system_delta retained as diagnostic evidence; never used for acceptance","prepare_semantics":"fresh prefill with one discarded read; measured process reopens same DB with prefill and warmup skipped","cold_cache_semantics":"root-only global sync + drop_caches; never simulated"}
+{"lane":"kv-reopen","profile":"$PROFILE","cache_mode":"$CACHE","trials":$TRIALS,"records":$RECORDS,"default_ops":$OPS,"case_count":$TOTAL,"build_profile":"$BUILD_PROFILE","benchmark_binary_sha256":"$BIN_SHA","runner_sha256":"$RUNNER_SHA","kv_matrix_policy_sha256":"$KV_POLICY_SHA","performance_common_sha256":"$COMMON_SHA","noise_guard_sha256":"$NOISE_SHA","continuous_noise_guard_sha256":"$CONTINUOUS_NOISE_SHA","admission_policy":"$PERFORMANCE_ADMISSION_POLICY","continuous_noise_sample_ms":$CONTINUOUS_NOISE_SAMPLE_MS,"continuous_noise_max_cpu_percent":$CONTINUOUS_NOISE_MAX_CPU_PERCENT,"continuous_noise_max_io_average_mib_s":$CONTINUOUS_NOISE_MAX_IO_AVERAGE_MIB_S,"continuous_noise_max_io_rate_mib_s":$CONTINUOUS_NOISE_MAX_IO_RATE_MIB_S,"initial_min_free_gib":$MIN_FREE_GIB,"case_min_free_gib":"$CASE_MIN_FREE_GIB","resume_order_policy":"$RESUME_ORDER_POLICY","hostname":"$HOST_NAME","machine_id_sha256":"$MACHINE_ID_SHA256","filesystem":"$FILESYSTEM","source":"$SOURCE","open_pressure_evidence":"format v7 open_process + open_system_delta retained as diagnostic evidence; never used for acceptance","prepare_semantics":"fresh prefill with one discarded read; measured process reopens same DB with prefill and warmup skipped","cold_cache_semantics":"root-only global sync + drop_caches; never simulated"}
 JSON
 EXISTING_CASES=$(find "$RUN_DIR/cases" -type f -name '*.json' | wc -l)
 if [[ -s "$RUN_DIR/support.json" ]]; then
@@ -109,7 +112,7 @@ for job in "${ORDERED[@]}"; do
   db_name="reopen-${trial}-${engine}-${dur}-${workload}"
   case_id="t${trial}-reopen-${CACHE}-${engine}-${dur}-${workload}-n${RECORDS}-o${case_ops}"
   out="$RUN_DIR/cases/$case_id.json"; err="$RUN_DIR/stderr/$case_id.log"
-  noise_before="$RUN_DIR/noise/$case_id.before.json"; noise_ready="$RUN_DIR/noise/$case_id.ready.json"; noise_after="$RUN_DIR/noise/$case_id.after.json"
+  noise_before="$RUN_DIR/noise/$case_id.before.json"; noise_ready="$RUN_DIR/noise/$case_id.ready.json"; noise_during="$RUN_DIR/noise/$case_id.during.json"; noise_after="$RUN_DIR/noise/$case_id.after.json"
   if [[ -s "$out" ]]; then clear_failure "$case_id"; continue; fi
   echo "[$INDEX/$TOTAL] $case_id" >&2
   performance_check_io_quiet "$PROFILE" "before-prepare:$case_id" || exit $?
@@ -131,15 +134,21 @@ for job in "${ORDERED[@]}"; do
   performance_check_io_quiet "$PROFILE" "before-reopen:$case_id" || exit $?
   performance_check_external_noise "$ROOT" "$PROFILE" "before-reopen:$case_id" "$noise_ready" || exit $?
 
-  "$BIN" --engine "$engine" --durability "$dur" --workload "$workload" \
+  performance_run_with_continuous_noise "$ROOT" "$noise_during" "$BIN" --engine "$engine" --durability "$dur" --workload "$workload" \
     --records "$RECORDS" --ops "$case_ops" --value-bytes 256 --txn-size 100 --scan-len 100 \
     --trial "$trial" --seed 1592606758 --scenario "reopen-$CACHE" --db-name "$db_name" \
     --root "$DATA_DIR" --output "$out" --reuse-db --skip-prefill --warmup-reads 0 2>"$err"
   rc=$?
   noise_rc=0; performance_check_external_noise "$ROOT" "$PROFILE" "after:$case_id" "$noise_after" || noise_rc=$?
   if (( noise_rc != 0 )); then
+    performance_preserve_noise_rejection "$RUN_DIR" "$case_id" post-external "$noise_ready" "$noise_during" "$noise_after"
     rm -f "$out"; clear_failure "$case_id"
     exit "$noise_rc"
+  fi
+  if (( rc == 75 )) && performance_continuous_rejected "$noise_during"; then
+    performance_preserve_noise_rejection "$RUN_DIR" "$case_id" continuous "$noise_ready" "$noise_during" "$noise_after"
+    rm -f "$out"; clear_failure "$case_id"
+    exit 75
   fi
   if (( rc != 0 )) || [[ ! -s "$out" ]] || [[ $(wc -l < "$out") -ne 1 ]]; then
     rm -f "$out"; clear_failure "$case_id"

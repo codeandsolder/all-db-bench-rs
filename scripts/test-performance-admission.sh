@@ -38,12 +38,12 @@ for runner in "${runners[@]}"; do
         exit 1
       }
       ;;
-    run-kv-matrix.sh)
+    run-kv-matrix.sh|run-kv-sustained-matrix.sh|run-record-sustained-matrix.sh|run-reopen-matrix.sh)
       rg -q 'PERFORMANCE_ADMISSION_POLICY' "$path" && \
       rg -q 'continuous_noise_guard_sha256' "$path" && \
       rg -q 'noise_during=' "$path" && \
       rg -q 'performance_run_with_continuous_noise' "$path" || {
-        echo "missing continuous KV-baseline admission provenance in $runner" >&2
+        echo "missing continuous performance admission provenance in $runner" >&2
         exit 1
       }
       ;;
@@ -101,3 +101,12 @@ do
 done
 
 echo performance-admission-ok
+
+rg -q '^performance_preserve_noise_rejection()' "$ROOT/scripts/performance-runner-common.sh" || {
+  echo "missing performance rejection archive wrapper" >&2
+  exit 1
+}
+rg -q 'continuous_noise_preserve_rejection' "$ROOT/scripts/performance-runner-common.sh" || {
+  echo "performance rejection archive wrapper does not delegate to continuous helper" >&2
+  exit 1
+}
