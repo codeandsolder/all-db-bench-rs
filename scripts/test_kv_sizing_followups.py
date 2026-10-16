@@ -40,6 +40,10 @@ class KvSizingFollowupsTests(unittest.TestCase):
             MODULE.run_id(group(engine="paritydb-hash", suggested_effective_ops=780_000)),
             "20261006-kv-resize-v4-paritydb-hash-sync-point-read-e780000-t3",
         )
+        self.assertEqual(
+            MODULE.run_id(group(engine="paritydb-hash", suggested_effective_ops=780_000), "20261016-refresh-kv-resize"),
+            "20261016-refresh-kv-resize-paritydb-hash-sync-point-read-e780000-t3",
+        )
 
     def test_groups_from_plan_requires_v2_and_calibrates_more_ops_first(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

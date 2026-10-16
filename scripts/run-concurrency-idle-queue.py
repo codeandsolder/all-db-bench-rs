@@ -201,6 +201,8 @@ def main() -> int:
     parser.add_argument("--binary-manifest", type=Path, default=DEFAULT_MANIFEST)
     parser.add_argument("--lock-file", type=Path, default=DEFAULT_LOCK)
     parser.add_argument("--status-file", type=Path, default=DEFAULT_STATUS)
+    parser.add_argument("--kv-run-id", default=KV_RUN_ID)
+    parser.add_argument("--record-run-id", default=RECORD_RUN_ID)
     parser.add_argument("--busy-sleep", type=float, default=1.0)
     args = parser.parse_args()
 
@@ -218,7 +220,7 @@ def main() -> int:
             print(error, flush=True)
             return 2
         print(f"pinned concurrency binaries verified at source commit {binaries.get('repo_commit')}", flush=True)
-        for lane, run_id in (("kv", KV_RUN_ID), ("record", RECORD_RUN_ID)):
+        for lane, run_id in (("kv", args.kv_run_id), ("record", args.record_run_id)):
             rc = run_stage(
                 args.repo,
                 binaries,
@@ -229,7 +231,7 @@ def main() -> int:
             )
             if rc != 0:
                 return rc
-        write_status(args.status_file, state="complete", kv_run_id=KV_RUN_ID, record_run_id=RECORD_RUN_ID)
+        write_status(args.status_file, state="complete", kv_run_id=args.kv_run_id, record_run_id=args.record_run_id)
         print("concurrency quick queue complete", flush=True)
         return 0
 
