@@ -40,6 +40,10 @@ class RecordSizingFollowupsTests(unittest.TestCase):
             MODULE.run_id(group()),
             "20261006-record-resize-v4-sqlite-relaxed-tiny-txn-e5000-t11",
         )
+        self.assertEqual(
+            MODULE.run_id(group(), "20261016-refresh-record-resize"),
+            "20261016-refresh-record-resize-sqlite-relaxed-tiny-txn-e5000-t11",
+        )
 
     def test_command_env_uses_record_profile_override_and_trials(self) -> None:
         env = MODULE.command_env(group(), Path("/tmp/recordbench"), Path("/tmp/rocks-recordbench"))

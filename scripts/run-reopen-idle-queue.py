@@ -139,6 +139,7 @@ def main() -> int:
     parser.add_argument("--binary-manifest", type=Path, default=DEFAULT_MANIFEST)
     parser.add_argument("--lock-file", type=Path, default=DEFAULT_LOCK)
     parser.add_argument("--status-file", type=Path, default=DEFAULT_STATUS)
+    parser.add_argument("--run-id", default=RUN_ID)
     parser.add_argument("--busy-sleep", type=float, default=1.0)
     args = parser.parse_args()
     try:
@@ -154,8 +155,8 @@ def main() -> int:
             print(error, flush=True)
             return 2
         print(f"pinned reopen binary verified at source commit {manifest.get('repo_commit')}", flush=True)
-        if run_complete(args.repo, RUN_ID):
-            write_status(args.status_file, state="complete", run_id=RUN_ID)
+        if run_complete(args.repo, args.run_id):
+            write_status(args.status_file, state="complete", run_id=args.run_id)
             return 0
         busy_events = 0
         runner = args.repo / "scripts" / "run-reopen-matrix.sh"
@@ -163,29 +164,31 @@ def main() -> int:
             preflight = preflight_host(args.repo)
             if preflight == 75:
                 busy_events += 1
-                write_status(args.status_file, state="waiting-for-idle", run_id=RUN_ID, busy_events=busy_events)
+                write_status(args.status_file, state="waiting-for-idle", run_id=args.run_id, busy_events=busy_events)
                 if busy_events == 1 or busy_events % 30 == 0:
-                    print(f"reopen queue waiting for idle: run={RUN_ID} busy_events={busy_events}", flush=True)
+                    print(f"reopen queue waiting for idle: run={args.run_id} busy_events={busy_events}", flush=True)
                 time.sleep(max(args.busy_sleep, 0.1))
                 continue
             if preflight != 0:
-                write_status(args.status_file, state="failed", run_id=RUN_ID, returncode=preflight, error="host preflight failed")
+                write_status(args.status_file, state="failed", run_id=args.run_id, returncode=preflight, error="host preflight failed")
                 return preflight
-            write_status(args.status_file, state="running", run_id=RUN_ID, busy_events=busy_events)
-            proc = subprocess.run([str(runner), "quick", "warm"], cwd=args.repo, env=stage_env(args.repo, manifest), check=False)
+            write_status(args.status_file, state="running", run_id=args.run_id, busy_events=busy_events)
+            env = stage_env(args.repo, manifest)
+            env["RUN_ID"] = args.run_id
+            proc = subprocess.run([str(runner), "quick", "warm"], cwd=args.repo, env=env, check=False)
             if proc.returncode == 0:
-                if not run_complete(args.repo, RUN_ID):
-                    write_status(args.status_file, state="failed", run_id=RUN_ID, error="runner returned success but final validation failed")
+                if not run_complete(args.repo, args.run_id):
+                    write_status(args.status_file, state="failed", run_id=args.run_id, error="runner returned success but final validation failed")
                     return 2
-                write_status(args.status_file, state="complete", run_id=RUN_ID, busy_events=busy_events)
+                write_status(args.status_file, state="complete", run_id=args.run_id, busy_events=busy_events)
                 print("warm reopen quick queue complete", flush=True)
                 return 0
             if proc.returncode == 75:
                 busy_events += 1
-                write_status(args.status_file, state="waiting-for-idle", run_id=RUN_ID, busy_events=busy_events)
+                write_status(args.status_file, state="waiting-for-idle", run_id=args.run_id, busy_events=busy_events)
                 time.sleep(max(args.busy_sleep, 0.1))
                 continue
-            write_status(args.status_file, state="failed", run_id=RUN_ID, returncode=proc.returncode)
+            write_status(args.status_file, state="failed", run_id=args.run_id, returncode=proc.returncode)
             return proc.returncode
 
 
