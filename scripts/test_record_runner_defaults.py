@@ -19,13 +19,15 @@ class RecordRunnerDefaultTests(unittest.TestCase):
         self.assertIn('parser.add_argument("--plan", type=Path, required=True)', FOLLOWUP)
         self.assertIn('20261009-record-full-v1-resize-v1', FOLLOWUP)
 
-    def test_finalizer_requires_corrected_record_inputs(self) -> None:
+    def test_finalizer_uses_lane_specific_explicit_inputs(self) -> None:
         finalizer = (ROOT / "scripts/finalize-baseline-sizing.py").read_text()
-        self.assertIn('parser.add_argument("--record-stock-results", type=Path, required=True)', finalizer)
-        self.assertIn('parser.add_argument("--record-audit", type=Path, required=True)', finalizer)
-        self.assertIn("20261009-record-full-v1-resize-v1", finalizer)
+        self.assertIn('parser.add_argument("--record-stock-results", type=Path)', finalizer)
+        self.assertIn('parser.add_argument("--record-audit", type=Path)', finalizer)
+        self.assertIn('record_stock_results = required_path(parser, args.record_stock_results, "--record-stock-results")', finalizer)
+        self.assertIn('record_audit = required_path(parser, args.record_audit, "--record-audit")', finalizer)
         self.assertNotIn("20261006-record-quick-stock-v4.json", finalizer)
         self.assertNotIn("20261006-record-stock-pressure-repairs-refined-v1.json", finalizer)
+        self.assertNotIn("20261009-record-full-v1-resize-v1", finalizer)
 
     def test_retired_combined_queue_is_kv_only(self) -> None:
         self.assertIn("KV_BIN", LEGACY_QUEUE)
