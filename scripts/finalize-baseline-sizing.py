@@ -69,49 +69,74 @@ def finalize_one(
         raise RuntimeError(f"summary validation failed: {out_dir}")
 
 
+def required_path(parser: argparse.ArgumentParser, value: Path | None, option: str) -> Path:
+    if value is None:
+        parser.error(f"{option} is required for the selected lane")
+    return value
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Build strict final raw-KV and record baseline corpora after sizing follow-ups")
+    parser = argparse.ArgumentParser(description="Build strict final raw-KV and/or record baseline corpora after sizing follow-ups")
     parser.add_argument("--repo", type=Path, required=True)
-    parser.add_argument("--record-only", action="store_true")
-    parser.add_argument("--record-stock-results", type=Path, required=True)
-    parser.add_argument("--record-audit", type=Path, required=True)
-    parser.add_argument("--record-resize-prefix", default="20261009-record-full-v1-resize-v1")
-    parser.add_argument("--record-out-dir", type=Path, default=Path("/srv/scratch/db-bench-work/record-full-v1/selected-final-v1"))
+    lane = parser.add_mutually_exclusive_group()
+    lane.add_argument("--kv-only", action="store_true")
+    lane.add_argument("--record-only", action="store_true")
+
+    parser.add_argument("--kv-stock-results", type=Path)
+    parser.add_argument("--kv-audit", type=Path)
+    parser.add_argument("--kv-resize-prefix", default="kv-resize")
+    parser.add_argument("--kv-out-dir", type=Path)
+    parser.add_argument("--kv-quality-repair-plan", type=Path)
+    parser.add_argument("--kv-skip-quality-repairs", action="store_true")
+
+    parser.add_argument("--record-stock-results", type=Path)
+    parser.add_argument("--record-audit", type=Path)
+    parser.add_argument("--record-resize-prefix", default="record-resize")
+    parser.add_argument("--record-out-dir", type=Path)
     parser.add_argument("--record-quality-repair-plan", type=Path)
     parser.add_argument("--record-skip-quality-repairs", action="store_true")
     args = parser.parse_args()
     repo = args.repo
 
-    if not args.record_only:
+    run_kv = not args.record_only
+    run_record = not args.kv_only
+
+    if run_kv:
+        kv_stock_results = required_path(parser, args.kv_stock_results, "--kv-stock-results")
+        kv_audit = required_path(parser, args.kv_audit, "--kv-audit")
+        kv_out_dir = required_path(parser, args.kv_out_dir, "--kv-out-dir")
+        kv_quality_repair_plan = None if args.kv_skip_quality_repairs else args.kv_quality_repair_plan
         finalize_one(
             repo,
-            stock_results=Path("/srv/scratch/db-bench-work/kv-sizing-v3/results/runs/20261006-kv-quick-67228ce/results.ndjson"),
-            audit=Path("/srv/scratch/db-bench-work/kv-sizing-audit/20261006-kv-quick-67228ce-v4.json"),
-            resize_prefix="20261006-kv-resize-v4",
-            out_dir=Path("/srv/scratch/db-bench-work/kv-sizing-audit/selected-final-v4"),
+            stock_results=kv_stock_results,
+            audit=kv_audit,
+            resize_prefix=args.kv_resize_prefix,
+            out_dir=kv_out_dir,
             expected_groups=180,
-            quality_repair_plan=Path("/srv/scratch/db-bench-work/kv-sizing-audit/20261006-kv-stock-pressure-repairs-refined-v1.json"),
+            quality_repair_plan=kv_quality_repair_plan,
         )
 
-    record_stock_results = args.record_stock_results
-    record_audit = args.record_audit
-    record_quality_repair_plan = (
-        None if args.record_skip_quality_repairs else args.record_quality_repair_plan
-    )
-    finalize_one(
-        repo,
-        stock_results=record_stock_results,
-        audit=record_audit,
-        resize_prefix=args.record_resize_prefix,
-        out_dir=args.record_out_dir,
-        expected_groups=40,
-        quality_repair_plan=record_quality_repair_plan,
-    )
-    print(
-        "final baseline corpora validated: "
-        + ("record=40 groups" if args.record_only else "kv=180 groups record=40 groups"),
-        flush=True,
-    )
+    if run_record:
+        record_stock_results = required_path(parser, args.record_stock_results, "--record-stock-results")
+        record_audit = required_path(parser, args.record_audit, "--record-audit")
+        record_out_dir = required_path(parser, args.record_out_dir, "--record-out-dir")
+        record_quality_repair_plan = None if args.record_skip_quality_repairs else args.record_quality_repair_plan
+        finalize_one(
+            repo,
+            stock_results=record_stock_results,
+            audit=record_audit,
+            resize_prefix=args.record_resize_prefix,
+            out_dir=record_out_dir,
+            expected_groups=40,
+            quality_repair_plan=record_quality_repair_plan,
+        )
+
+    lanes = []
+    if run_kv:
+        lanes.append("kv=180 groups")
+    if run_record:
+        lanes.append("record=40 groups")
+    print("final baseline corpora validated: " + " ".join(lanes), flush=True)
     return 0
 
 
