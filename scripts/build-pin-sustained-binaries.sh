@@ -19,7 +19,7 @@ install -m 0755 "$ROCKS_TARGET_DIR/release/surrealdb-rocksdb-recordsustained" "$
 kv_sha=$(sha256sum "$kv" | awk '{print $1}')
 record_sha=$(sha256sum "$record" | awk '{print $1}')
 record_rocksdb_sha=$(sha256sum "$record_rocksdb" | awk '{print $1}')
-python3 - "$OUT/manifest.json" <<PY
+uv run --no-project python - "$OUT/manifest.json" <<PY
 import json,sys
 json.dump({
   "repo_commit":"$commit",

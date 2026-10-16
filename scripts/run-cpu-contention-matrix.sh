@@ -122,7 +122,7 @@ start_burners() {
   # contention points.
   local cpu
   for cpu in "${CPU_IDS[@]}"; do
-    taskset -c "$cpu" python3 "$ROOT/scripts/cpu-pressure-worker.py" "$pct"       >/dev/null 2>&1 &
+    taskset -c "$cpu" uv run --no-project python "$ROOT/scripts/cpu-pressure-worker.py" "$pct"       >/dev/null 2>&1 &
     BURN_PIDS+=("$!")
     BURN_WORKERS=$((BURN_WORKERS + 1))
   done

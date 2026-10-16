@@ -111,6 +111,8 @@ struct Measurement {
     clients: usize,
     payload_bytes: usize,
     txn_size: usize,
+    read_materialization: &'static str,
+    write_materialization: &'static str,
     trial: u32,
     seed: u64,
     scenario: String,
@@ -280,9 +282,11 @@ async fn run_client(
             while done < ops {
                 let id = rng.random_range(0..args.records);
                 let t = Instant::now();
-                if !engine.get(id).await? {
+                let read = engine.get(id).await?;
+                if read.is_none() {
                     bail!("prefilled record missing");
                 }
+                std::hint::black_box(read);
                 base::record(&mut op_hist, t.elapsed());
                 done += 1;
                 reads += 1;
@@ -292,7 +296,8 @@ async fn run_client(
             while done < ops {
                 let group = rng.random_range(0..100);
                 let t = Instant::now();
-                let _ = engine.indexed_read(group).await?;
+                let read = engine.indexed_read(group).await?;
+                std::hint::black_box(read);
                 base::record(&mut op_hist, t.elapsed());
                 done += 1;
                 reads += 1;
@@ -306,9 +311,11 @@ async fn run_client(
                     }
                     let id = rng.random_range(0..args.records);
                     let t = Instant::now();
-                    if !engine.get(id).await? {
+                    let read = engine.get(id).await?;
+                    if read.is_none() {
                         bail!("prefilled record missing");
                     }
+                    std::hint::black_box(read);
                     base::record(&mut op_hist, t.elapsed());
                     done += 1;
                     reads += 1;
@@ -700,7 +707,7 @@ async fn main() -> Result<()> {
 
     let warmup_started = Instant::now();
     for id in 0..args.records.min(args.warmup_reads) {
-        let _ = engine.get(id).await?;
+        std::hint::black_box(engine.get(id).await?);
     }
     let warmup_s = warmup_started.elapsed().as_secs_f64();
 
@@ -746,7 +753,7 @@ async fn main() -> Result<()> {
     let rate_max = client_rates.iter().copied().fold(0.0, f64::max);
 
     let result = Measurement {
-        format_version: 7,
+        format_version: 8,
         lane: "record-concurrency",
         engine: args.engine,
         engine_version: args.engine.version(),
@@ -760,6 +767,8 @@ async fn main() -> Result<()> {
         clients: args.clients,
         payload_bytes: args.payload_bytes,
         txn_size: args.txn_size,
+        read_materialization: base::READ_MATERIALIZATION,
+        write_materialization: base::WRITE_MATERIALIZATION,
         trial: args.trial,
         seed: args.seed,
         scenario: args.scenario.clone(),

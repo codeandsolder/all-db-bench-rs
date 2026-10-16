@@ -1,8 +1,26 @@
 #!/usr/bin/env bash
 
+COMMON_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=continuous-noise-runner-common.sh
+source "$COMMON_DIR/continuous-noise-runner-common.sh"
+CONCURRENCY_ADMISSION_POLICY=${CONCURRENCY_ADMISSION_POLICY:-$CONTINUOUS_ADMISSION_POLICY}
+concurrency_check_free_space() {
+  local profile=$1 phase=$2 path=${3:-${PERFORMANCE_FREE_SPACE_PATH:-${DATA_DIR:-$PWD}}}
+  [[ "$profile" == smoke ]] && return 0
+  local min_gib=${CASE_MIN_FREE_GIB:-${PERFORMANCE_MIN_FREE_GIB:-${MIN_FREE_GIB:-8}}} free_kib min_kib
+  free_kib=$(df -Pk -- "$path" | awk 'NR==2 {print $4}') || return 2
+  min_kib=$(awk -v g="$min_gib" 'BEGIN { if (g < 0) exit 2; printf "%.0f", g * 1024 * 1024 }') || return 2
+  if (( free_kib < min_kib )); then
+    echo "refusing concurrency performance case under low free space ($phase): free_kib=$free_kib required_kib=$min_kib path=$path" >&2
+    return 75
+  fi
+}
+
 concurrency_check_io_quiet() {
   local profile=$1 phase=$2 threshold=${3:-5.0}
-  [[ "$profile" == smoke || "${ALLOW_BUSY:-0}" == 1 ]] && return 0
+  [[ "$profile" == smoke ]] && return 0
+  concurrency_check_free_space "$profile" "$phase" || return $?
+  [[ "${ALLOW_BUSY:-0}" == 1 ]] && return 0
   local pressure
   pressure=$(awk '/^full / {for(i=1;i<=NF;i++) if($i ~ /^avg10=/){split($i,a,"="); print a[2]}}' /proc/pressure/io)
   if ! awk -v p="${pressure:-0}" -v t="$threshold" 'BEGIN{exit !(p<=t)}'; then
@@ -19,23 +37,6 @@ concurrency_check_external_noise() {
     echo "refusing concurrency performance case due to external host work ($phase)" >&2
   fi
   return "$rc"
-}
-
-concurrency_scrub_case_pressure() {
-  local root=$1 profile=$2 run_dir=$3 case_id=$4 report=$5
-  [[ "$profile" == smoke ]] && return 0
-  uv run --script "$root/scripts/scrub-short-trial-pressure.py" "$run_dir" \
-    --case-id "$case_id" > "$report" || return $?
-  local rejected
-  rejected=$(python3 - "$report" <<'PY'
-import json,sys
-print(int(json.load(open(sys.argv[1]))["rejected"]))
-PY
-)
-  if (( rejected > 0 )); then
-    echo "retrying short concurrency case after in-window CPU pressure: $case_id" >&2
-    return 75
-  fi
 }
 
 concurrency_prepare_order() {
@@ -61,4 +62,16 @@ concurrency_prepare_order() {
   if [[ "$resume_policy" == reshuffle-remaining ]]; then
     mapfile -t ORDERED < <(printf '%s\n' "${ORDERED[@]}" | shuf)
   fi
+}
+
+concurrency_run_with_continuous_noise() {
+  continuous_noise_run "$@"
+}
+
+concurrency_continuous_rejected() {
+  continuous_noise_rejected "$@"
+}
+
+concurrency_preserve_noise_rejection() {
+  continuous_noise_preserve_rejection "$@"
 }

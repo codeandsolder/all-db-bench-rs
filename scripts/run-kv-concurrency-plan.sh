@@ -5,6 +5,8 @@ PLAN=${1:?usage: run-kv-concurrency-plan.sh PLAN.json [RUN_ID]}
 RUN_ID=${2:-"$(date -u +%Y%m%dT%H%M%SZ)-kv-concurrency-probe"}
 ROOT=${ROOT:-"$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"}
 PROFILE=quick
+MIN_FREE_GIB=10
+CASE_MIN_FREE_GIB=${PERFORMANCE_MIN_FREE_GIB:-$MIN_FREE_GIB}
 # shellcheck source=concurrency-matrix-policy.sh
 source "$ROOT/scripts/concurrency-matrix-policy.sh"
 # shellcheck source=concurrency-runner-common.sh
@@ -22,7 +24,7 @@ RUN_DIR="$ROOT/results/runs/$RUN_ID"
 DATA_DIR="$ROOT/data/runs/$RUN_ID"
 mkdir -p "$RUN_DIR"/{cases,stderr,noise} "$DATA_DIR"
 free_bytes=$(df -B1 --output=avail "$DATA_DIR" | tail -n1 | tr -d ' ')
-min_free_bytes=$((10 * 1024 * 1024 * 1024))
+min_free_bytes=$((MIN_FREE_GIB * 1024 * 1024 * 1024))
 (( free_bytes >= min_free_bytes )) || { echo "refusing concurrency plan: free=$free_bytes required=$min_free_bytes" >&2; exit 75; }
 [[ -s "$RUN_DIR/host-start.txt" ]] || "$ROOT/scripts/capture-host-metadata.sh" "$RUN_DIR/host-start.txt" "$ROOT"
 
@@ -46,7 +48,9 @@ fi
 
 RUNNER_SHA=$(sha256sum "$ROOT/scripts/run-kv-concurrency-plan.sh" | awk '{print $1}')
 NOISE_SHA=$(sha256sum "$ROOT/scripts/check-external-noise.py" | awk '{print $1}')
-PRESSURE_SHA=$(sha256sum "$ROOT/scripts/scrub-short-trial-pressure.py" | awk '{print $1}')
+CONTINUOUS_NOISE_SHA=$(sha256sum "$ROOT/scripts/run-with-continuous-noise.py" | awk '{print $1}')
+CONCURRENCY_RUNNER_COMMON_SHA=$(sha256sum "$ROOT/scripts/concurrency-runner-common.sh" | awk '{print $1}')
+CONTINUOUS_NOISE_COMMON_SHA=$(sha256sum "$ROOT/scripts/continuous-noise-runner-common.sh" | awk '{print $1}')
 CONCURRENCY_POLICY_SHA=$(sha256sum "$ROOT/scripts/concurrency-matrix-policy.sh" | awk '{print $1}')
 HOST_NAME=$(hostname); MACHINE_ID_SHA256=$(sha256sum /etc/machine-id | awk '{print $1}')
 FILESYSTEM=$(findmnt -n -o FSTYPE --target "$DATA_DIR"); SOURCE=$(findmnt -n -o SOURCE --target "$DATA_DIR")
@@ -88,13 +92,13 @@ TOTAL=${#JOBS[@]}
 (( TOTAL % EXPECT_TRIALS == 0 )) || { echo "plan case count is not divisible by expect_trials" >&2; exit 2; }
 
 SUPPORT_NEW="$RUN_DIR/support.json.new"
-python3 - "$SUPPORT_NEW" <<PY_SUPPORT
+uv run --no-project python - "$SUPPORT_NEW" <<PY_SUPPORT
 import json
 json.dump({
  "lane":"$SUPPORT_LANE","profile":"quick","case_count":$TOTAL,"trials":$EXPECT_TRIALS,"expect_trials":$EXPECT_TRIALS,"plan_version":$PLAN_VERSION,"plan_kind":"$PLAN_KIND",
  "clients":"1 2 4 8","range_clients":"1 4 8","delete_clients":"1 4 8","relaxed_clients":"1 4 8",
  "plan_path":"$PLAN","plan_sha256":"$PLAN_SHA","build_profile":"$BUILD_PROFILE","benchmark_binary_sha256":"$BIN_SHA","benchmark_source_commit":"$BENCH_SOURCE_COMMIT","harness_commit":"$HARNESS_COMMIT",
- "runner_sha256":"$RUNNER_SHA","concurrency_policy_sha256":"$CONCURRENCY_POLICY_SHA","noise_guard_sha256":"$NOISE_SHA","short_pressure_guard_sha256":"$PRESSURE_SHA",
+ "runner_sha256":"$RUNNER_SHA","concurrency_runner_common_sha256":"$CONCURRENCY_RUNNER_COMMON_SHA","continuous_noise_common_sha256":"$CONTINUOUS_NOISE_COMMON_SHA","concurrency_policy_sha256":"$CONCURRENCY_POLICY_SHA","noise_guard_sha256":"$NOISE_SHA","continuous_noise_guard_sha256":"$CONTINUOUS_NOISE_SHA","admission_policy":"$CONCURRENCY_ADMISSION_POLICY","continuous_noise_sample_ms":$CONTINUOUS_NOISE_SAMPLE_MS,"continuous_noise_max_cpu_percent":$CONTINUOUS_NOISE_MAX_CPU_PERCENT,"continuous_noise_max_io_average_mib_s":$CONTINUOUS_NOISE_MAX_IO_AVERAGE_MIB_S,"continuous_noise_max_io_rate_mib_s":$CONTINUOUS_NOISE_MAX_IO_RATE_MIB_S,"initial_min_free_gib":$MIN_FREE_GIB,"case_min_free_gib":"$CASE_MIN_FREE_GIB",
  "case_timeout_s":$CASE_TIMEOUT_S,"persy_lock_timeout_ms":$PERSY_LOCK_TIMEOUT_MS,
  "prepared_db_protocol":"$PREPARED_DB_PROTOCOL",
  "hostname":"$HOST_NAME","machine_id_sha256":"$MACHINE_ID_SHA256","filesystem":"$FILESYSTEM","source":"$SOURCE",
@@ -109,9 +113,17 @@ if [[ -s "$RUN_DIR/support.json" ]]; then
   else rm -f "$SUPPORT_NEW"; fi
 else mv "$SUPPORT_NEW" "$RUN_DIR/support.json"; fi
 
+if (( PLAN_VERSION >= 2 )); then
+  uv run --script "$ROOT/scripts/check-concurrency-support-identity.py"     --support "$RUN_DIR/support.json" --plan "$PLAN" --repo "$ROOT"     --runner run-kv-concurrency-plan.sh --lane kv-concurrency || exit $?
+fi
+
 RESUME_ORDER_POLICY=fixed-initial
 [[ "${MATRIX_RESUME_SHUFFLE_REMAINING:-1}" == 1 ]] && RESUME_ORDER_POLICY=reshuffle-remaining
 concurrency_prepare_order "$RUN_DIR" "$RESUME_ORDER_POLICY" "${JOBS[@]}" || exit $?
+if [[ "${MATRIX_PLAN_ONLY:-0}" == 1 ]]; then
+  printf 'run=%s total=%s plan_only=1 support=%s\n' "$RUN_ID" "$TOTAL" "$RUN_DIR/support.json"
+  exit 0
+fi
 
 clear_failure() {
   local case_id=$1 failures="$RUN_DIR/failures.ndjson" tmp
@@ -127,7 +139,7 @@ for job in "${ORDERED[@]}"; do
   scenario_tag=${scenario#concurrency-}
   case_id="t${trial}-${scenario_tag}-${engine}-${durability}-${workload}-se${state_evolution}-wp${write_pattern}-bs${bounded_churn_slots}-c${clients}-n${records}-o${ops}"
   out="$RUN_DIR/cases/$case_id.json"; err="$RUN_DIR/stderr/$case_id.log"
-  noise_before="$RUN_DIR/noise/$case_id.before.json"; noise_after="$RUN_DIR/noise/$case_id.after.json"
+  noise_before="$RUN_DIR/noise/$case_id.before.json"; noise_during="$RUN_DIR/noise/$case_id.during.json"; noise_after="$RUN_DIR/noise/$case_id.after.json"
   if [[ -s "$out" ]]; then clear_failure "$case_id"; continue; fi
   echo "[$INDEX/$TOTAL] $case_id" >&2
 
@@ -190,17 +202,23 @@ for job in "${ORDERED[@]}"; do
   fi
 
   if [[ "$engine" == persy ]]; then
-    DBBENCH_PERSY_LOCK_TIMEOUT_MS="$PERSY_LOCK_TIMEOUT_MS" timeout --signal=TERM --kill-after=5s "${CASE_TIMEOUT_S}s" "${cmd[@]}" 2>"$err"
+    DBBENCH_PERSY_LOCK_TIMEOUT_MS="$PERSY_LOCK_TIMEOUT_MS" concurrency_run_with_continuous_noise "$ROOT" "$noise_during" timeout --signal=TERM --kill-after=5s "${CASE_TIMEOUT_S}s" "${cmd[@]}" 2>"$err"
   else
-    timeout --signal=TERM --kill-after=5s "${CASE_TIMEOUT_S}s" "${cmd[@]}" 2>"$err"
+    concurrency_run_with_continuous_noise "$ROOT" "$noise_during" timeout --signal=TERM --kill-after=5s "${CASE_TIMEOUT_S}s" "${cmd[@]}" 2>"$err"
   fi
   rc=$?
-  io_rc=0; concurrency_check_io_quiet "$PROFILE" "after:$case_id" || io_rc=$?
   noise_rc=0; concurrency_check_external_noise "$ROOT" "$PROFILE" "after:$case_id" "$noise_after" || noise_rc=$?
-  if (( io_rc != 0 || noise_rc != 0 )); then
+  if (( noise_rc != 0 )); then
+    concurrency_preserve_noise_rejection "$RUN_DIR" "$case_id" post-external "$noise_before" "$noise_during" "$noise_after"
     rm -f "$out"; clear_failure "$case_id"
     (( PLAN_VERSION >= 2 )) && rm -rf "$case_root"
-    if (( io_rc != 0 )); then exit "$io_rc"; else exit "$noise_rc"; fi
+    exit "$noise_rc"
+  fi
+  if (( rc == 75 )) && concurrency_continuous_rejected "$noise_during"; then
+    concurrency_preserve_noise_rejection "$RUN_DIR" "$case_id" continuous "$noise_before" "$noise_during" "$noise_after"
+    rm -f "$out"; clear_failure "$case_id"
+    (( PLAN_VERSION >= 2 )) && rm -rf "$case_root"
+    exit 75
   fi
   if (( rc != 0 )) || [[ ! -s "$out" ]] || [[ $(wc -l < "$out") -ne 1 ]]; then
     rm -f "$out"; clear_failure "$case_id"
@@ -208,15 +226,6 @@ for job in "${ORDERED[@]}"; do
     failure_kind=benchmark-error; (( rc == 124 || rc == 137 )) && failure_kind=case-timeout
     jq -cn --arg case_id "$case_id" --arg stderr "$err" --arg failure_kind "$failure_kind" --argjson rc "$rc" '{case_id:$case_id,returncode:$rc,failure_kind:$failure_kind,stderr:$stderr}' >> "$RUN_DIR/failures.ndjson"
     continue
-  fi
-  pressure_report=$(mktemp)
-  pressure_rc=0
-  concurrency_scrub_case_pressure "$ROOT" "$PROFILE" "$RUN_DIR" "$case_id" "$pressure_report" || pressure_rc=$?
-  rm -f "$pressure_report"
-  if (( pressure_rc != 0 )); then
-    clear_failure "$case_id"
-    (( PLAN_VERSION >= 2 )) && rm -rf "$case_root"
-    exit "$pressure_rc"
   fi
   (( PLAN_VERSION >= 2 )) && rm -rf "$case_root"
   clear_failure "$case_id"; [[ -s "$err" ]] || rm -f "$err"

@@ -16,12 +16,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TextIO
 
-DEFAULT_REPO = Path("/srv/scratch/db-bench-work/kv-sizing-v3-followup")
-DEFAULT_BIN = Path("/srv/scratch/db-bench-work/record-sizing-audit/bin/recordbench-ae74103b847171d1")
-DEFAULT_ROCKS_BIN = Path("/srv/scratch/db-bench-work/record-sizing-audit/bin/surrealdb-rocksdb-recordbench-c3978a3b66a24edd")
+DEFAULT_REPO = Path("/srv/scratch/db-bench-work/record-full-v1/runtime")
 DEFAULT_LOCK = Path("/run/lock/all-db-bench-performance.lock")
-DEFAULT_STATUS = Path("/srv/scratch/db-bench-work/record-sizing-audit/idle-status.json")
-DEFAULT_RUN_ID = "20261006-record-quick-stock"
+DEFAULT_STATUS = Path("/srv/scratch/db-bench-work/record-full-v1/stock-idle-status.json")
+DEFAULT_RUN_ID = "20261009-record-full-v1-stock-v1"
 
 
 def sha256(path: Path) -> str:
@@ -83,31 +81,6 @@ def preflight_host(repo: Path, *, max_io_full_avg10: float) -> int:
     return proc.returncode
 
 
-def scrub_short_pressure(repo: Path, run_id: str) -> int:
-    run_dir = repo / "results" / "runs" / run_id
-    proc = subprocess.run(
-        [sys.executable, str(repo / "scripts" / "scrub-short-trial-pressure.py"), str(run_dir)],
-        cwd=repo,
-        check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    if proc.returncode != 0:
-        raise RuntimeError(
-            f"short-trial pressure scrub failed rc={proc.returncode}: {proc.stderr.strip()}"
-        )
-    try:
-        report = json.loads(proc.stdout)
-    except json.JSONDecodeError as error:
-        raise RuntimeError(f"invalid short-trial pressure scrub output: {proc.stdout!r}") from error
-    rejected = int(report.get("rejected", 0))
-    if rejected:
-        case_ids = ",".join(str(item.get("case_id")) for item in report.get("cases", []))
-        print(f"archived {rejected} transient-pressure record trial(s): {case_ids}", flush=True)
-    return rejected
-
-
 def complete(repo: Path, run_id: str) -> bool:
     run_dir = repo / "results" / "runs" / run_id
     summary_path = run_dir / "summary.json"
@@ -135,9 +108,9 @@ def audit(repo: Path, run_id: str, audit_dir: Path) -> None:
             str(repo / "scripts" / "audit_baseline_sizing.py"),
             str(run_dir / "results.ndjson"),
             "--json-out",
-            str(audit_dir / f"{run_id}-v4.json"),
+            str(audit_dir / f"{run_id}-sizing-v3.json"),
             "--markdown-out",
-            str(audit_dir / f"{run_id}-v4.md"),
+            str(audit_dir / f"{run_id}-sizing-v3.md"),
         ],
         cwd=repo,
         check=False,
@@ -149,14 +122,14 @@ def audit(repo: Path, run_id: str, audit_dir: Path) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run record-product quick baseline opportunistically when the host is quiet")
     parser.add_argument("--repo", type=Path, default=DEFAULT_REPO)
-    parser.add_argument("--bench-bin", type=Path, default=DEFAULT_BIN)
-    parser.add_argument("--rocks-bench-bin", type=Path, default=DEFAULT_ROCKS_BIN)
+    parser.add_argument("--bench-bin", type=Path, required=True)
+    parser.add_argument("--rocks-bench-bin", type=Path, required=True)
     parser.add_argument("--expected-bench-sha256")
     parser.add_argument("--expected-rocks-bench-sha256")
     parser.add_argument("--run-id", default=DEFAULT_RUN_ID)
     parser.add_argument("--lock-file", type=Path, default=DEFAULT_LOCK)
     parser.add_argument("--status-file", type=Path, default=DEFAULT_STATUS)
-    parser.add_argument("--audit-dir", type=Path, default=Path("/srv/scratch/db-bench-work/record-sizing-audit"))
+    parser.add_argument("--audit-dir", type=Path, default=Path("/srv/scratch/db-bench-work/record-full-v1"))
     parser.add_argument("--watch", action="store_true")
     parser.add_argument("--busy-sleep", type=float, default=2.0)
     parser.add_argument("--max-io-full-avg10", type=float, default=5.0)
@@ -176,12 +149,6 @@ def main() -> int:
         return 73
 
     with lock_handle:
-        try:
-            scrub_short_pressure(args.repo, args.run_id)
-        except RuntimeError as error:
-            write_status(args.status_file, state="failed", campaign="record-quick-stock", run_id=args.run_id, error=str(error))
-            print(error, flush=True)
-            return 2
         if complete(args.repo, args.run_id):
             audit(args.repo, args.run_id, args.audit_dir)
             write_status(args.status_file, state="complete", campaign="record-quick-stock", run_id=args.run_id, busy_events=0)
@@ -238,17 +205,9 @@ def main() -> int:
                 stderr=subprocess.STDOUT,
                 text=True,
             )
-            try:
-                scrubbed = scrub_short_pressure(args.repo, args.run_id)
-            except RuntimeError as error:
-                write_status(args.status_file, state="failed", campaign="record-quick-stock", run_id=args.run_id, error=str(error))
-                print(error, flush=True)
-                return 2
             if proc.returncode == 0:
                 if proc.stdout:
                     print(proc.stdout, end="", flush=True)
-                if scrubbed:
-                    continue
                 if not complete(args.repo, args.run_id):
                     write_status(args.status_file, state="failed", campaign="record-quick-stock", run_id=args.run_id, error="runner success did not validate")
                     return 2

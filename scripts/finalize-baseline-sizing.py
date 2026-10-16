@@ -72,28 +72,46 @@ def finalize_one(
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build strict final raw-KV and record baseline corpora after sizing follow-ups")
     parser.add_argument("--repo", type=Path, required=True)
+    parser.add_argument("--record-only", action="store_true")
+    parser.add_argument("--record-stock-results", type=Path, required=True)
+    parser.add_argument("--record-audit", type=Path, required=True)
+    parser.add_argument("--record-resize-prefix", default="20261009-record-full-v1-resize-v1")
+    parser.add_argument("--record-out-dir", type=Path, default=Path("/srv/scratch/db-bench-work/record-full-v1/selected-final-v1"))
+    parser.add_argument("--record-quality-repair-plan", type=Path)
+    parser.add_argument("--record-skip-quality-repairs", action="store_true")
     args = parser.parse_args()
     repo = args.repo
 
-    finalize_one(
-        repo,
-        stock_results=Path("/srv/scratch/db-bench-work/kv-sizing-v3/results/runs/20261006-kv-quick-67228ce/results.ndjson"),
-        audit=Path("/srv/scratch/db-bench-work/kv-sizing-audit/20261006-kv-quick-67228ce-v4.json"),
-        resize_prefix="20261006-kv-resize-v4",
-        out_dir=Path("/srv/scratch/db-bench-work/kv-sizing-audit/selected-final-v4"),
-        expected_groups=180,
-        quality_repair_plan=Path("/srv/scratch/db-bench-work/kv-sizing-audit/20261006-kv-stock-pressure-repairs-refined-v1.json"),
+    if not args.record_only:
+        finalize_one(
+            repo,
+            stock_results=Path("/srv/scratch/db-bench-work/kv-sizing-v3/results/runs/20261006-kv-quick-67228ce/results.ndjson"),
+            audit=Path("/srv/scratch/db-bench-work/kv-sizing-audit/20261006-kv-quick-67228ce-v4.json"),
+            resize_prefix="20261006-kv-resize-v4",
+            out_dir=Path("/srv/scratch/db-bench-work/kv-sizing-audit/selected-final-v4"),
+            expected_groups=180,
+            quality_repair_plan=Path("/srv/scratch/db-bench-work/kv-sizing-audit/20261006-kv-stock-pressure-repairs-refined-v1.json"),
+        )
+
+    record_stock_results = args.record_stock_results
+    record_audit = args.record_audit
+    record_quality_repair_plan = (
+        None if args.record_skip_quality_repairs else args.record_quality_repair_plan
     )
     finalize_one(
         repo,
-        stock_results=repo / "results" / "runs" / "20261006-record-quick-stock" / "results.ndjson",
-        audit=Path("/srv/scratch/db-bench-work/record-sizing-audit/20261006-record-quick-stock-v4.json"),
-        resize_prefix="20261006-record-resize-v4",
-        out_dir=Path("/srv/scratch/db-bench-work/record-sizing-audit/selected-final-v4"),
+        stock_results=record_stock_results,
+        audit=record_audit,
+        resize_prefix=args.record_resize_prefix,
+        out_dir=args.record_out_dir,
         expected_groups=40,
-        quality_repair_plan=Path("/srv/scratch/db-bench-work/record-sizing-audit/20261006-record-stock-pressure-repairs-refined-v1.json"),
+        quality_repair_plan=record_quality_repair_plan,
     )
-    print("final baseline corpora validated: kv=180 groups record=40 groups", flush=True)
+    print(
+        "final baseline corpora validated: "
+        + ("record=40 groups" if args.record_only else "kv=180 groups record=40 groups"),
+        flush=True,
+    )
     return 0
 
 

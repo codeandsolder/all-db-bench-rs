@@ -5,10 +5,14 @@ PLAN=${1:?usage: run-record-concurrency-plan.sh PLAN.json [RUN_ID]}
 RUN_ID=${2:-"$(date -u +%Y%m%dT%H%M%SZ)-record-concurrency-plan"}
 ROOT=${ROOT:-"$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"}
 PROFILE=quick
+MIN_FREE_GIB=10
+CASE_MIN_FREE_GIB=${PERFORMANCE_MIN_FREE_GIB:-$MIN_FREE_GIB}
 # shellcheck source=concurrency-matrix-policy.sh
 source "$ROOT/scripts/concurrency-matrix-policy.sh"
 # shellcheck source=concurrency-runner-common.sh
 source "$ROOT/scripts/concurrency-runner-common.sh"
+# shellcheck source=record-result-cleanup.sh
+source "$ROOT/scripts/record-result-cleanup.sh"
 CASE_TIMEOUT_S=$(concurrency_case_timeout_s "$PROFILE") || exit 2
 command -v timeout >/dev/null || { echo "GNU timeout is required" >&2; exit 2; }
 [[ -s "$PLAN" ]] || { echo "plan not found: $PLAN" >&2; exit 2; }
@@ -19,7 +23,7 @@ RUN_DIR="$ROOT/results/runs/$RUN_ID"
 DATA_DIR="$ROOT/data/runs/$RUN_ID"
 mkdir -p "$RUN_DIR"/{cases,stderr,noise} "$DATA_DIR"
 free_bytes=$(df -B1 --output=avail "$DATA_DIR" | tail -n1 | tr -d ' ')
-min_free_bytes=$((10 * 1024 * 1024 * 1024))
+min_free_bytes=$((MIN_FREE_GIB * 1024 * 1024 * 1024))
 (( free_bytes >= min_free_bytes )) || { echo "refusing record concurrency plan: free=$free_bytes required=$min_free_bytes" >&2; exit 75; }
 "$ROOT/scripts/ensure-sqlite-3.54.0.sh" >/dev/null
 [[ -s "$RUN_DIR/host-start.txt" ]] || "$ROOT/scripts/capture-host-metadata.sh" "$RUN_DIR/host-start.txt" "$ROOT"
@@ -56,7 +60,9 @@ fi
 
 RUNNER_SHA=$(sha256sum "$ROOT/scripts/run-record-concurrency-plan.sh" | awk '{print $1}')
 NOISE_SHA=$(sha256sum "$ROOT/scripts/check-external-noise.py" | awk '{print $1}')
-PRESSURE_SHA=$(sha256sum "$ROOT/scripts/scrub-short-trial-pressure.py" | awk '{print $1}')
+CONTINUOUS_NOISE_SHA=$(sha256sum "$ROOT/scripts/run-with-continuous-noise.py" | awk '{print $1}')
+CONCURRENCY_RUNNER_COMMON_SHA=$(sha256sum "$ROOT/scripts/concurrency-runner-common.sh" | awk '{print $1}')
+CONTINUOUS_NOISE_COMMON_SHA=$(sha256sum "$ROOT/scripts/continuous-noise-runner-common.sh" | awk '{print $1}')
 POLICY_SHA=$(sha256sum "$ROOT/scripts/concurrency-matrix-policy.sh" | awk '{print $1}')
 HOST_NAME=$(hostname)
 MACHINE_ID_SHA256=$(sha256sum /etc/machine-id | awk '{print $1}')
@@ -85,24 +91,26 @@ fi
 EXPECT_TRIALS=$(jq -r .expect_trials "$RUN_DIR/plan-meta.json")
 PLAN_VERSION=$(jq -r .plan_version "$RUN_DIR/plan-meta.json")
 PLAN_KIND=$(jq -r .kind "$RUN_DIR/plan-meta.json")
+READ_MATERIALIZATION=$(jq -r .read_materialization "$RUN_DIR/plan-meta.json")
+WRITE_MATERIALIZATION=$(jq -r .write_materialization "$RUN_DIR/plan-meta.json")
 mapfile -t JOBS < "$RUN_DIR/plan.tsv"
 TOTAL=${#JOBS[@]}
 (( TOTAL > 0 )) || { echo "empty plan" >&2; exit 2; }
 (( TOTAL % EXPECT_TRIALS == 0 )) || { echo "plan case count not divisible by trials" >&2; exit 2; }
 
 SUPPORT_NEW="$RUN_DIR/support.json.new"
-python3 - "$SUPPORT_NEW" <<PY_SUPPORT
+uv run --no-project python - "$SUPPORT_NEW" <<PY_SUPPORT
 import json
 json.dump({
  "lane":"record-concurrency","profile":"quick","case_count":$TOTAL,"trials":$EXPECT_TRIALS,"expect_trials":$EXPECT_TRIALS,
- "plan_version":$PLAN_VERSION,"plan_kind":"$PLAN_KIND","plan_path":"$PLAN","plan_sha256":"$PLAN_SHA",
+ "plan_version":$PLAN_VERSION,"plan_kind":"$PLAN_KIND","read_materialization":"$READ_MATERIALIZATION","write_materialization":"$WRITE_MATERIALIZATION","plan_path":"$PLAN","plan_sha256":"$PLAN_SHA",
  "engines":"surrealdb turso sqlite surrealdb-rocksdb",
  "clients":"1 2 4 8","relaxed_clients":"1 4 8","stress_clients":"1 4 8","tx_clients":"1 4 8",
  "build_profile":"$BUILD_PROFILE","benchmark_binary_sha256":"$BIN_SHA","benchmark_source_commit":"$BENCH_SOURCE_COMMIT",
  "rocks_build_profile":"$ROCKS_BUILD_PROFILE","surrealdb_rocksdb_binary_sha256":"$ROCKS_BIN_SHA",
  "surrealdb_rocksdb_source_commit":"$ROCKS_BENCH_SOURCE_COMMIT","harness_commit":"$HARNESS_COMMIT",
- "runner_sha256":"$RUNNER_SHA","concurrency_policy_sha256":"$POLICY_SHA","noise_guard_sha256":"$NOISE_SHA",
- "short_pressure_guard_sha256":"$PRESSURE_SHA","case_timeout_s":$CASE_TIMEOUT_S,
+ "runner_sha256":"$RUNNER_SHA","concurrency_runner_common_sha256":"$CONCURRENCY_RUNNER_COMMON_SHA","continuous_noise_common_sha256":"$CONTINUOUS_NOISE_COMMON_SHA","concurrency_policy_sha256":"$POLICY_SHA","noise_guard_sha256":"$NOISE_SHA","continuous_noise_guard_sha256":"$CONTINUOUS_NOISE_SHA",
+ "admission_policy":"$CONCURRENCY_ADMISSION_POLICY","continuous_noise_sample_ms":$CONTINUOUS_NOISE_SAMPLE_MS,"continuous_noise_max_cpu_percent":$CONTINUOUS_NOISE_MAX_CPU_PERCENT,"continuous_noise_max_io_average_mib_s":$CONTINUOUS_NOISE_MAX_IO_AVERAGE_MIB_S,"continuous_noise_max_io_rate_mib_s":$CONTINUOUS_NOISE_MAX_IO_RATE_MIB_S,"initial_min_free_gib":$MIN_FREE_GIB,"case_min_free_gib":"$CASE_MIN_FREE_GIB","case_timeout_s":$CASE_TIMEOUT_S,
  "hostname":"$HOST_NAME","machine_id_sha256":"$MACHINE_ID_SHA256","filesystem":"$FILESYSTEM","source":"$SOURCE",
  "total_work_semantics":"each plan family keeps identical records and total ops across client counts",
  "state_evolution_semantics":"bounded tiny/write updates the prefilled record universe; growth preserves append diagnostics",
@@ -117,9 +125,15 @@ if [[ -s "$RUN_DIR/support.json" ]]; then
   else rm -f "$SUPPORT_NEW"; fi
 else mv "$SUPPORT_NEW" "$RUN_DIR/support.json"; fi
 
+uv run --script "$ROOT/scripts/check-concurrency-support-identity.py"   --support "$RUN_DIR/support.json" --plan "$PLAN" --repo "$ROOT"   --runner run-record-concurrency-plan.sh --lane record-concurrency || exit $?
+
 RESUME_ORDER_POLICY=fixed-initial
 [[ "${MATRIX_RESUME_SHUFFLE_REMAINING:-1}" == 1 ]] && RESUME_ORDER_POLICY=reshuffle-remaining
 concurrency_prepare_order "$RUN_DIR" "$RESUME_ORDER_POLICY" "${JOBS[@]}" || exit $?
+if [[ "${MATRIX_PLAN_ONLY:-0}" == 1 ]]; then
+  printf 'run=%s total=%s plan_only=1 support=%s\n' "$RUN_ID" "$TOTAL" "$RUN_DIR/support.json"
+  exit 0
+fi
 
 clear_failure() {
   local case_id=$1 failures="$RUN_DIR/failures.ndjson" tmp
@@ -133,11 +147,12 @@ clear_failure() {
 INDEX=0
 for job in "${ORDERED[@]}"; do
   INDEX=$((INDEX + 1))
-  IFS='|' read -r scenario engine durability workload clients records ops payload txn trial state_evolution <<< "$job"
-  case_id="t${trial}-${scenario}-${engine}-${durability}-${workload}-se${state_evolution}-c${clients}-n${records}-o${ops}-p${payload}-tx${txn}"
+  IFS='|' read -r scenario engine durability workload clients records ops payload txn trial state_evolution read_materialization write_materialization <<< "$job"
+  case_id="t${trial}-${scenario}-${engine}-${durability}-${workload}-se${state_evolution}-rm${read_materialization}-wm${write_materialization}-c${clients}-n${records}-o${ops}-p${payload}-tx${txn}"
   out="$RUN_DIR/cases/$case_id.json"
   err="$RUN_DIR/stderr/$case_id.log"
   noise_before="$RUN_DIR/noise/$case_id.before.json"
+  noise_during="$RUN_DIR/noise/$case_id.during.json"
   noise_after="$RUN_DIR/noise/$case_id.after.json"
   if [[ -s "$out" ]]; then clear_failure "$case_id"; continue; fi
 
@@ -147,18 +162,36 @@ for job in "${ORDERED[@]}"; do
   CASE_BIN="$BIN"
   [[ "$engine" == surrealdb-rocksdb ]] && CASE_BIN="$ROCKS_BIN"
   rm -f "$out"
-  timeout --signal=TERM --kill-after=5s "${CASE_TIMEOUT_S}s" \
-    "$CASE_BIN" --engine "$engine" --durability "$durability" --workload "$workload" \
+  concurrency_run_with_continuous_noise "$ROOT" "$noise_during" \
+    timeout --signal=TERM --kill-after=5s "${CASE_TIMEOUT_S}s" "$CASE_BIN" --engine "$engine" --durability "$durability" --workload "$workload" \
     --state-evolution "$state_evolution" --clients "$clients" --records "$records" --ops "$ops" \
     --payload-bytes "$payload" --txn-size "$txn" --trial "$trial" --seed 1592606758 \
-    --scenario "$scenario" --warmup-reads 5000 --root "$DATA_DIR" --output "$out" 2>"$err"
+    --scenario "$scenario" --warmup-reads 5000 --root "$DATA_DIR" --output "$out" --keep-db 2>"$err"
   rc=$?
 
-  io_rc=0; concurrency_check_io_quiet "$PROFILE" "after:$case_id" || io_rc=$?
   noise_rc=0; concurrency_check_external_noise "$ROOT" "$PROFILE" "after:$case_id" "$noise_after" || noise_rc=$?
-  if (( io_rc != 0 || noise_rc != 0 )); then
+  if (( noise_rc != 0 )); then
+    concurrency_preserve_noise_rejection "$RUN_DIR" "$case_id" post-external "$noise_before" "$noise_during" "$noise_after"
+    if [[ -s "$out" ]]; then record_cleanup_result_db "$out" "$DATA_DIR" || true; fi
     rm -f "$out"; clear_failure "$case_id"
-    if (( io_rc != 0 )); then exit "$io_rc"; else exit "$noise_rc"; fi
+    exit "$noise_rc"
+  fi
+  if (( rc == 75 )) && concurrency_continuous_rejected "$noise_during"; then
+    concurrency_preserve_noise_rejection "$RUN_DIR" "$case_id" continuous "$noise_before" "$noise_during" "$noise_after"
+    if [[ -s "$out" ]]; then record_cleanup_result_db "$out" "$DATA_DIR" || true; fi
+    rm -f "$out"; clear_failure "$case_id"
+    exit 75
+  fi
+  if (( rc == 0 )) && [[ -s "$out" ]] && [[ $(wc -l < "$out") -eq 1 ]]; then
+    record_cleanup_result_db "$out" "$DATA_DIR" || rc=$?
+  fi
+  if (( rc == 0 )) && [[ -s "$out" ]] && [[ $(wc -l < "$out") -eq 1 ]]; then
+    if ! jq -e --arg read_expected "$read_materialization" --arg write_expected "$write_materialization" \
+      '.read_materialization == $read_expected and .write_materialization == $write_expected' "$out" >/dev/null; then
+      rc=2
+      printf 'record result semantic identity mismatch: expected read_materialization=%s write_materialization=%s\n' \
+        "$read_materialization" "$write_materialization" >>"$err"
+    fi
   fi
   if (( rc != 0 )) || [[ ! -s "$out" ]] || [[ $(wc -l < "$out") -ne 1 ]]; then
     rm -f "$out"; clear_failure "$case_id"
@@ -168,11 +201,6 @@ for job in "${ORDERED[@]}"; do
       '{case_id:$case_id,returncode:$rc,failure_kind:$failure_kind,stderr:$stderr}' >> "$RUN_DIR/failures.ndjson"
     continue
   fi
-  pressure_report=$(mktemp)
-  pressure_rc=0
-  concurrency_scrub_case_pressure "$ROOT" "$PROFILE" "$RUN_DIR" "$case_id" "$pressure_report" || pressure_rc=$?
-  rm -f "$pressure_report"
-  if (( pressure_rc != 0 )); then clear_failure "$case_id"; exit "$pressure_rc"; fi
   clear_failure "$case_id"
   [[ -s "$err" ]] || rm -f "$err"
 done

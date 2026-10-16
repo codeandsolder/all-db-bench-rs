@@ -8,6 +8,7 @@ Each isolated benchmark invocation appends exactly one JSON object to NDJSON.
 - `engine`, `engine_version`: exact adapter target.
 - `durability`, `durability_mapping`: comparison lane plus the concrete engine API/configuration used.
 - `workload`, `records`, `value_bytes` or `payload_bytes`, `txn_size`, `scan_len`, `trial`, `seed`: complete workload definition needed to group repetitions.
+- Current record-product rows additionally carry `read_materialization: "full-record-v1"` and `write_materialization: "no-return-v1"`. Missing markers are interpreted only as historical `legacy-read-v0` / `legacy-return-v0`; both markers are exact aggregation identity and corrected rows never merge with legacy rows. Ordinary single-client record results use `format_version: 7`.
 
 ## Timing
 
@@ -186,11 +187,11 @@ The summarizer keeps client count separate and, when a matching 1-client row exi
 A 1-client concurrency result is the baseline for these ratios. It is not silently substituted with a row from the ordinary kv lane because the concurrency binary has different thread/barrier/runtime mechanics.
 
 
-## Record concurrency lane — schema v7
+## Record concurrency lane — schema v8
 
-`recordconcurrency` emits `format_version: 7` with `lane: "record-concurrency"`. It is grouped separately from raw KV and from ordinary single-client record rows. Historical schema-v6 rows remain valid growth-mode evidence but cannot aggregate with v7 because `format_version` is part of the exact identity.
+`recordconcurrency` emits `format_version: 8` with `lane: "record-concurrency"`. It is grouped separately from raw KV and from ordinary single-client record rows. Historical schema-v7 and earlier rows remain evidence under their original semantics but cannot aggregate with v8 because `format_version` is part of the exact identity.
 
-Identity/configuration fields are `engine`, `engine_version`, `durability`, `workload`, `state_evolution`, `records`, fixed-total `ops_requested`, `clients`, `payload_bytes`, `txn_size`, trial/seed/scenario and the exact durability mapping. `state_evolution = growth` preserves the historical append semantics for `tiny-txn` and `write-burst`. `state_evolution = bounded` is the steady-state scaling semantic for those two write workloads: the global logical operation stream maps deterministically onto the already-prefilled record universe, so increasing the timing window does not increase database cardinality. Point/index/read-heavy workloads already operate on the fixed prefilled universe and remain growth-labelled for backward-compatible identity.
+Identity/configuration fields are `engine`, `engine_version`, `durability`, `workload`, `state_evolution`, `records`, fixed-total `ops_requested`, `clients`, `payload_bytes`, `txn_size`, trial/seed/scenario, the exact durability mapping, `read_materialization: "full-record-v1"`, and `write_materialization: "no-return-v1"`. The read marker means primary-key/indexed reads materialize and consume the record group plus payload across products. The write marker means measured mutations consume completion only; SurrealDB uses parameterized `RETURN NONE` mutations so it is not uniquely charged for returning/deserializing the written document. `state_evolution = growth` preserves the historical append semantics for `tiny-txn` and `write-burst`. `state_evolution = bounded` is the steady-state scaling semantic for those two write workloads: the global logical operation stream maps deterministically onto the already-prefilled record universe, so increasing the timing window does not increase database cardinality. Point/index/read-heavy workloads already operate on the fixed prefilled universe and remain growth-labelled for backward-compatible identity.
 
 The result also records `concurrency_handle`, describing the native product surface used: cloned SurrealDB clients over either embedded SurrealKV or isolated embedded RocksDB, independent Turso `Database::connect()` connections, or independent SQLite WAL connections. `client_setup_s` measures native client fan-out after prefill/warmup and before the synchronized start barrier. It is excluded from foreground `elapsed_s`/`ops_per_s` but retained as a separate connection/handle setup cost.
 
@@ -261,11 +262,11 @@ Recursive on-disk-size measurement is deliberately absent from window boundaries
 
 `scripts/summarize-sustained.py` preserves per-trial derived metrics and aggregates exact-compatible trials. Baseline-relative 75/50/25% throughput thresholds, p99 multipliers and recovery positions are diagnostics only; no threshold makes a benchmark case pass or fail. Process `write_bytes / logical_mutated_bytes` is a useful host-visible write-amplification proxy but is not a physical-device write-amplification measurement.
 
-## Record sustained-write lane — schema v6
+## Record sustained-write lane — schema v7
 
-The shared record-sustained driver uses `format_version: 6` and `lane: "record-sustained"` across SurrealDB/SurrealKV, isolated SurrealDB/RocksDB, Turso and SQLite. The RocksDB build is a separate binary/package because the SurrealDB storage features are mutually exclusive, but it emits the same schema and semantics. The lane intentionally remains distinct from `kv-sustained` because record/SQL/document/index overhead is part of the product-level measurement, while reusing the same fixed-window timing and process/system accounting model.
+The shared record-sustained driver uses `format_version: 7` and `lane: "record-sustained"` across SurrealDB/SurrealKV, isolated SurrealDB/RocksDB, Turso and SQLite. Historical schema-v6 rows keep their original semantics and cannot aggregate with v7. The RocksDB build is a separate binary/package because the SurrealDB storage features are mutually exclusive, but it emits the same schema and semantics. The lane intentionally remains distinct from `kv-sustained` because record/SQL/document/index overhead is part of the product-level measurement, while reusing the same fixed-window timing and process/system accounting model.
 
-Identity/configuration replaces raw-KV key/value-shape fields with `payload_bytes`; otherwise it carries the same `pattern`, record count, requested operations, window size, transaction size, durability mapping, scenario, trial and seed identities. The analyzer includes `lane` and `payload_bytes` in exact-match grouping so record and raw-KV trials cannot aggregate accidentally.
+Identity/configuration replaces raw-KV key/value-shape fields with `payload_bytes`; otherwise it carries the same `pattern`, record count, requested operations, window size, transaction size, durability mapping, scenario, trial and seed identities, plus `read_materialization: "full-record-v1"` and `write_materialization: "no-return-v1"`. The analyzer includes `lane`, `payload_bytes`, and both materialization markers in exact-match grouping so record/raw-KV or legacy/corrected trials cannot aggregate accidentally.
 
 `windows[]`, foreground timing, aggregate database-size bracketing and `post_workload_settle` have the same meanings as in `kv-sustained`. Record churn uses one mixed transaction per logical batch for the 40/30/30 update/insert/delete mix. `logical_mutated_bytes` is explicitly estimated as 8-byte ID + 4-byte bucket + configured payload for each upsert and 8-byte ID per delete; it exists only to normalize the process-visible write-byte proxy and is not a serialized-row-size or physical-media accounting claim.
 

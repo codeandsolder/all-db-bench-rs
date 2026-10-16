@@ -10,7 +10,7 @@ short=${commit:0:16}
 kv="$OUT/kvbench-$short"
 install -m 0755 "$TARGET_DIR/release/kvbench" "$kv"
 kv_sha=$(sha256sum "$kv" | awk '{print $1}')
-python3 - "$OUT/manifest.json" <<PY
+uv run --no-project python - "$OUT/manifest.json" <<PY
 import json,sys
 json.dump({"repo_commit":"$commit","kv":{"path":"$kv","sha256":"$kv_sha"}},open(sys.argv[1],"w"),indent=2,sort_keys=True)
 open(sys.argv[1],"a").write("\n")

@@ -20,21 +20,30 @@ if [[ ! -x "$RUSTC_REAL" ]]; then
 fi
 export RUSTUP_TOOLCHAIN=1.99.1
 export RUSTC="$RUSTC_REAL"
-export SCCACHE_SERVER_PORT="${SCCACHE_SERVER_PORT:-4237}"
-export SCCACHE_CONF="${SCCACHE_CONF:-/etc/sccache/client-native-local.conf}"
-export SCCACHE_START_SERVER=0
-SCCACHE_BIN="${SCCACHE_BIN:-$(command -v sccache || true)}"
+SCCACHE_BIN=${SCCACHE_BIN:-$(command -v sccache || true)}
 if [[ -z "$SCCACHE_BIN" || ! -x "$SCCACHE_BIN" ]]; then
   echo "sccache client not found; benchmark builds refuse to bypass sccache" >&2
   exit 127
 fi
-if ! "$SCCACHE_BIN" --show-stats >/dev/null 2>&1; then
-  echo "native sccache server on port $SCCACHE_SERVER_PORT is unavailable; refusing uncached build" >&2
-  exit 70
-fi
-export RUSTC_WRAPPER="$SCCACHE_BIN"
-export CC="${CC_REAL:-/usr/bin/cc}"
-export CXX="${CXX_REAL:-/usr/bin/c++}"
+SCCACHE_SERVER_PORT=${DB_BENCH_SCCACHE_PORT:-4237} \
+SCCACHE_START_SERVER=0 \
+SCCACHE_CONF=${DB_BENCH_NATIVE_SCCACHE_CONF:-$ROOT/scripts/sccache-native-local.conf} \
+  "$SCCACHE_BIN" --show-stats >/dev/null 2>&1 || {
+    echo "native sccache server on port ${DB_BENCH_SCCACHE_PORT:-4237} is unavailable; refusing uncached build" >&2
+    exit 70
+  }
+NATIVE_SCCACHE_WRAPPER=${DB_BENCH_RUSTC_WRAPPER:-$ROOT/scripts/sccache-native-rustc.sh}
+NATIVE_CC_WRAPPER=${DB_BENCH_CC:-$ROOT/scripts/sccache-native-cc.sh}
+NATIVE_CXX_WRAPPER=${DB_BENCH_CXX:-$ROOT/scripts/sccache-native-cxx.sh}
+for wrapper in "$NATIVE_SCCACHE_WRAPPER" "$NATIVE_CC_WRAPPER" "$NATIVE_CXX_WRAPPER"; do
+  if [[ ! -x "$wrapper" ]]; then
+    echo "Required native sccache wrapper is not executable: $wrapper" >&2
+    exit 127
+  fi
+done
+export RUSTC_WRAPPER="$NATIVE_SCCACHE_WRAPPER"
+export CC="$NATIVE_CC_WRAPPER"
+export CXX="$NATIVE_CXX_WRAPPER"
 export CARGO_HOME="${DB_BENCH_CARGO_HOME:-/tmp/db-bench-cargo-home}"
 mkdir -p "$CARGO_HOME"
 SQLITE_PREFIX="$ROOT/.deps/sqlite-3.54.0"

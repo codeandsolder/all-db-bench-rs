@@ -8,6 +8,7 @@ case "$PROFILE" in
   full)  RECORDS=1000000; OPS=250000; TRIALS=7; MIN_FREE_GIB=30 ;;
   *) echo "usage: $0 [smoke|quick|full]" >&2; exit 2 ;;
 esac
+CASE_MIN_FREE_GIB=${PERFORMANCE_MIN_FREE_GIB:-$MIN_FREE_GIB}
 TRIALS=${KV_TRIALS_OVERRIDE:-$TRIALS}
 RECORDS=${KV_RECORDS_OVERRIDE:-$RECORDS}
 OPS=${KV_OPS_OVERRIDE:-$OPS}
@@ -15,6 +16,8 @@ OPS=${KV_OPS_OVERRIDE:-$OPS}
 ROOT=${ROOT:-"$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"}
 # shellcheck source=kv-matrix-policy.sh
 source "$ROOT/scripts/kv-matrix-policy.sh"
+# shellcheck source=performance-runner-common.sh
+source "$ROOT/scripts/performance-runner-common.sh"
 KV_LSMDB_RANGE_TARGET_TRAVERSED_ENTRIES=${KV_LSMDB_RANGE_TARGET_TRAVERSED_ENTRIES:-50000000}
 KV_LSMDB_RANGE_MIN_OPS=${KV_LSMDB_RANGE_MIN_OPS:-50}
 LSMDB_RANGE_OPS=$(kv_effective_ops lsmdb range-scan "$OPS" "$RECORDS" "$KV_LSMDB_RANGE_TARGET_TRAVERSED_ENTRIES" "$KV_LSMDB_RANGE_MIN_OPS") || { echo "invalid KV range-scan policy" >&2; exit 2; }
@@ -55,6 +58,9 @@ BIN_SHA=$(sha256sum "$BIN" | awk '{print $1}')
 RUNNER_SHA=$(sha256sum "$ROOT/scripts/run-kv-matrix.sh" | awk '{print $1}')
 POLICY_SHA=$(sha256sum "$ROOT/scripts/kv-matrix-policy.sh" | awk '{print $1}')
 NOISE_SHA=$(sha256sum "$ROOT/scripts/check-external-noise.py" | awk '{print $1}')
+CONTINUOUS_NOISE_SHA=$(sha256sum "$ROOT/scripts/run-with-continuous-noise.py" | awk '{print $1}')
+CONTINUOUS_NOISE_COMMON_SHA=$(sha256sum "$ROOT/scripts/continuous-noise-runner-common.sh" | awk '{print $1}')
+COMMON_SHA=$(sha256sum "$ROOT/scripts/performance-runner-common.sh" | awk '{print $1}')
 HOST_NAME=$(hostname)
 MACHINE_ID_SHA256=$(sha256sum /etc/machine-id | awk '{print $1}')
 FILESYSTEM=$(findmnt -n -o FSTYPE --target "$DATA_DIR")
@@ -67,25 +73,6 @@ DURABILITIES=(relaxed sync)
 [[ -n "${WORKLOADS_OVERRIDE:-}" ]] && read -r -a WORKLOADS <<< "$WORKLOADS_OVERRIDE"
 [[ -n "${DURABILITIES_OVERRIDE:-}" ]] && read -r -a DURABILITIES <<< "$DURABILITIES_OVERRIDE"
 if [[ "${MATRIX_RESUME_SHUFFLE_REMAINING:-0}" == 1 ]]; then RESUME_ORDER_POLICY=reshuffle-remaining; else RESUME_ORDER_POLICY=fixed-initial; fi
-
-check_io_quiet() {
-  [[ "$PROFILE" == smoke || "${ALLOW_BUSY:-0}" == 1 ]] && return 0
-  local phase=$1 io_psi10
-  io_psi10=$(awk '/^full / {for(i=1;i<=NF;i++) if($i ~ /^avg10=/){split($i,a,"="); print a[2]}}' /proc/pressure/io)
-  if ! awk -v p="${io_psi10:-0}" 'BEGIN { exit !(p <= 5.0) }'; then
-    echo "refusing KV performance case under I/O pressure ($phase): io PSI full avg10=${io_psi10}%" >&2
-    return 75
-  fi
-}
-check_external_noise() {
-  local phase=$1 evidence=$2 rc
-  [[ "$PROFILE" == smoke || "${ALLOW_EXTERNAL_NOISE:-0}" == 1 ]] && return 0
-  if uv run --script "$ROOT/scripts/check-external-noise.py" --json-out "$evidence"; then rc=0; else rc=$?; fi
-  if (( rc != 0 )); then
-    echo "refusing KV performance case due to external host work ($phase): $(cat "$evidence" 2>/dev/null)" >&2
-  fi
-  return "$rc"
-}
 
 JOBS=()
 for trial in $(seq 1 "$TRIALS"); do
@@ -120,7 +107,7 @@ json.dump({
   "imported_cases_manifest_sha256":"$IMPORTED_CASES_MANIFEST_SHA",
   "engines":"${ENGINES[*]}", "workloads":"${WORKLOADS[*]}", "durabilities":"${DURABILITIES[*]}",
   "resume_order_policy":"$RESUME_ORDER_POLICY", "build_profile":"$BUILD_PROFILE",
-  "benchmark_binary_sha256":"$BIN_SHA", "runner_sha256":"$RUNNER_SHA", "kv_matrix_policy_sha256":"$POLICY_SHA", "noise_guard_sha256":"$NOISE_SHA",
+  "benchmark_binary_sha256":"$BIN_SHA", "runner_sha256":"$RUNNER_SHA", "kv_matrix_policy_sha256":"$POLICY_SHA", "performance_common_sha256":"$COMMON_SHA", "continuous_noise_common_sha256":"$CONTINUOUS_NOISE_COMMON_SHA", "noise_guard_sha256":"$NOISE_SHA", "continuous_noise_guard_sha256":"$CONTINUOUS_NOISE_SHA", "admission_policy":"$PERFORMANCE_ADMISSION_POLICY","continuous_noise_sample_ms":$CONTINUOUS_NOISE_SAMPLE_MS,"continuous_noise_max_cpu_percent":$CONTINUOUS_NOISE_MAX_CPU_PERCENT,"continuous_noise_max_io_average_mib_s":$CONTINUOUS_NOISE_MAX_IO_AVERAGE_MIB_S,"continuous_noise_max_io_rate_mib_s":$CONTINUOUS_NOISE_MAX_IO_RATE_MIB_S,"initial_min_free_gib":$MIN_FREE_GIB,"case_min_free_gib":"$CASE_MIN_FREE_GIB",
   "hostname":"$HOST_NAME", "machine_id_sha256":"$MACHINE_ID_SHA256", "filesystem":"$FILESYSTEM", "source":"$SOURCE"
 }, open(sys.argv[1], "w"), sort_keys=True, separators=(",",":"))
 PY_SUPPORT
@@ -142,6 +129,10 @@ else
 fi
 [[ "$RESUME_ORDER_POLICY" == reshuffle-remaining ]] && mapfile -t ORDERED < <(printf '%s\n' "${ORDERED[@]}" | shuf)
 TOTAL=${#ORDERED[@]}
+if [[ "${MATRIX_PLAN_ONLY:-0}" == 1 ]]; then
+  printf 'run=%s total=%s plan_only=1 support=%s\n' "$RUN_ID" "$TOTAL" "$RUN_DIR/support.json"
+  exit 0
+fi
 
 clear_failure() {
   local case_id=$1 failures="$RUN_DIR/failures.ndjson" tmp
@@ -155,22 +146,28 @@ for job in "${ORDERED[@]}"; do
   INDEX=$((INDEX + 1)); IFS='|' read -r trial engine durability workload <<< "$job"
   case_id="t${trial}-${engine}-${durability}-${workload}"
   out="$RUN_DIR/cases/$case_id.json"; err="$RUN_DIR/stderr/$case_id.log"
-  noise_before="$RUN_DIR/noise/$case_id.before.json"; noise_after="$RUN_DIR/noise/$case_id.after.json"
+  noise_before="$RUN_DIR/noise/$case_id.before.json"; noise_during="$RUN_DIR/noise/$case_id.during.json"; noise_after="$RUN_DIR/noise/$case_id.after.json"
   if [[ -s "$out" ]]; then clear_failure "$case_id"; continue; fi
   echo "[$INDEX/$TOTAL] $case_id" >&2
-  check_io_quiet "before:$case_id" || exit $?
-  check_external_noise "before:$case_id" "$noise_before" || exit $?
+  performance_check_io_quiet "$PROFILE" "before:$case_id" || exit $?
+  performance_check_external_noise "$ROOT" "$PROFILE" "before:$case_id" "$noise_before" || exit $?
   rm -f "$out"
   CASE_OPS=$(kv_effective_ops "$engine" "$workload" "$OPS" "$RECORDS" "$KV_LSMDB_RANGE_TARGET_TRAVERSED_ENTRIES" "$KV_LSMDB_RANGE_MIN_OPS") || { echo "invalid KV case policy for $case_id" >&2; exit 2; }
-  "$BIN" --engine "$engine" --durability "$durability" --workload "$workload" \
+  performance_run_with_continuous_noise "$ROOT" "$noise_during" \
+    "$BIN" --engine "$engine" --durability "$durability" --workload "$workload" \
     --records "$RECORDS" --ops "$CASE_OPS" --value-bytes 256 --txn-size 100 --scan-len 100 \
     --trial "$trial" --seed 1592606758 --scenario baseline-core --root "$DATA_DIR" --output "$out" 2>"$err"
   rc=$?
-  io_rc=0; check_io_quiet "after:$case_id" || io_rc=$?
-  noise_rc=0; check_external_noise "after:$case_id" "$noise_after" || noise_rc=$?
-  if (( io_rc != 0 || noise_rc != 0 )); then
+  noise_rc=0; performance_check_external_noise "$ROOT" "$PROFILE" "after:$case_id" "$noise_after" || noise_rc=$?
+  if (( noise_rc != 0 )); then
+    performance_preserve_noise_rejection "$RUN_DIR" "$case_id" post-external "$noise_before" "$noise_during" "$noise_after"
     rm -f "$out"; clear_failure "$case_id"
-    if (( io_rc != 0 )); then exit "$io_rc"; else exit "$noise_rc"; fi
+    exit "$noise_rc"
+  fi
+  if (( rc == 75 )) && performance_continuous_rejected "$noise_during"; then
+    performance_preserve_noise_rejection "$RUN_DIR" "$case_id" continuous "$noise_before" "$noise_during" "$noise_after"
+    rm -f "$out"; clear_failure "$case_id"
+    exit 75
   fi
   if (( rc != 0 )) || [[ ! -s "$out" ]] || [[ $(wc -l < "$out") -ne 1 ]]; then
     rm -f "$out"; clear_failure "$case_id"

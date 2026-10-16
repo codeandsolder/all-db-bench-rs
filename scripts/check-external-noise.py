@@ -26,8 +26,15 @@ class ProcessRow:
     args: str
 
 
+def is_kernel_thread(row: ProcessRow) -> bool:
+    # Kernel workers are not attributable foreign processes. In particular,
+    # ZFS write workers can be activity caused by the benchmark itself after
+    # a write-heavy case. Pre-case I/O PSI remains the storage-pressure gate.
+    return row.pid == 2 or row.ppid == 2 or (row.args.startswith("[") and row.args.endswith("]"))
+
+
 def classify_process(row: ProcessRow, *, ignore_nice_at_least: int = 15) -> str | None:
-    if row.nice >= ignore_nice_at_least or not row.args or ALLOWED_RE.search(row.args):
+    if is_kernel_thread(row) or row.nice >= ignore_nice_at_least or not row.args or ALLOWED_RE.search(row.args):
         return None
     if WIDE_SCAN_RE.search(row.args) and row.cpu_percent >= 1.0:
         return "wide-filesystem-scan"
@@ -157,7 +164,13 @@ def aggregate_foreign_cpu_percent(
 ) -> float:
     total = 0.0
     for row in rows:
-        if row.pid in excluded_pids or row.nice >= ignore_nice_at_least or not row.args or ALLOWED_RE.search(row.args):
+        if (
+            row.pid in excluded_pids
+            or is_kernel_thread(row)
+            or row.nice >= ignore_nice_at_least
+            or not row.args
+            or ALLOWED_RE.search(row.args)
+        ):
             continue
         total += row.cpu_percent
     return total
@@ -190,6 +203,9 @@ def main() -> int:
         rows, excluded_pids=excluded, ignore_nice_at_least=args.ignore_nice_at_least
     )
     aggregate_cpu_exceeded = aggregate_cpu_percent >= args.max_aggregate_cpu_percent
+    kernel_thread_cpu_percent = sum(
+        row.cpu_percent for row in rows if row.pid not in excluded and is_kernel_thread(row)
+    )
     quiet = not offenders and not aggregate_cpu_exceeded
     result = {
         "quiet": quiet,
@@ -198,6 +214,7 @@ def main() -> int:
         "max_aggregate_cpu_percent": args.max_aggregate_cpu_percent,
         "aggregate_foreign_cpu_percent": aggregate_cpu_percent,
         "aggregate_cpu_exceeded": aggregate_cpu_exceeded,
+        "kernel_thread_cpu_percent": kernel_thread_cpu_percent,
         "excluded_pids": sorted(explicit_excluded_tree),
         "offenders": offenders,
     }

@@ -20,6 +20,7 @@ case "$PROFILE" in
     ;;
   *) echo "usage: $0 [smoke|quick|full]" >&2; exit 2 ;;
 esac
+CASE_MIN_FREE_GIB=${PERFORMANCE_MIN_FREE_GIB:-$MIN_FREE_GIB}
 
 ROOT=${ROOT:-"$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"}
 # shellcheck source=kv-matrix-policy.sh
@@ -57,7 +58,9 @@ RUNNER_SHA=$(sha256sum "$ROOT/scripts/run-kv-concurrency-matrix.sh" | awk '{prin
 KV_POLICY_SHA=$(sha256sum "$ROOT/scripts/kv-matrix-policy.sh" | awk '{print $1}')
 CONCURRENCY_POLICY_SHA=$(sha256sum "$ROOT/scripts/concurrency-matrix-policy.sh" | awk '{print $1}')
 NOISE_SHA=$(sha256sum "$ROOT/scripts/check-external-noise.py" | awk '{print $1}')
-PRESSURE_SHA=$(sha256sum "$ROOT/scripts/scrub-short-trial-pressure.py" | awk '{print $1}')
+CONTINUOUS_NOISE_SHA=$(sha256sum "$ROOT/scripts/run-with-continuous-noise.py" | awk '{print $1}')
+CONCURRENCY_RUNNER_COMMON_SHA=$(sha256sum "$ROOT/scripts/concurrency-runner-common.sh" | awk '{print $1}')
+CONTINUOUS_NOISE_COMMON_SHA=$(sha256sum "$ROOT/scripts/continuous-noise-runner-common.sh" | awk '{print $1}')
 HOST_NAME=$(hostname); MACHINE_ID_SHA256=$(sha256sum /etc/machine-id | awk '{print $1}')
 FILESYSTEM=$(findmnt -n -o FSTYPE --target "$DATA_DIR"); SOURCE=$(findmnt -n -o SOURCE --target "$DATA_DIR")
 IMPORT_MANIFEST="$RUN_DIR/import-manifest.json"
@@ -102,7 +105,7 @@ done
 RESUME_ORDER_POLICY=fixed-initial; [[ "${MATRIX_RESUME_SHUFFLE_REMAINING:-0}" == 1 ]] && RESUME_ORDER_POLICY=reshuffle-remaining
 TOTAL=${#JOBS[@]}
 SUPPORT_NEW="$RUN_DIR/support.json.new"
-python3 - "$SUPPORT_NEW" <<PY_SUPPORT
+uv run --no-project python - "$SUPPORT_NEW" <<PY_SUPPORT
 import json,sys
 json.dump({
  "lane":"kv-concurrency","profile":"$PROFILE","trials":$TRIALS,"records":$RECORDS,"default_ops":$OPS,
@@ -110,8 +113,8 @@ json.dump({
  "engines":"${ENGINES[*]}","clients":"${CLIENTS[*]}","core_workloads":"${CORE_WORKLOADS[*]}",
  "range_clients":"${RANGE_CLIENTS[*]}","delete_clients":"${DELETE_CLIENTS[*]}","relaxed_clients":"${RELAXED_CLIENTS[*]}",
  "resume_order_policy":"$RESUME_ORDER_POLICY","build_profile":"$BUILD_PROFILE","benchmark_binary_sha256":"$BIN_SHA",
- "runner_sha256":"$RUNNER_SHA","kv_matrix_policy_sha256":"$KV_POLICY_SHA","concurrency_policy_sha256":"$CONCURRENCY_POLICY_SHA",
- "noise_guard_sha256":"$NOISE_SHA","short_pressure_guard_sha256":"$PRESSURE_SHA",
+ "runner_sha256":"$RUNNER_SHA","concurrency_runner_common_sha256":"$CONCURRENCY_RUNNER_COMMON_SHA","continuous_noise_common_sha256":"$CONTINUOUS_NOISE_COMMON_SHA","kv_matrix_policy_sha256":"$KV_POLICY_SHA","concurrency_policy_sha256":"$CONCURRENCY_POLICY_SHA",
+ "noise_guard_sha256":"$NOISE_SHA","continuous_noise_guard_sha256":"$CONTINUOUS_NOISE_SHA","admission_policy":"$CONCURRENCY_ADMISSION_POLICY","continuous_noise_sample_ms":$CONTINUOUS_NOISE_SAMPLE_MS,"continuous_noise_max_cpu_percent":$CONTINUOUS_NOISE_MAX_CPU_PERCENT,"continuous_noise_max_io_average_mib_s":$CONTINUOUS_NOISE_MAX_IO_AVERAGE_MIB_S,"continuous_noise_max_io_rate_mib_s":$CONTINUOUS_NOISE_MAX_IO_RATE_MIB_S,"initial_min_free_gib":$MIN_FREE_GIB,"case_min_free_gib":"$CASE_MIN_FREE_GIB",
  "case_timeout_s":$DEFAULT_CASE_TIMEOUT_S,"engine_case_timeouts_s":{"sled":$(concurrency_case_timeout_s "$PROFILE" sled)},"persy_lock_timeout_ms":$PERSY_LOCK_TIMEOUT_MS,
  "state_evolution":"growth","write_pattern":"append",
  "persy_timeout_retry_policy":"typed PrepareError::TransactionTimeout only; max 100 retries; deterministic micro-backoff; retry cost is timed",
@@ -143,7 +146,7 @@ for job in "${ORDERED[@]}"; do
   elif [[ "$workload" == delete-burst && "$ops" -gt "$RECORDS" ]]; then ops=$RECORDS; fi
   case_id="t${trial}-${scenario}-${engine}-${durability}-${workload}-c${clients}-n${RECORDS}-o${ops}"
   out="$RUN_DIR/cases/$case_id.json"; err="$RUN_DIR/stderr/$case_id.log"
-  noise_before="$RUN_DIR/noise/$case_id.before.json"; noise_after="$RUN_DIR/noise/$case_id.after.json"
+  noise_before="$RUN_DIR/noise/$case_id.before.json"; noise_during="$RUN_DIR/noise/$case_id.during.json"; noise_after="$RUN_DIR/noise/$case_id.after.json"
   if [[ -s "$out" ]]; then clear_failure "$case_id"; continue; fi
   echo "[$INDEX/$TOTAL] $case_id" >&2
   case_timeout_s=$(concurrency_case_timeout_s "$PROFILE" "$engine") || exit 2
@@ -151,24 +154,29 @@ for job in "${ORDERED[@]}"; do
   concurrency_check_external_noise "$ROOT" "$PROFILE" "before:$case_id" "$noise_before" || exit $?
   rm -f "$out"
   if [[ "$engine" == persy ]]; then
-    DBBENCH_PERSY_LOCK_TIMEOUT_MS="$PERSY_LOCK_TIMEOUT_MS" timeout --signal=TERM --kill-after=5s "${case_timeout_s}s" \
-      "$BIN" --engine "$engine" --durability "$durability" --workload "$workload" \
+    DBBENCH_PERSY_LOCK_TIMEOUT_MS="$PERSY_LOCK_TIMEOUT_MS" concurrency_run_with_continuous_noise "$ROOT" "$noise_during" \
+      timeout --signal=TERM --kill-after=5s "${case_timeout_s}s" "$BIN" --engine "$engine" --durability "$durability" --workload "$workload" \
       --records "$RECORDS" --ops "$ops" --clients "$clients" --value-bytes 256 --value-pattern pseudo-random \
       --key-bytes 8 --key-shape sequential --access-pattern auto --write-pattern append --state-evolution growth --bounded-churn-slots 0 --txn-size 100 --scan-len "$scan" --warmup-reads 5000 \
       --trial "$trial" --seed 1592606758 --scenario "concurrency-$scenario" --root "$DATA_DIR" --output "$out" 2>"$err"
   else
-    timeout --signal=TERM --kill-after=5s "${case_timeout_s}s" \
-      "$BIN" --engine "$engine" --durability "$durability" --workload "$workload" \
+    concurrency_run_with_continuous_noise "$ROOT" "$noise_during" \
+      timeout --signal=TERM --kill-after=5s "${case_timeout_s}s" "$BIN" --engine "$engine" --durability "$durability" --workload "$workload" \
       --records "$RECORDS" --ops "$ops" --clients "$clients" --value-bytes 256 --value-pattern pseudo-random \
       --key-bytes 8 --key-shape sequential --access-pattern auto --write-pattern append --state-evolution growth --bounded-churn-slots 0 --txn-size 100 --scan-len "$scan" --warmup-reads 5000 \
       --trial "$trial" --seed 1592606758 --scenario "concurrency-$scenario" --root "$DATA_DIR" --output "$out" 2>"$err"
   fi
   rc=$?
-  io_rc=0; concurrency_check_io_quiet "$PROFILE" "after:$case_id" || io_rc=$?
   noise_rc=0; concurrency_check_external_noise "$ROOT" "$PROFILE" "after:$case_id" "$noise_after" || noise_rc=$?
-  if (( io_rc != 0 || noise_rc != 0 )); then
+  if (( noise_rc != 0 )); then
+    concurrency_preserve_noise_rejection "$RUN_DIR" "$case_id" post-external "$noise_before" "$noise_during" "$noise_after"
     rm -f "$out"; clear_failure "$case_id"
-    if (( io_rc != 0 )); then exit "$io_rc"; else exit "$noise_rc"; fi
+    exit "$noise_rc"
+  fi
+  if (( rc == 75 )) && concurrency_continuous_rejected "$noise_during"; then
+    concurrency_preserve_noise_rejection "$RUN_DIR" "$case_id" continuous "$noise_before" "$noise_during" "$noise_after"
+    rm -f "$out"; clear_failure "$case_id"
+    exit 75
   fi
   if (( rc != 0 )) || [[ ! -s "$out" ]] || [[ $(wc -l < "$out") -ne 1 ]]; then
     rm -f "$out"; clear_failure "$case_id"
@@ -176,13 +184,7 @@ for job in "${ORDERED[@]}"; do
     jq -cn --arg case_id "$case_id" --arg stderr "$err" --arg failure_kind "$failure_kind" --argjson rc "$rc" '{case_id:$case_id,returncode:$rc,failure_kind:$failure_kind,stderr:$stderr}' >> "$RUN_DIR/failures.ndjson"
     continue
   fi
-  pressure_report=$(mktemp)
-  pressure_rc=0
-  concurrency_scrub_case_pressure "$ROOT" "$PROFILE" "$RUN_DIR" "$case_id" "$pressure_report" || pressure_rc=$?
-  if (( pressure_rc != 0 )); then
-    rm -f "$pressure_report"; clear_failure "$case_id"; exit "$pressure_rc"
-  fi
-  rm -f "$pressure_report"; clear_failure "$case_id"; [[ -s "$err" ]] || rm -f "$err"
+  clear_failure "$case_id"; [[ -s "$err" ]] || rm -f "$err"
 done
 
 find "$RUN_DIR/cases" -type f -name '*.json' -print0 | sort -z | xargs -0 -r cat > "$RUN_DIR/results.ndjson"

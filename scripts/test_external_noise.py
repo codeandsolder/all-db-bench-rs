@@ -16,6 +16,7 @@ classify_process = MODULE.classify_process
 descendant_pids = MODULE.descendant_pids
 low_priority_sccache_tree = MODULE.low_priority_sccache_tree
 aggregate_foreign_cpu_percent = MODULE.aggregate_foreign_cpu_percent
+is_kernel_thread = MODULE.is_kernel_thread
 cpu_percent_from_samples = MODULE.cpu_percent_from_samples
 
 
@@ -37,6 +38,18 @@ class ExternalNoiseTests(unittest.TestCase):
 
     def test_flags_unknown_high_cpu_process(self) -> None:
         self.assertEqual(classify_process(self.row(cpu=75, comm="python3", args="python3 worker.py")), "foreign-high-cpu")
+
+    def test_ignores_kernel_worker_as_foreign_process(self) -> None:
+        row = ProcessRow(900, 2, -19, 120.0, "z_wr_iss", "[z_wr_iss]")
+        self.assertTrue(is_kernel_thread(row))
+        self.assertIsNone(classify_process(row))
+
+    def test_kernel_worker_does_not_count_toward_foreign_aggregate(self) -> None:
+        rows = [
+            ProcessRow(900, 2, -19, 120.0, "z_wr_iss", "[z_wr_iss]"),
+            ProcessRow(901, 1, 0, 20.0, "python", "python worker.py"),
+        ]
+        self.assertEqual(aggregate_foreign_cpu_percent(rows, excluded_pids=set()), 20.0)
 
     def test_ignores_small_daemon_activity(self) -> None:
         self.assertIsNone(classify_process(self.row(cpu=3, comm="tailscaled", args="/usr/sbin/tailscaled")))

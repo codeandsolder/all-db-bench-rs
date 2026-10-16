@@ -11,7 +11,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-SIZING_POLICY_VERSION = 2
+SIZING_POLICY_VERSION = 3
 READ_ONLY_WORKLOADS = frozenset({"point-read", "range-scan", "indexed-read"})
 GROUP_FIELDS = (
     "lane",
@@ -20,6 +20,8 @@ GROUP_FIELDS = (
     "engine_version",
     "durability",
     "workload",
+    "read_materialization",
+    "write_materialization",
     "records",
     "ops_requested",
     "clients",
@@ -65,8 +67,18 @@ def _round_up_trials(value: float, *, maximum: int) -> int:
     return min(_round_up_odd_trials(value), cap)
 
 
+def _identity_value(row: dict[str, Any], field: str) -> Any:
+    if field == "lane":
+        return row.get("lane", "kv")
+    if field == "read_materialization":
+        return row.get("read_materialization", "legacy-read-v0")
+    if field == "write_materialization":
+        return row.get("write_materialization", "legacy-return-v0")
+    return row.get(field)
+
+
 def _group_key(row: dict[str, Any]) -> tuple[Any, ...]:
-    return tuple((row.get(field) if field != "lane" else row.get("lane", "kv")) for field in GROUP_FIELDS)
+    return tuple(_identity_value(row, field) for field in GROUP_FIELDS)
 
 
 def _runner_ops_override(row: dict[str, Any], effective_ops: int) -> int:
@@ -182,6 +194,8 @@ def audit_rows(
                 "engine_version": first.get("engine_version"),
                 "durability": first.get("durability"),
                 "workload": workload,
+                "read_materialization": first.get("read_materialization", "legacy-read-v0"),
+                "write_materialization": first.get("write_materialization", "legacy-return-v0"),
                 "records": first.get("records"),
                 "ops_requested": effective_ops,
                 "trials": trials,

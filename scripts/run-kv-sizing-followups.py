@@ -17,21 +17,24 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TextIO
 
+from idle_supervisor_common import storage_preflight, write_status as supervisor_write_status
+
 DEFAULT_REPO = Path("/srv/scratch/db-bench-work/kv-sizing-v3-followup")
 DEFAULT_PLAN = Path("/srv/scratch/db-bench-work/kv-sizing-audit/20261006-kv-quick-67228ce-v4.json")
 DEFAULT_BIN = Path("/srv/scratch/db-bench-work/kv-sizing-audit/bin/kvbench-v3")
 DEFAULT_LOCK = Path("/run/lock/all-db-bench-performance.lock")
 DEFAULT_STATUS = Path("/srv/scratch/db-bench-work/kv-sizing-audit/idle-status.json")
-DEFAULT_RUN_PREFIX = "20261006-kv-resize-v4"
 
 
 def slug(value: str) -> str:
     return "".join(ch if ch.isalnum() or ch in "-_" else "-" for ch in value)
 
 
-def run_id(group: dict[str, Any], run_prefix: str = DEFAULT_RUN_PREFIX) -> str:
+DEFAULT_RUN_PREFIX = "20261006-kv-resize-v4"
+
+def run_id(group: dict[str, Any], prefix: str = DEFAULT_RUN_PREFIX) -> str:
     return (
-        f"{run_prefix}-"
+        f"{prefix}-"
         f"{slug(str(group['engine']))}-{slug(str(group['durability']))}-"
         f"{slug(str(group['workload']))}-e{int(group['suggested_effective_ops'])}"
         f"-t{int(group['suggested_trials'])}"
@@ -46,8 +49,8 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def complete(repo: Path, group: dict[str, Any], run_prefix: str = DEFAULT_RUN_PREFIX) -> bool:
-    summary = repo / "results" / "runs" / run_id(group, run_prefix) / "summary.json"
+def complete(repo: Path, group: dict[str, Any], prefix: str = DEFAULT_RUN_PREFIX) -> bool:
+    summary = repo / "results" / "runs" / run_id(group, prefix) / "summary.json"
     if not summary.is_file():
         return False
     try:
@@ -70,8 +73,8 @@ def complete(repo: Path, group: dict[str, Any], run_prefix: str = DEFAULT_RUN_PR
     )
 
 
-def median_elapsed(repo: Path, group: dict[str, Any], run_prefix: str = DEFAULT_RUN_PREFIX) -> float:
-    case_dir = repo / "results" / "runs" / run_id(group, run_prefix) / "cases"
+def median_elapsed(repo: Path, group: dict[str, Any], prefix: str = DEFAULT_RUN_PREFIX) -> float:
+    case_dir = repo / "results" / "runs" / run_id(group, prefix) / "cases"
     values = []
     for path in sorted(case_dir.glob("*.json")):
         row = json.loads(path.read_text())
@@ -85,7 +88,7 @@ def median_elapsed(repo: Path, group: dict[str, Any], run_prefix: str = DEFAULT_
     expected_trials = int(group["suggested_trials"])
     if len(values) != expected_trials:
         raise RuntimeError(
-            f"expected {expected_trials} validated trials for {run_id(group, run_prefix)}, found {len(values)}"
+            f"expected {expected_trials} validated trials for {run_id(group, prefix)}, found {len(values)}"
         )
     return statistics.median(values)
 
@@ -98,14 +101,14 @@ def calibration_elapsed(
     count: int,
     minimum: float,
     maximum: float,
-    run_prefix: str = DEFAULT_RUN_PREFIX,
+    prefix: str = DEFAULT_RUN_PREFIX,
 ) -> float | None:
     if group.get("resize_strategy") != "more-ops" or index > count:
         return None
-    elapsed = median_elapsed(repo, group, run_prefix)
+    elapsed = median_elapsed(repo, group, prefix)
     if not minimum <= elapsed <= maximum:
         raise RuntimeError(
-            f"resize calibration outside [{minimum:.3f}, {maximum:.3f}] s for {run_id(group, run_prefix)}: "
+            f"resize calibration outside [{minimum:.3f}, {maximum:.3f}] s for {run_id(group, prefix)}: "
             f"median_elapsed_s={elapsed:.3f}"
         )
     return elapsed
@@ -126,16 +129,8 @@ def acquire_lock(path: Path) -> TextIO:
     return handle
 
 
-def write_status(path: Path, **fields: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-        "pid": os.getpid(),
-        **fields,
-    }
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
-    tmp.replace(path)
+def write_status(path: Path, **fields: Any) -> bool:
+    return supervisor_write_status(path, **fields)
 
 
 def parse_io_full_avg10(raw: str) -> float:
@@ -150,6 +145,9 @@ def parse_io_full_avg10(raw: str) -> float:
 
 
 def preflight_host(repo: Path, *, max_io_full_avg10: float) -> int:
+    storage_rc = storage_preflight(repo)
+    if storage_rc != 0:
+        return storage_rc
     try:
         io_full_avg10 = parse_io_full_avg10(Path("/proc/pressure/io").read_text())
     except (OSError, ValueError):
@@ -166,35 +164,17 @@ def preflight_host(repo: Path, *, max_io_full_avg10: float) -> int:
     return proc.returncode
 
 
-def scrub_short_pressure(repo: Path, run_dir: Path) -> int:
-    proc = subprocess.run(
-        [sys.executable, str(repo / "scripts" / "scrub-short-trial-pressure.py"), str(run_dir)],
-        cwd=repo,
-        check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    if proc.returncode != 0:
-        raise RuntimeError(
-            f"short-trial pressure scrub failed rc={proc.returncode}: {proc.stderr.strip()}"
-        )
-    try:
-        report = json.loads(proc.stdout)
-    except json.JSONDecodeError as error:
-        raise RuntimeError(f"invalid short-trial pressure scrub output: {proc.stdout!r}") from error
-    rejected = int(report.get("rejected", 0))
-    if rejected:
-        case_ids = ",".join(str(item.get("case_id")) for item in report.get("cases", []))
-        print(f"archived {rejected} transient-pressure trial(s): {case_ids}", flush=True)
-    return rejected
-
-
-def groups_from_plan(path: Path, quality_plan_path: Path | None = None) -> list[dict[str, Any]]:
+def groups_from_plan(
+    path: Path, quality_plan_path: Path | None = None, *, include_sizing: bool = True
+) -> list[dict[str, Any]]:
     plan = json.loads(path.read_text())
     if plan.get("sizing_policy_version") != 2:
         raise ValueError(f"unsupported sizing policy: {plan.get('sizing_policy_version')!r}")
-    groups = [group for group in plan["groups"] if group["status"] == "undersized"]
+    groups = (
+        [group for group in plan["groups"] if group["status"] == "undersized"]
+        if include_sizing
+        else []
+    )
     if quality_plan_path is not None:
         quality = json.loads(quality_plan_path.read_text())
         if quality.get("quality_policy_version") != 1:
@@ -213,11 +193,11 @@ def groups_from_plan(path: Path, quality_plan_path: Path | None = None) -> list[
     return groups
 
 
-def command_env(group: dict[str, Any], bench_bin: Path, run_prefix: str = DEFAULT_RUN_PREFIX) -> dict[str, str]:
+def command_env(group: dict[str, Any], bench_bin: Path, prefix: str = DEFAULT_RUN_PREFIX) -> dict[str, str]:
     env = os.environ.copy()
     env.update(
         {
-            "RUN_ID": run_id(group, run_prefix),
+            "RUN_ID": run_id(group, prefix),
             "BENCH_BIN": str(bench_bin),
             "ENGINES_OVERRIDE": str(group["engine"]),
             "DURABILITIES_OVERRIDE": str(group["durability"]),
@@ -237,11 +217,12 @@ def main() -> int:
     parser.add_argument("--repo", type=Path, default=DEFAULT_REPO)
     parser.add_argument("--plan", type=Path, default=DEFAULT_PLAN)
     parser.add_argument("--quality-plan", type=Path)
+    parser.add_argument("--run-prefix", default=DEFAULT_RUN_PREFIX)
+    parser.add_argument("--quality-only", action="store_true")
     parser.add_argument("--bench-bin", type=Path, default=DEFAULT_BIN)
     parser.add_argument("--expected-bench-sha256")
     parser.add_argument("--lock-file", type=Path, default=DEFAULT_LOCK)
     parser.add_argument("--status-file", type=Path, default=DEFAULT_STATUS)
-    parser.add_argument("--run-prefix", default=DEFAULT_RUN_PREFIX)
     parser.add_argument("--limit", type=int)
     parser.add_argument("--watch", action="store_true")
     parser.add_argument("--busy-sleep", type=float, default=2.0)
@@ -268,7 +249,9 @@ def main() -> int:
         return 73
 
     with lock_handle:
-        groups = groups_from_plan(args.plan, args.quality_plan)
+        groups = groups_from_plan(
+            args.plan, args.quality_plan, include_sizing=not args.quality_only
+        )
         if args.limit is not None:
             groups = groups[: args.limit]
         total = len(groups)
@@ -284,13 +267,6 @@ def main() -> int:
         for index, group in enumerate(groups, 1):
             rid = run_id(group, args.run_prefix)
             run_dir = args.repo / "results" / "runs" / rid
-            if group.get("resize_strategy") in {"more-trials", "quality-repair"}:
-                try:
-                    scrub_short_pressure(args.repo, run_dir)
-                except RuntimeError as error:
-                    write_status(args.status_file, state="failed", campaign="raw-kv-sizing-followups", current_run_id=rid, error=str(error))
-                    print(error, flush=True)
-                    return 2
             if complete(args.repo, group, args.run_prefix):
                 skipped += 1
                 print(f"[{index}/{total}] skip complete {rid}", flush=True)
@@ -302,7 +278,7 @@ def main() -> int:
                         count=args.calibration_count,
                         minimum=args.calibration_min_seconds,
                         maximum=args.calibration_max_seconds,
-                        run_prefix=args.run_prefix,
+                        prefix=args.run_prefix,
                     )
                 except RuntimeError as error:
                     write_status(
@@ -398,20 +374,10 @@ def main() -> int:
                     stderr=subprocess.STDOUT,
                     text=True,
                 )
-                scrubbed = 0
-                if group.get("resize_strategy") in {"more-trials", "quality-repair"}:
-                    try:
-                        scrubbed = scrub_short_pressure(args.repo, run_dir)
-                    except RuntimeError as error:
-                        write_status(args.status_file, state="failed", campaign="raw-kv-sizing-followups", current_run_id=rid, error=str(error))
-                        print(error, flush=True)
-                        return 2
                 if proc.returncode == 0:
                     if proc.stdout:
                         print(proc.stdout, end="", flush=True)
-                    if scrubbed:
-                        continue
-                    if not complete(args.repo, group):
+                    if not complete(args.repo, group, args.run_prefix):
                         print(f"runner returned success but result validation failed: {rid}", flush=True)
                         return 2
                     completed_now += 1
@@ -461,7 +427,6 @@ def main() -> int:
                     count=args.calibration_count,
                     minimum=args.calibration_min_seconds,
                     maximum=args.calibration_max_seconds,
-                    run_prefix=args.run_prefix,
                 )
             except RuntimeError as error:
                 write_status(

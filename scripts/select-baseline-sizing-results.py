@@ -18,6 +18,8 @@ IDENTITY_FIELDS = (
     "engine_version",
     "durability",
     "workload",
+    "read_materialization",
+    "write_materialization",
     "records",
     "clients",
     "value_bytes",
@@ -32,7 +34,9 @@ IDENTITY_FIELDS = (
     "settle_ms",
     "configuration",
 )
-AUDIT_FIELDS = ("engine", "engine_version", "durability", "workload", "records", "ops_requested")
+AUDIT_FIELDS = ("engine", "engine_version", "durability", "workload", "read_materialization", "write_materialization", "records", "ops_requested")
+FINAL_CONFIRMATION_KEY_FIELDS = ("engine", "durability", "workload", "records")
+FINAL_CONFIRMATION_STRATEGIES = {"final-five-trial-common-work-v3", "final-common-work-v3", "final-five-trial-common-work-v4", "final-five-trial-common-work-v5", "final-five-trial-common-work-v6"}
 
 
 def slug(value: str) -> str:
@@ -48,12 +52,33 @@ def run_id(group: dict[str, Any], resize_prefix: str) -> str:
     )
 
 
+def _identity_value(row: dict[str, Any], field: str) -> Any:
+    if field == "read_materialization":
+        return row.get("read_materialization", "legacy-read-v0")
+    if field == "write_materialization":
+        return row.get("write_materialization", "legacy-return-v0")
+    return row.get(field)
+
+
+def semantic_manifest_fields(row: dict[str, Any]) -> dict[str, str]:
+    if row.get("lane") != "record":
+        return {}
+    return {
+        "read_materialization": str(row.get("read_materialization", "legacy-read-v0")),
+        "write_materialization": str(row.get("write_materialization", "legacy-return-v0")),
+    }
+
+
 def identity(row: dict[str, Any]) -> tuple[Any, ...]:
-    return tuple(row.get(field) for field in IDENTITY_FIELDS)
+    return tuple(_identity_value(row, field) for field in IDENTITY_FIELDS)
 
 
 def audit_key(row: dict[str, Any]) -> tuple[Any, ...]:
-    return tuple(row.get(field) for field in AUDIT_FIELDS)
+    return tuple(_identity_value(row, field) for field in AUDIT_FIELDS)
+
+
+def final_confirmation_key(row: dict[str, Any]) -> tuple[Any, ...]:
+    return tuple(_identity_value(row, field) for field in FINAL_CONFIRMATION_KEY_FIELDS)
 
 
 def read_ndjson(path: Path) -> list[dict[str, Any]]:
@@ -112,8 +137,19 @@ def select_rows(
     allow_missing_resize: bool,
     quality_repair_plan: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    if audit.get("sizing_policy_version") != 2:
+    policy_version = int(audit.get("sizing_policy_version", -1))
+    if policy_version not in {2, 3}:
         raise ValueError(f"unsupported sizing policy: {audit.get('sizing_policy_version')!r}")
+    if policy_version >= 3:
+        missing_semantics = [
+            row for row in stock_rows
+            if row.get("lane") == "record"
+            and (not row.get("read_materialization") or not row.get("write_materialization"))
+        ]
+        if missing_semantics:
+            raise ValueError(
+                "sizing policy v3 record rows require explicit read/write materialization"
+            )
     thresholds = audit.get("thresholds", {})
     stock_trial_count = int(thresholds.get("expect_trials", 3))
 
@@ -123,12 +159,19 @@ def select_rows(
 
     audit_groups = {audit_key(group): group for group in audit["groups"]}
     quality_groups: dict[tuple[Any, ...], dict[str, Any]] = {}
+    quality_lookup = audit_key
     if quality_repair_plan is not None:
         if quality_repair_plan.get("quality_policy_version") != 1:
             raise ValueError(
                 f"unsupported stock quality policy: {quality_repair_plan.get('quality_policy_version')!r}"
             )
-        quality_groups = {audit_key(group): group for group in quality_repair_plan.get("groups", [])}
+        if quality_repair_plan.get("strategy") in FINAL_CONFIRMATION_STRATEGIES:
+            quality_lookup = final_confirmation_key
+        for group in quality_repair_plan.get("groups", []):
+            key = quality_lookup(group)
+            if key in quality_groups:
+                raise ValueError(f"duplicate quality-repair identity: {key}")
+            quality_groups[key] = group
     output: list[dict[str, Any]] = []
     selected_stock = 0
     selected_resize = 0
@@ -148,7 +191,7 @@ def select_rows(
         if group is None:
             raise ValueError(f"stock group missing from audit: {key}")
 
-        quality_group = quality_groups.get(key)
+        quality_group = quality_groups.get(quality_lookup(first))
         if quality_group is not None:
             rid = run_id(quality_group, resize_prefix)
             results_path = resize_root / rid / "results.ndjson"
@@ -182,6 +225,7 @@ def select_rows(
                     "engine": first["engine"],
                     "durability": first["durability"],
                     "workload": first["workload"],
+                    **semantic_manifest_fields(first),
                     "source": "quality-repair",
                     "resize_strategy": "quality-repair",
                     "run_id": rid,
@@ -206,6 +250,7 @@ def select_rows(
                     "engine": first["engine"],
                     "durability": first["durability"],
                     "workload": first["workload"],
+                    **semantic_manifest_fields(first),
                     "source": "stock",
                     "ops_requested": int(first["ops_requested"]),
                     "trials": stock_trial_count,
@@ -250,6 +295,7 @@ def select_rows(
                 "engine": first["engine"],
                 "durability": first["durability"],
                 "workload": first["workload"],
+                **semantic_manifest_fields(first),
                 "source": "resize",
                 "resize_strategy": group.get("resize_strategy"),
                 "run_id": rid,
