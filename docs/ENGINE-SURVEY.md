@@ -23,6 +23,7 @@ Recent compact Rust embedded KV. File-backed commits call sync_data before publi
 ### sled 1.0.0-alpha.124
 The sled project has an active 1.0 alpha line again. Included because the implementation has materially moved beyond the long-stagnant 0.34 release commonly used in older comparisons. Sync results explicitly call Db::flush after each measured write transaction.
 
+Recovery in this alpha currently spawns the host-global `sync` command (the upstream source marks both calls `TODO NOCOMMIT`.) That happens before the benchmark measured interval, but it can block behind unrelated dirty filesystems on a deliberately busy-host smoke run. The KV concurrency smoke therefore grants sled a 900 s case ceiling while leaving the normal smoke ceiling at 60 s; quick/full performance lanes retain their normal timeouts and quiet-host admission.
 ### heed 0.22.1 / LMDB
 Not a pure-Rust storage engine, but still a valuable mmap/B+tree reference with a thin Rust API. Kept as a reference rather than described as a Rust-native engine.
 
