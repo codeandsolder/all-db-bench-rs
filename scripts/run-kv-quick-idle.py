@@ -99,18 +99,21 @@ def complete(repo: Path, run_id: str) -> bool:
     )
 
 
-def audit(repo: Path, run_id: str, audit_dir: Path) -> None:
+def audit(repo: Path, run_id: str, audit_dir: Path, json_out: Path | None = None, markdown_out: Path | None = None) -> None:
     run_dir = repo / "results" / "runs" / run_id
     audit_dir.mkdir(parents=True, exist_ok=True)
+    json_out = json_out or audit_dir / f"{run_id}-sizing.json"
+    markdown_out = markdown_out or audit_dir / f"{run_id}-sizing.md"
+    json_out.parent.mkdir(parents=True, exist_ok=True)
+    markdown_out.parent.mkdir(parents=True, exist_ok=True)
     proc = subprocess.run(
         [
-            sys.executable,
             str(repo / "scripts" / "audit_baseline_sizing.py"),
             str(run_dir / "results.ndjson"),
             "--json-out",
-            str(audit_dir / f"{run_id}-sizing.json"),
+            str(json_out),
             "--markdown-out",
-            str(audit_dir / f"{run_id}-sizing.md"),
+            str(markdown_out),
         ],
         cwd=repo,
         check=False,
@@ -128,6 +131,8 @@ def main() -> int:
     parser.add_argument("--lock-file", type=Path, default=DEFAULT_LOCK)
     parser.add_argument("--status-file", type=Path, default=DEFAULT_STATUS)
     parser.add_argument("--audit-dir", type=Path, default=Path("/srv/scratch/db-bench-work/kv-refresh"))
+    parser.add_argument("--audit-json", type=Path)
+    parser.add_argument("--audit-markdown", type=Path)
     parser.add_argument("--watch", action="store_true")
     parser.add_argument("--busy-sleep", type=float, default=2.0)
     parser.add_argument("--max-io-full-avg10", type=float, default=5.0)
@@ -144,7 +149,7 @@ def main() -> int:
 
     with lock_handle:
         if complete(args.repo, args.run_id):
-            audit(args.repo, args.run_id, args.audit_dir)
+            audit(args.repo, args.run_id, args.audit_dir, args.audit_json, args.audit_markdown)
             write_status(args.status_file, state="complete", campaign="kv-quick-stock", run_id=args.run_id, busy_events=0)
             print(f"KV quick already complete: {args.run_id}", flush=True)
             return 0
@@ -203,7 +208,7 @@ def main() -> int:
                     write_status(args.status_file, state="failed", campaign="kv-quick-stock", run_id=args.run_id, error="runner success did not validate")
                     return 2
                 try:
-                    audit(args.repo, args.run_id, args.audit_dir)
+                    audit(args.repo, args.run_id, args.audit_dir, args.audit_json, args.audit_markdown)
                 except RuntimeError as error:
                     write_status(args.status_file, state="audit-failed", campaign="kv-quick-stock", run_id=args.run_id, error=str(error))
                     print(error, flush=True)
