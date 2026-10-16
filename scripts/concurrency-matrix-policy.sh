@@ -3,8 +3,15 @@
 # Total logical work remains fixed across client counts within each case family.
 
 concurrency_case_timeout_s() {
-  case "$1" in
-    smoke) echo 60 ;;
+  local profile=$1 engine=${2:-}
+  case "$profile" in
+    smoke)
+      # sled 1.0.0-alpha.124 runs a host-global `sync` during recovery. Smoke
+      # deliberately permits a busy host, so give sled startup enough wall
+      # clock to drain unrelated writes instead of misclassifying it as a DB
+      # hang. Performance profiles still require an admitted quiet host.
+      if [[ "$engine" == sled ]]; then echo 900; else echo 60; fi
+      ;;
     quick) echo 180 ;;
     full) echo 1800 ;;
     *) return 2 ;;

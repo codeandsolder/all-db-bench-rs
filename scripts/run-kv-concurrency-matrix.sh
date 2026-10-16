@@ -28,7 +28,7 @@ source "$ROOT/scripts/kv-matrix-policy.sh"
 source "$ROOT/scripts/concurrency-matrix-policy.sh"
 # shellcheck source=concurrency-runner-common.sh
 source "$ROOT/scripts/concurrency-runner-common.sh"
-CASE_TIMEOUT_S=$(concurrency_case_timeout_s "$PROFILE") || exit 2
+DEFAULT_CASE_TIMEOUT_S=$(concurrency_case_timeout_s "$PROFILE") || exit 2
 PERSY_LOCK_TIMEOUT_MS=${PERSY_LOCK_TIMEOUT_MS:-250}
 [[ "$PERSY_LOCK_TIMEOUT_MS" =~ ^[1-9][0-9]*$ ]] || { echo "invalid PERSY_LOCK_TIMEOUT_MS=$PERSY_LOCK_TIMEOUT_MS" >&2; exit 2; }
 command -v timeout >/dev/null || { echo "GNU timeout is required" >&2; exit 2; }
@@ -112,7 +112,7 @@ json.dump({
  "resume_order_policy":"$RESUME_ORDER_POLICY","build_profile":"$BUILD_PROFILE","benchmark_binary_sha256":"$BIN_SHA",
  "runner_sha256":"$RUNNER_SHA","kv_matrix_policy_sha256":"$KV_POLICY_SHA","concurrency_policy_sha256":"$CONCURRENCY_POLICY_SHA",
  "noise_guard_sha256":"$NOISE_SHA","short_pressure_guard_sha256":"$PRESSURE_SHA",
- "case_timeout_s":$CASE_TIMEOUT_S,"persy_lock_timeout_ms":$PERSY_LOCK_TIMEOUT_MS,
+ "case_timeout_s":$DEFAULT_CASE_TIMEOUT_S,"engine_case_timeouts_s":{"sled":$(concurrency_case_timeout_s "$PROFILE" sled)},"persy_lock_timeout_ms":$PERSY_LOCK_TIMEOUT_MS,
  "state_evolution":"growth","write_pattern":"append",
  "persy_timeout_retry_policy":"typed PrepareError::TransactionTimeout only; max 100 retries; deterministic micro-backoff; retry cost is timed",
  "import_manifest_sha256":("$IMPORT_MANIFEST_SHA" or None),
@@ -146,17 +146,18 @@ for job in "${ORDERED[@]}"; do
   noise_before="$RUN_DIR/noise/$case_id.before.json"; noise_after="$RUN_DIR/noise/$case_id.after.json"
   if [[ -s "$out" ]]; then clear_failure "$case_id"; continue; fi
   echo "[$INDEX/$TOTAL] $case_id" >&2
+  case_timeout_s=$(concurrency_case_timeout_s "$PROFILE" "$engine") || exit 2
   concurrency_check_io_quiet "$PROFILE" "before:$case_id" || exit $?
   concurrency_check_external_noise "$ROOT" "$PROFILE" "before:$case_id" "$noise_before" || exit $?
   rm -f "$out"
   if [[ "$engine" == persy ]]; then
-    DBBENCH_PERSY_LOCK_TIMEOUT_MS="$PERSY_LOCK_TIMEOUT_MS" timeout --signal=TERM --kill-after=5s "${CASE_TIMEOUT_S}s" \
+    DBBENCH_PERSY_LOCK_TIMEOUT_MS="$PERSY_LOCK_TIMEOUT_MS" timeout --signal=TERM --kill-after=5s "${case_timeout_s}s" \
       "$BIN" --engine "$engine" --durability "$durability" --workload "$workload" \
       --records "$RECORDS" --ops "$ops" --clients "$clients" --value-bytes 256 --value-pattern pseudo-random \
       --key-bytes 8 --key-shape sequential --access-pattern auto --write-pattern append --state-evolution growth --bounded-churn-slots 0 --txn-size 100 --scan-len "$scan" --warmup-reads 5000 \
       --trial "$trial" --seed 1592606758 --scenario "concurrency-$scenario" --root "$DATA_DIR" --output "$out" 2>"$err"
   else
-    timeout --signal=TERM --kill-after=5s "${CASE_TIMEOUT_S}s" \
+    timeout --signal=TERM --kill-after=5s "${case_timeout_s}s" \
       "$BIN" --engine "$engine" --durability "$durability" --workload "$workload" \
       --records "$RECORDS" --ops "$ops" --clients "$clients" --value-bytes 256 --value-pattern pseudo-random \
       --key-bytes 8 --key-shape sequential --access-pattern auto --write-pattern append --state-evolution growth --bounded-churn-slots 0 --txn-size 100 --scan-len "$scan" --warmup-reads 5000 \

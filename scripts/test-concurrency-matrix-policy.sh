@@ -4,6 +4,8 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 source "$ROOT/scripts/concurrency-matrix-policy.sh"
 
 [[ $(concurrency_case_timeout_s smoke) == 60 ]]
+[[ $(concurrency_case_timeout_s smoke redb) == 60 ]]
+[[ $(concurrency_case_timeout_s smoke sled) == 900 ]]
 [[ $(concurrency_case_timeout_s quick) == 180 ]]
 [[ $(concurrency_case_timeout_s full) == 1800 ]]
 
