@@ -43,13 +43,17 @@ def checked_repo_commit(repo: Path) -> str:
     return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
 
 
-def checked_binary(path: Path, expected_sha: str, *, label: str) -> Path:
+def checked_binary(path: Path, *, label: str) -> Path:
     if not path.is_file() or not os.access(path, os.X_OK):
         raise ValueError(f"{label} binary is not executable: {path}")
-    actual = sha256(path)
-    if actual != expected_sha:
-        raise ValueError(f"{label} binary SHA-256 mismatch: expected {expected_sha}, got {actual}")
     return path
+
+
+def checked_manifest_sha(value: object, *, label: str) -> str:
+    sha = str(value or "")
+    if len(sha) != 64 or any(ch not in "0123456789abcdef" for ch in sha):
+        raise ValueError(f"{label} manifest SHA-256 is invalid")
+    return sha
 
 
 @dataclass(frozen=True)
@@ -77,14 +81,17 @@ def load_pins(repo: Path, kv_manifest: Path, record_manifest: Path) -> Pins:
     rocks_item = record_items.get("surrealdb-rocksdb-recordbench")
     if not isinstance(record_item, dict) or not isinstance(rocks_item, dict):
         raise ValueError("record manifest is missing baseline binaries")
+    kv_sha = checked_manifest_sha(kv_item.get("sha256"), label="kvbench")
+    record_sha = checked_manifest_sha(record_item.get("sha256"), label="recordbench")
+    rocks_sha = checked_manifest_sha(rocks_item.get("sha256"), label="surrealdb-rocksdb-recordbench")
     return Pins(
         commit=commit,
-        kvbench=checked_binary(Path(str(kv_item.get("path", ""))), str(kv_item.get("sha256", "")), label="kvbench"),
-        kvbench_sha256=str(kv_item["sha256"]),
-        recordbench=checked_binary(Path(str(record_item.get("path", ""))), str(record_item.get("sha256", "")), label="recordbench"),
-        recordbench_sha256=str(record_item["sha256"]),
-        rocks_recordbench=checked_binary(Path(str(rocks_item.get("path", ""))), str(rocks_item.get("sha256", "")), label="surrealdb-rocksdb-recordbench"),
-        rocks_recordbench_sha256=str(rocks_item["sha256"]),
+        kvbench=checked_binary(Path(str(kv_item.get("path", ""))), label="kvbench"),
+        kvbench_sha256=kv_sha,
+        recordbench=checked_binary(Path(str(record_item.get("path", ""))), label="recordbench"),
+        recordbench_sha256=record_sha,
+        rocks_recordbench=checked_binary(Path(str(rocks_item.get("path", ""))), label="surrealdb-rocksdb-recordbench"),
+        rocks_recordbench_sha256=rocks_sha,
     )
 
 

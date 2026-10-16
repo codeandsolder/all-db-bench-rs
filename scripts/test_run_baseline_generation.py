@@ -49,7 +49,7 @@ class BaselineGenerationTests(unittest.TestCase):
         self.assertEqual(paths.record_resize_prefix, "20261016-refresh-record-resize")
         self.assertEqual(paths.kv_audit, Path("/generation/plans/20261016-refresh-kv-sizing.json"))
 
-    def test_load_pins_requires_one_commit_and_verifies_hashes(self) -> None:
+    def test_load_pins_requires_one_commit_without_eager_binary_hashing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             repo = self.make_repo(root)
@@ -67,12 +67,40 @@ class BaselineGenerationTests(unittest.TestCase):
                 "recordbench": {"path": str(record), "sha256": MODULE.sha256(record)},
                 "surrealdb-rocksdb-recordbench": {"path": str(rocks), "sha256": MODULE.sha256(rocks)},
             }}))
-            with mock.patch.object(MODULE, "checked_repo_commit", return_value=commit):
+            with (
+                mock.patch.object(MODULE, "checked_repo_commit", return_value=commit),
+                mock.patch.object(MODULE, "sha256", side_effect=AssertionError("binary hash must be deferred")),
+            ):
                 pins = MODULE.load_pins(repo, kv_manifest, record_manifest)
             self.assertEqual(pins.commit, commit)
             self.assertEqual(pins.kvbench, kvbench)
             with mock.patch.object(MODULE, "checked_repo_commit", return_value="c" * 40):
                 with self.assertRaisesRegex(ValueError, "one exact repo commit"):
+                    MODULE.load_pins(repo, kv_manifest, record_manifest)
+
+
+    def test_load_pins_rejects_malformed_manifest_hash_without_reading_binary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = self.make_repo(root)
+            binary = root / "kvbench"
+            binary.write_bytes(b"kv")
+            binary.chmod(0o755)
+            record = root / "recordbench"
+            rocks = root / "rocks"
+            for path in (record, rocks):
+                path.write_bytes(b"x")
+                path.chmod(0o755)
+            commit = "b" * 40
+            kv_manifest = root / "kv.json"
+            kv_manifest.write_text(json.dumps({"repo_commit": commit, "kv": {"path": str(binary), "sha256": "bad"}}))
+            record_manifest = root / "record.json"
+            record_manifest.write_text(json.dumps({"repo_commit": commit, "binaries": {
+                "recordbench": {"path": str(record), "sha256": "1" * 64},
+                "surrealdb-rocksdb-recordbench": {"path": str(rocks), "sha256": "2" * 64},
+            }}))
+            with mock.patch.object(MODULE, "checked_repo_commit", return_value=commit):
+                with self.assertRaisesRegex(ValueError, "manifest SHA-256 is invalid"):
                     MODULE.load_pins(repo, kv_manifest, record_manifest)
 
     def test_stage_plan_is_generation_scoped_and_uses_continuous_ready_verifiers(self) -> None:
