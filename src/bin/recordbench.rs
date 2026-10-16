@@ -172,9 +172,9 @@ pub(crate) enum Engine {
 impl EngineKind {
     pub(crate) fn version(self) -> &'static str {
         match self {
-            Self::Surrealdb => "3.3.0 / SurrealKV 0.21.4",
-            Self::Turso => "0.8.2-pre.2",
-            Self::Sqlite => "rusqlite 0.40.2 / SQLite 3.53.4",
+            Self::Surrealdb => "3.3.4 / SurrealKV 0.21.4",
+            Self::Turso => "0.8.3",
+            Self::Sqlite => "rusqlite 0.40.2 / SQLite 3.54.0",
         }
     }
     pub(crate) fn mapping(self, d: Durability) -> &'static str {
@@ -184,9 +184,9 @@ impl EngineKind {
             (Self::Turso, Durability::Relaxed) => "Turso PRAGMA synchronous=NORMAL",
             (Self::Turso, Durability::Sync) => "Turso PRAGMA synchronous=FULL",
             (Self::Sqlite, Durability::Relaxed) => {
-                "SQLite 3.53.4 WAL journal_mode + synchronous=NORMAL"
+                "SQLite 3.54.0 WAL journal_mode + synchronous=NORMAL"
             }
-            (Self::Sqlite, Durability::Sync) => "SQLite 3.53.4 WAL journal_mode + synchronous=FULL",
+            (Self::Sqlite, Durability::Sync) => "SQLite 3.54.0 WAL journal_mode + synchronous=FULL",
         }
     }
 }
@@ -305,9 +305,9 @@ impl Engine {
                 Ok(Self::Turso(conn))
             }
             EngineKind::Sqlite => {
-                if rusqlite::version() != "3.53.4" {
+                if rusqlite::version() != "3.54.0" {
                     bail!(
-                        "SQLite runtime version mismatch: expected 3.53.4, got {}",
+                        "SQLite runtime version mismatch: expected 3.54.0, got {}",
                         rusqlite::version()
                     );
                 }

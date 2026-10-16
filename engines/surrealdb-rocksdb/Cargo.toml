@@ -2,7 +2,7 @@
 name = "surrealdb-rocksdb-recordbench"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.99.0"
+rust-version = "1.99.1"
 
 [dependencies]
 anyhow = "1"
@@ -11,7 +11,7 @@ hdrhistogram = "7"
 rand = "0.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-surrealdb = { version = "=3.3.2", default-features = false, features = ["kv-rocksdb"] }
+surrealdb = { version = "=3.3.4", default-features = false, features = ["kv-rocksdb"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 
 [profile.release]

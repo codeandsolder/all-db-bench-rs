@@ -6,7 +6,7 @@
 # minutes repeating the same latency primitive rather than add useful precision:
 # - tiny-txn commits one key per transaction, so use one tenth of profile ops
 #   (with a 100-op floor so smoke remains meaningful);
-# - lsm-db 1.0.0 bounded scans cannot seek to the lower bound: each run cursor
+# - lsm-db 1.1.0 bounded scans cannot seek to the lower bound: each run cursor
 #   starts at block zero, so a uniformly positioned range traverses roughly
 #   records/2 entries before returning the requested rows. Bound that hidden
 #   traversal work so the matrix measures the pathology without hours of O(N).

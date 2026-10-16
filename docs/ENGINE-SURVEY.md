@@ -1,18 +1,18 @@
-# Engine survey — 2026-10-04
+# Engine survey — 2026-10-16
 
 ## In the benchmark
 
-### redb 4.3.0
+### redb 4.4.0
 Pure-Rust copy-on-write B+tree, ACID/MVCC. This remains the main B+tree-style reference.
 
 ### Fjall 3.1.12
 Pure-Rust LSM engine. Its durability API is explicit: Buffer, SyncData, SyncAll. The old benchmark accidentally measured commit without the required persist call; this suite does not.
 
-### SurrealKV 0.21.4
+### SurrealKV 1.0.0
 SurrealDB's low-level Rust storage engine, tested directly in the raw KV lane. This is distinct from SurrealDB itself.
 
-### SurrealDB 3.3.0
-Tested in the record/document lane through the embedded SurrealKV backend. SurrealDB 3.3 exposes storage sync modes, so sync=every and sync=never can be selected explicitly. The record-concurrency lane gives each client a native cloned Surreal handle; only typed QueryError::TransactionConflict failures are retried, with retry count and time retained in the result.
+### SurrealDB 3.3.4
+Tested in the record/document lane through its embedded SurrealKV 0.21.4 backend. The raw-KV lane separately tests SurrealKV 1.0.0; SurrealDB 3.3.4 has not yet moved its internal backend to that generation. SurrealDB 3.3 exposes storage sync modes, so sync=every and sync=never can be selected explicitly. The record-concurrency lane gives each client a native cloned Surreal handle; only typed QueryError::TransactionConflict failures are retried, with retry count and time retained in the result.
 
 ### TurboKV 0.6.0
 Recent async Rust LSM-style embedded store. It explicitly distinguishes fast(), durable() (WAL without per-write sync), and paranoid() (sync before acknowledgement). The benchmark maps the primary power-loss-durable comparison to paranoid(), not to the misleadingly named durable() preset.
@@ -33,7 +33,7 @@ Crate: manifold-db 3.1.0, published 2026-08-28.
 Manifold is explicitly a fork of redb with column families plus an optional WAL/group-commit path. The benchmark still uses the column-family API, but the primary `manifold` sync configuration now disables the WAL and uses `Durability::Immediate`. This is not an arbitrary tuning choice: Manifold 3.1.0's default WAL path reproducibly loses transactions that had already returned success under true SIGKILL, and the same loss is reproduced by the independent dm-log-writes power-loss model. The default-WAL configuration remains available as `manifold-wal` only for diagnostic/negative-control runs and is excluded from normal rankings.
 
 
-### ParityDB 0.5.6
+### ParityDB 0.5.7
 Production-oriented pure-Rust store from the Parity/Substrate ecosystem. The benchmark exposes two configurations rather than hiding an important storage-mode choice:
 
 - **paritydb-hash** uses the normal hash-indexed column for point/mixed/write workloads. It has no ordered range API and is omitted from range-scan.
@@ -50,22 +50,22 @@ Mature mmap/B+tree-family reference beside LMDB/heed. Uses NoWriteMap. Sync maps
 ### Persy 1.8.1
 Pure-Rust transactional single-file copy-on-write/journal engine. The adapter uses a ByteVec -> ByteVec Replace index to provide true KV semantics. Sync uses foreground transaction fsync; relaxed uses Persy's background-sync transaction mode.
 
-### Turso 0.8.2-pre.2
+### Turso 0.8.3
 Record/SQL product lane. The concurrency benchmark opens one independent `Database::connect()` connection per client rather than cloning a `Connection`, because Turso connection clones share a connection-operation gate. Its native 60 s busy timeout keeps writer lock wait inside measured transaction latency.
 
-### SQLite 3.53.4 / rusqlite 0.40.2
-Record/SQL lane baseline. rusqlite 0.40.2 normally bundles SQLite 3.53.2, so the benchmark links it against a project-local build of the actual current SQLite 3.53.4. WAL mode is fixed; synchronous=NORMAL/FULL provides relaxed/sync comparison. Concurrency uses one independent WAL connection per client with SQLite's native 60 s busy timeout, so lock serialization is measured rather than hidden by benchmark retries.
+### SQLite 3.54.0 / rusqlite 0.40.2
+Record/SQL lane baseline. rusqlite 0.40.2 normally bundles SQLite 3.53.2, so the benchmark links it against a project-local build of the actual current SQLite 3.54.0. WAL mode is fixed; synchronous=NORMAL/FULL provides relaxed/sync comparison. Concurrency uses one independent WAL connection per client with SQLite's native 60 s busy timeout, so lock serialization is measured rather than hidden by benchmark retries.
 
-### SurrealDB 3.3.0 / RocksDB backend
+### SurrealDB 3.3.4 / RocksDB backend
 Same SurrealDB record workload with RocksDB underneath, isolating backend contribution from query/document-layer cost. Kept in a separate Cargo package because SurrealDB's forked RocksDB native sys crate and standalone rocksdb 0.25.0 both declare links="rocksdb" and Cargo correctly refuses to link both into one package graph. Its concurrency binary stays in that isolated package and uses native cloned Surreal handles with the same typed conflict-retry accounting as the SurrealKV-backed product.
 
-### RoughDB 0.10.1 — implemented experimental lane
+### RoughDB 0.11.1 — implemented experimental lane
 Current 2026 pure-Rust LevelDB port with WAL, MANIFEST, SSTables, background compaction and a runtime per-write sync flag. It maps cleanly to both durability lanes. Compression is explicitly disabled in the neutral comparison so it matches the standalone RocksDB baseline policy.
 
 ### jammdb 0.11.0 — implemented sync-only lane
 BoltDB-style mmap single-file B+tree. Writable transaction commit calls sync_all and there is no relaxed commit switch, so it participates only in the primary sync lane.
 
-### lsm-db 1.0.0 — implemented sync-only experimental lane
+### lsm-db 1.1.0 — implemented sync-only experimental lane
 Current stable 2026 Rust LSM. The benchmark enables its durability and bloom features. Durability is a Cargo feature rather than a per-write runtime mode, so this adapter participates only in sync comparisons.
 
 ### sanakirja 2.0.0-beta.3 — surveyed, not enabled
@@ -87,6 +87,6 @@ Transactional on-disk data structures and a useful historical pure-Rust referenc
 Manifold's advertised advantage is parallel writes across column families. Shared-database concurrency is now measured separately on the 8-logical-CPU laptop using the same primary no-WAL Immediate configuration; the broken default-WAL diagnostic is not used as the concurrency baseline.
 ## External TSDB/server lane (2026-10-05)
 
-These are intentionally outside the embedded-engine candidate table. Current stable pins used by the benchmark are GreptimeDB 1.2.1, VictoriaMetrics 1.153.0, Prometheus 3.15.0 and InfluxDB 3 Core 3.12.0. The first three expose Prometheus Remote Write + PromQL-compatible APIs; InfluxDB 3 uses native line protocol + SQL, so the benchmark standardizes logical samples/query semantics rather than pretending the wire protocols are identical.
+These are intentionally outside the embedded-engine candidate table. Current stable pins used by the benchmark are GreptimeDB 1.2.1, VictoriaMetrics 1.153.0, Prometheus 3.15.0 and InfluxDB 3 Core 3.12.1. The first three expose Prometheus Remote Write + PromQL-compatible APIs; InfluxDB 3 uses native line protocol + SQL, so the benchmark standardizes logical samples/query semantics rather than pretending the wire protocols are identical.
 
 GreptimeDB 1.2.1 has one important compatibility finding from adapter bring-up: an instant PromQL range-vector query over the benchmark metric reproducibly panicked inside Arrow dictionary casting (`arrow-select` `take.rs`, out-of-bounds index) and produced GreptimeDB's human-panic crash report. Raw single-series range validation therefore uses the non-crashing Prometheus `query_range` endpoint, which is also the natural common operation for this lane. GreptimeDB additionally evaluates `query_range` on the declared step grid, so benchmark timestamps are deliberately step-aligned for all four products rather than adding a Greptime-specific boundary workaround.

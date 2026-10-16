@@ -3,18 +3,18 @@ set -euo pipefail
 ROOT=$(cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$ROOT"
 
-RUSTC_REAL=$(rustup which rustc --toolchain 1.99.0)
-"$RUSTC_REAL" --version | rg '^rustc 1\.99\.0 '
+RUSTC_REAL=$(rustup which rustc --toolchain 1.99.1)
+"$RUSTC_REAL" --version | rg '^rustc 1\.99\.1 '
 "$ROOT/scripts/cargo-local-1.99.sh" --version
 rg --version | head -1
 uv --version
 jq --version
 fio --version
-"$ROOT/scripts/ensure-sqlite-3.53.4.sh"
+"$ROOT/scripts/ensure-sqlite-3.54.0.sh"
 
 "$ROOT/scripts/cargo-local-1.99.sh" metadata --locked --no-deps --format-version 1 >/dev/null
 "$ROOT/scripts/cargo-local-1.99.sh" fmt --all --check
-rustfmt +1.99.0 --edition 2024 \
+rustfmt +1.99.1 --edition 2024 \
   engines/surrealdb-rocksdb/src/main.rs \
   engines/surrealdb-rocksdb/src/metrics.rs \
   engines/surrealdb-rocksdb/src/bin/surrealdb-rocksdb-recordconcurrency.rs \

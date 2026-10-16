@@ -3,10 +3,10 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "$0")" && pwd)
 ROOT=${ROOT:-$(cd -- "$SCRIPT_DIR/.." && pwd)}
-VERSION=3.53.4
-SOURCE_ID=bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc
-AUTOCONF=3530400
-EXPECTED_SHA3=454e45f61c6bd75b7420e7190732dea03ce6639c63ada47bbc592f67fc340338
+VERSION=3.54.0
+SOURCE_ID=be8d059e9a49089ab2dce5ed26dd87aaf598fdc5fbe0b107c0dd758464bcd5e3
+AUTOCONF=3540000
+EXPECTED_SHA3=f5e3e724e9c9b3b5d512c76b02082091a59eeea9becd169a9fbf4d376403acce
 URL="https://www.sqlite.org/2026/sqlite-autoconf-${AUTOCONF}.tar.gz"
 PREFIX="$ROOT/.deps/sqlite-$VERSION"
 SRC_CACHE="$ROOT/.deps/src"

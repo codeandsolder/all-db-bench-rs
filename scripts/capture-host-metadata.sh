@@ -22,7 +22,7 @@ fi
   cat /proc/version
   echo
   echo "## toolchain"
-  RUSTC_REAL=$(rustup which rustc --toolchain 1.99.0 2>/dev/null || true)
+  RUSTC_REAL=$(rustup which rustc --toolchain 1.99.1 2>/dev/null || true)
   [[ -x "$RUSTC_REAL" ]] && "$RUSTC_REAL" --version --verbose || true
   "$ROOT/scripts/cargo-local-1.99.sh" --version || true
   echo "benchmark_cargo_home=${DB_BENCH_CARGO_HOME:-/tmp/db-bench-cargo-home}"
@@ -110,7 +110,7 @@ fi
   echo
   echo "## provenance"
   sha256sum Cargo.lock Cargo.toml rust-toolchain src/metrics.rs src/bin/*.rs scripts/*.sh scripts/*.py docs/*.md engines/surrealdb-rocksdb/Cargo.toml engines/surrealdb-rocksdb/Cargo.lock engines/surrealdb-rocksdb/src/*.rs 2>/dev/null | sort
-  if [[ -x "$ROOT/.deps/sqlite-3.53.4/bin/sqlite3" ]]; then
-    echo "sqlite_runtime=$("$ROOT/.deps/sqlite-3.53.4/bin/sqlite3" --version)"
+  if [[ -x "$ROOT/.deps/sqlite-3.54.0/bin/sqlite3" ]]; then
+    echo "sqlite_runtime=$("$ROOT/.deps/sqlite-3.54.0/bin/sqlite3" --version)"
   fi
 } > "$OUT"

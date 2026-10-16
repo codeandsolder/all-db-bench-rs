@@ -50,8 +50,9 @@ use jammdb::{DB as JammDb, Data as JammData};
 use lsm_db::{Batch as LsmBatch, Lsm as LsmDb};
 #[cfg(feature = "kv-experimental")]
 use roughdb::{
-    CompressionType as RoughCompression, Db as RoughDb, Options as RoughOptions,
-    ReadOptions as RoughReadOptions, WriteBatch as RoughBatch, WriteOptions as RoughWriteOptions,
+    CompressionType as RoughCompression, Db as RoughDb, OpenMode as RoughOpenMode,
+    Options as RoughOptions, ReadOptions as RoughReadOptions, WriteBatch as RoughBatch,
+    WriteOptions as RoughWriteOptions,
 };
 
 const REDB_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("kv");
@@ -342,15 +343,15 @@ impl Args {
 impl EngineKind {
     pub(crate) fn version(self) -> &'static str {
         match self {
-            Self::Redb => "4.3.0",
+            Self::Redb => "4.4.0",
             Self::Fjall => "3.1.12",
-            Self::Surrealkv => "0.21.4",
+            Self::Surrealkv => "1.0.0",
             Self::Heed => "0.22.1",
             Self::Sled => "1.0.0-alpha.124",
             Self::Lkv => "0.2.1",
             Self::Manifold | Self::ManifoldWal => "3.1.0",
             Self::Turbokv => "0.6.0",
-            Self::ParitydbHash | Self::ParitydbBtree => "0.5.6",
+            Self::ParitydbHash | Self::ParitydbBtree => "0.5.7",
             #[cfg(feature = "kv-external")]
             Self::Rocksdb => "0.25.0",
             #[cfg(feature = "kv-external")]
@@ -358,11 +359,11 @@ impl EngineKind {
             #[cfg(feature = "kv-external")]
             Self::Persy => "1.8.1",
             #[cfg(feature = "kv-experimental")]
-            Self::Roughdb => "0.10.1",
+            Self::Roughdb => "0.11.1",
             #[cfg(feature = "kv-experimental")]
             Self::Jammdb => "0.11.0",
             #[cfg(feature = "kv-experimental")]
-            Self::Lsmdb => "1.0.0",
+            Self::Lsmdb => "1.1.0",
         }
     }
 
@@ -402,7 +403,7 @@ impl EngineKind {
                 "ParityDB default background durability pipeline; commit publishes to the in-memory overlay before WAL/data fsync completes"
             }
             (Self::ParitydbHash | Self::ParitydbBtree, Durability::Sync) => {
-                bail!("ParityDB 0.5.6 has no public durable-before-return commit API")
+                bail!("ParityDB 0.5.7 has no public durable-before-return commit API")
             }
             #[cfg(feature = "kv-external")]
             (Self::Rocksdb, Durability::Relaxed) => {
@@ -440,7 +441,7 @@ impl EngineKind {
             }
             #[cfg(feature = "kv-experimental")]
             (Self::Lsmdb, Durability::Sync) => {
-                "lsm-db 1.0.0 durability feature; wal-db durable log before acknowledgement"
+                "lsm-db 1.1.0 durability feature; wal-db durable log before acknowledgement"
             }
             #[cfg(feature = "kv-experimental")]
             (Self::Lsmdb, Durability::Relaxed) => {
@@ -540,7 +541,7 @@ impl Engine {
             }
             EngineKind::ParitydbHash | EngineKind::ParitydbBtree => {
                 if durability == Durability::Sync {
-                    bail!("ParityDB 0.5.6 has no public durable-before-return commit API");
+                    bail!("ParityDB 0.5.7 has no public durable-before-return commit API");
                 }
                 let dir = match kind {
                     EngineKind::ParitydbHash => path.join("paritydb-hash"),
@@ -607,7 +608,7 @@ impl Engine {
             #[cfg(feature = "kv-experimental")]
             EngineKind::Roughdb => {
                 let opts = RoughOptions {
-                    create_if_missing: true,
+                    open_mode: RoughOpenMode::CreateIfMissing,
                     compression: RoughCompression::NoCompression,
                     ..RoughOptions::default()
                 };
@@ -682,11 +683,7 @@ impl Engine {
                     .map(Vec::<u8>::from)
             }
             #[cfg(feature = "kv-experimental")]
-            Self::Roughdb(db) => match db.get(key) {
-                Ok(v) => Some(v),
-                Err(e) if e.is_not_found() => None,
-                Err(e) => return Err(e.into()),
-            },
+            Self::Roughdb(db) => db.get(key)?,
             #[cfg(feature = "kv-experimental")]
             Self::Jammdb(db) => {
                 let tx = db.tx(false)?;

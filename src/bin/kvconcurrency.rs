@@ -765,11 +765,7 @@ struct RoughClient(Arc<RoughDb>);
 #[cfg(feature = "kv-experimental")]
 impl ClientOps for RoughClient {
     async fn get(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        match self.0.get(key) {
-            Ok(v) => Ok(Some(v)),
-            Err(e) if e.is_not_found() => Ok(None),
-            Err(e) => Err(e.into()),
-        }
+        Ok(self.0.get(key)?)
     }
 
     async fn write_batch(

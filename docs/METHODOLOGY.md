@@ -10,9 +10,9 @@ Comparable logical interface: byte-string key/value point reads, atomic write ba
 
 Engines:
 
-- redb 4.3.0
+- redb 4.4.0
 - Fjall 3.1.12
-- SurrealKV 0.21.4
+- SurrealKV 1.0.0
 - heed 0.22.1 / LMDB reference
 - sled 1.0.0-alpha.124
 - lkv 0.2.1
@@ -21,15 +21,15 @@ Engines:
 - RocksDB 0.25.0 (mature C++ LSM reference; compression disabled in the neutral raw-KV baseline)
 - libmdbx 0.9.0 / MDBX (NoWriteMap mmap/B+tree reference)
 - Persy 1.8.1 (pure-Rust copy-on-write + journal/index engine)
-- RoughDB 0.10.1 (experimental 2026 pure-Rust LevelDB-compatible LSM; compression disabled in neutral baseline)
+- RoughDB 0.11.1 (experimental 2026 pure-Rust LevelDB-compatible LSM; compression disabled in neutral baseline)
 - jammdb 0.11.0 (BoltDB-style mmap B+tree; sync-only)
-- lsm-db 1.0.0 (new stable Rust LSM with durability+bloom features; sync-only in this build)
+- lsm-db 1.1.0 (new stable Rust LSM with durability+bloom features; sync-only in this build)
 
 lkv is sync-only because 0.2.1 deliberately syncs file commits before publication and exposes no relaxed commit mode.
 
 ### Full database / record lane
 
-SurrealDB 3.3.0, Turso 0.8.2-pre.2, and SQLite 3.53.4 via rusqlite 0.40.2 are tested separately with record/document-style primary-key CRUD and transactions. Their results must not be ranked directly against raw byte-KV calls: they include query/document/SQL layers by design. SurrealDB-on-RocksDB is built in a separate Cargo package because its vendored RocksDB native library cannot coexist in one Cargo link graph with the latest standalone rocksdb 0.25.0 crate; its output schema remains identical.
+SurrealDB 3.3.4, Turso 0.8.3, and SQLite 3.54.0 via rusqlite 0.40.2 are tested separately with record/document-style primary-key CRUD and transactions. Their results must not be ranked directly against raw byte-KV calls: they include query/document/SQL layers by design. SurrealDB-on-RocksDB is built in a separate Cargo package because its vendored RocksDB native library cannot coexist in one Cargo link graph with the latest standalone rocksdb 0.25.0 crate; its output schema remains identical.
 
 ## Durability
 
@@ -122,7 +122,7 @@ Cold-start/reopen latency is a separate benchmark class and must not be simulate
 
 ## Reproducibility
 
-The suite pins a Rust 1.99.0 toolchain and exact database crate versions. Workload generation uses a fixed seed plus trial number. The matrix stores host/kernel/filesystem/toolchain metadata beside the result file.
+The suite pins a Rust 1.99.1 toolchain and exact database crate versions. Workload generation uses a fixed seed plus trial number. The matrix stores host/kernel/filesystem/toolchain metadata beside the result file.
 
 No benchmark stops because of one slow observation. Tail stalls remain samples in the latency distribution instead of censoring the rest of the series.
 
@@ -132,9 +132,9 @@ The **sync lane is the primary apples-to-apples durability comparison**: every a
 
 The relaxed lane is deliberately secondary. It answers "what does this engine cost in its practical non-fsync mode?" but exact crash guarantees differ. Never rank relaxed results as though they promise identical recovery. In particular, redb Durability::None is an in-process non-durable commit, while several WAL/LSM engines push acknowledged data at least into operating-system buffers.
 
-## Build isolation on cold-storage
+## Build isolation on the benchmark host
 
-Cargo build artifacts are directed to `/tmp/rust-db-realistic-bench-target`, and the benchmark-local Cargo registry/source cache defaults to `/tmp/db-bench-cargo-home`. This keeps both generated objects and crate-source/registry metadata off the measured `/srv/scratch` filesystem and avoids the shared Sentinel Cargo cache. `scripts/cargo-local-1.99.sh` pins rustc 1.99.0, disables `RUSTC_WRAPPER`, and forces native CC/CXX to `/usr/bin/cc` and `/usr/bin/c++`, because `target-cpu=native` makes heterogeneous distributed compilation invalid. The benchmark data itself remains under `/srv/scratch/db-bench-2026-09-27/data`.
+Cargo build artifacts are directed to `/tmp/rust-db-realistic-bench-target`, and the benchmark-local Cargo registry/source cache defaults to `/tmp/db-bench-cargo-home`. This keeps both generated objects and crate-source/registry metadata off the measured `/srv/scratch` filesystem and avoids the shared Sentinel Cargo cache. `scripts/cargo-local-1.99.sh` pins rustc 1.99.1, requires the dedicated local-only native sccache server on port 4237, and fails closed if that cache is unavailable. The cache preserves host-native `target-cpu=native` codegen and does not use the heterogeneous distributed scheduler. Native CC/CXX remain pinned to `/usr/bin/cc` and `/usr/bin/c++`. The benchmark data itself remains under `/srv/scratch/db-bench-2026-09-27/data`.
 
 ## Durability syscall sanity check
 
@@ -409,7 +409,7 @@ This models a worst-case stable block image according to the kernel's flush/FUA 
 The primary Manifold 3.1.0 sync comparison uses `without_wal()` + `Durability::Immediate`. The upstream-default WAL configuration is exposed as `manifold-wal` only as an explicit diagnostic/negative control: it reproducibly loses the acknowledged post-base transaction under both true SIGKILL and the simulated power-loss lane, while no-WAL Immediate passes. It is intentionally excluded from default campaigns.
 ## External time-series/server database lane
 
-GreptimeDB 1.2.1, VictoriaMetrics 1.153.0 single-node, Prometheus 3.15.0 and InfluxDB 3 Core 3.12.0 are a separate benchmark class. They are long-running server products, so their results are not comparable to in-process embedded KV or record-product measurements and are never merged into those leaderboards.
+GreptimeDB 1.2.1, VictoriaMetrics 1.153.0 single-node, Prometheus 3.15.0 and InfluxDB 3 Core 3.12.1 are a separate benchmark class. They are long-running server products, so their results are not comparable to in-process embedded KV or record-product measurements and are never merged into those leaderboards.
 
 Each case starts a fresh server against a fresh local data directory, waits for its health endpoint, then measures the same logical dataset: `bench_metric` has `host` and `region` tags/labels, deterministic floating-point values, and one sample every 10 seconds. Sample timestamps are aligned to the declared 10-second evaluation grid. The measured client reports ingestion throughput/request latency plus latest-series, complete single-series range, and latest-timestamp aggregate query latency. The runner brackets the client interval with process-tree snapshots of the server and adds server CPU runtime, runqueue wait, process I/O and RSS. After that accounting window closes, it gracefully stops the server and only then measures resulting data-directory bytes so buffered engines are not rewarded for postponing flushes. Startup time is reported separately.
 

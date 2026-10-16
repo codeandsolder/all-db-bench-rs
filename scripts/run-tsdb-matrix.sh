@@ -32,7 +32,7 @@ DEPS=${TSDB_DEPS_DIR:-"$ROOT/.deps/tsdb"}
 GREPTIME="$DEPS/greptimedb-1.2.1/greptime"
 VICTORIA="$DEPS/victoriametrics-1.153.0/victoria-metrics-prod"
 PROMETHEUS="$DEPS/prometheus-3.15.0/prometheus"
-INFLUXDB3="$DEPS/influxdb3-3.12.0/influxdb3"
+INFLUXDB3="$DEPS/influxdb3-3.12.1/influxdb3"
 for binary in "$GREPTIME" "$VICTORIA" "$PROMETHEUS" "$INFLUXDB3"; do
   [[ -x "$binary" ]] || { echo "missing TSDB binary after install: $binary" >&2; exit 2; }
 done
@@ -66,7 +66,7 @@ GREPTIME_SHA=$(sha256sum "$GREPTIME" | awk '{print $1}')
 VICTORIA_SHA=$(sha256sum "$VICTORIA" | awk '{print $1}')
 PROMETHEUS_SHA=$(sha256sum "$PROMETHEUS" | awk '{print $1}')
 INFLUXDB3_SHA=$(sha256sum "$INFLUXDB3" | awk '{print $1}')
-INFLUXDB3_PYTHON_LIB=$(find "$DEPS/influxdb3-3.12.0/python/lib" -maxdepth 1 -type f -name 'libpython*.so.1.0' -print -quit)
+INFLUXDB3_PYTHON_LIB=$(find "$DEPS/influxdb3-3.12.1/python/lib" -maxdepth 1 -type f -name 'libpython*.so.1.0' -print -quit)
 [[ -n "$INFLUXDB3_PYTHON_LIB" ]] || { echo "missing bundled InfluxDB libpython runtime" >&2; exit 2; }
 INFLUXDB3_PYTHON_SHA=$(sha256sum "$INFLUXDB3_PYTHON_LIB" | awk '{print $1}')
 RUNNER_SHA=$(sha256sum "$ROOT/scripts/run-tsdb-matrix.sh" | awk '{print $1}')
@@ -178,7 +178,7 @@ YAML
       ;;
     influxdb3)
       ENDPOINT=http://127.0.0.1:19030
-      VERSION=3.12.0
+      VERSION=3.12.1
       "$INFLUXDB3" serve --node-id bench-node --object-store file --data-dir "$case_data" \
         --http-bind 127.0.0.1:19030 --without-auth >"$log" 2>&1 &
       SERVER_PID=$!
@@ -239,7 +239,7 @@ cat > "$SUPPORT_NEW" <<EOF_SUPPORT
     "greptimedb": "1.2.1",
     "victoriametrics": "1.153.0",
     "prometheus": "3.15.0",
-    "influxdb3": "3.12.0"
+    "influxdb3": "3.12.1"
   },
   "dataset": "bench_metric{host=hNNNNNN,region=rNN} with one float value every 10 seconds",
   "transport_policy": "Prometheus Remote Write v1 for GreptimeDB/VictoriaMetrics/Prometheus; InfluxDB v3 line protocol for InfluxDB 3 Core; protocol is explicit in every result",
