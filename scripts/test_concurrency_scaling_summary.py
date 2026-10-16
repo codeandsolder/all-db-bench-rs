@@ -72,6 +72,20 @@ class ScalingSummaryTests(unittest.TestCase):
         self.assertEqual({f["state_evolution"] for f in report["families"]}, {"growth", "bounded"})
         self.assertEqual({f["bounded_churn_slots"] for f in report["families"]}, {0, 8192})
 
+    def test_read_materialization_is_family_identity(self) -> None:
+        corrected = group(1, 100)
+        legacy = group(1, 100)
+        corrected["read_materialization"] = "full-record-v1"
+        legacy["read_materialization"] = "legacy-read-v0"
+        self.assertNotEqual(MODULE.identity(corrected), MODULE.identity(legacy))
+
+    def test_write_materialization_is_family_identity(self) -> None:
+        corrected = group(1, 100)
+        legacy = group(1, 100)
+        corrected["write_materialization"] = "no-return-v1"
+        legacy["write_materialization"] = "legacy-return-v0"
+        self.assertNotEqual(MODULE.identity(corrected), MODULE.identity(legacy))
+
     def test_incomplete_family_is_visible_during_progress(self) -> None:
         summary = {"row_count": 6, "group_count": 2, "problems": ["partial"], "groups": [group(1, 100), group(4, 250)]}
         report = MODULE.build_report(summary, self.support, allow_incomplete=True)

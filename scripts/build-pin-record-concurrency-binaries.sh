@@ -17,7 +17,7 @@ install -m 0755 "$TARGET_DIR/release/recordconcurrency" "$record"
 install -m 0755 "$ROCKS_TARGET_DIR/release/surrealdb-rocksdb-recordconcurrency" "$rocks"
 record_sha=$(sha256sum "$record" | awk '{print $1}')
 rocks_sha=$(sha256sum "$rocks" | awk '{print $1}')
-python3 - "$OUT/manifest.json" <<PY
+uv run --no-project python - "$OUT/manifest.json" <<PY
 import json,sys
 json.dump({
   "repo_commit":"$commit",

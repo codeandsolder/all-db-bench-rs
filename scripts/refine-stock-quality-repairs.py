@@ -69,7 +69,7 @@ def refine_plan(
 ) -> dict[str, Any]:
     if quality_plan.get("quality_policy_version") != 1:
         raise ValueError(f"unsupported quality policy: {quality_plan.get('quality_policy_version')!r}")
-    if sizing_audit.get("sizing_policy_version") != 2:
+    if int(sizing_audit.get("sizing_policy_version", -1)) not in {2, 3}:
         raise ValueError(f"unsupported sizing policy: {sizing_audit.get('sizing_policy_version')!r}")
 
     refined: list[dict[str, Any]] = []

@@ -7,6 +7,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 SCRIPT = Path(__file__).with_name("run-kv-concurrency-plan-idle.py")
@@ -39,6 +40,7 @@ class PlanIdleTests(unittest.TestCase):
         source = SCRIPT.read_text()
         self.assertIn('"BENCH_BIN_PREVERIFIED": "1"', source)
         self.assertIn('preflight = 0 if version >= 2 else preflight_host(args.repo)', source)
+        self.assertIn('\"MATRIX_RESUME_SHUFFLE_REMAINING\": \"0\" if version >= 2 else \"1\"', source)
 
     def test_run_complete(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -48,6 +50,16 @@ class PlanIdleTests(unittest.TestCase):
             self.assertTrue(M.run_complete(repo,"r"))
             (run/"failures.ndjson").write_text("{}\n")
             self.assertFalse(M.run_complete(repo,"r"))
+
+    def test_complete_run_is_rejected_when_plan_identity_mismatches(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo=Path(tmp); run=repo/"results"/"runs"/"r"; run.mkdir(parents=True)
+            (run/"support.json").write_text(json.dumps({"case_count":2,"expect_trials":1}))
+            (run/"summary.json").write_text(json.dumps({"row_count":2,"group_count":2,"problems":[]}))
+            with mock.patch.object(M, "support_matches_plan", return_value=False):
+                self.assertFalse(M.run_complete(repo,"r",Path("plan.json")))
+            with mock.patch.object(M, "support_matches_plan", return_value=True):
+                self.assertTrue(M.run_complete(repo,"r",Path("plan.json")))
 
     def test_run_complete_accepts_multitrial_plan(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

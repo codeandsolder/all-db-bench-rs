@@ -147,6 +147,50 @@ class SizingAuditTests(unittest.TestCase):
         self.assertEqual(len(report["problems"]), 1)
         self.assertIn("requires at least 75 trials", report["problems"][0])
 
+    def test_policy_v3_and_record_read_semantics_are_group_identity(self) -> None:
+        self.assertEqual(MODULE.SIZING_POLICY_VERSION, 3)
+        corrected = [
+            dict(
+                row(engine="sqlite", elapsed=3.0, rate=100.0, trial=trial, lane="record"),
+                read_materialization="full-record-v1",
+                write_materialization="no-return-v1",
+            )
+            for trial in (1, 2, 3)
+        ]
+        legacy = [
+            dict(
+                row(engine="sqlite", elapsed=3.0, rate=100.0, trial=trial, lane="record"),
+                read_materialization="legacy-read-v0",
+                write_materialization="no-return-v1",
+            )
+            for trial in (1, 2, 3)
+        ]
+        report = audit(corrected + legacy)
+        self.assertEqual(report["sizing_policy_version"], 3)
+        self.assertEqual(report["group_count"], 2)
+        self.assertEqual(
+            {group["read_materialization"] for group in report["groups"]},
+            {"full-record-v1", "legacy-read-v0"},
+        )
+
+    def test_record_write_materialization_is_group_identity(self) -> None:
+        corrected = [
+            dict(row(engine="sqlite", elapsed=3.0, rate=100.0, trial=trial, lane="record"),
+                 read_materialization="full-record-v1", write_materialization="no-return-v1")
+            for trial in (1, 2, 3)
+        ]
+        legacy = [
+            dict(row(engine="sqlite", elapsed=3.0, rate=100.0, trial=trial, lane="record"),
+                 read_materialization="full-record-v1", write_materialization="legacy-return-v0")
+            for trial in (1, 2, 3)
+        ]
+        report = audit(corrected + legacy)
+        self.assertEqual(report["group_count"], 2)
+        self.assertEqual(
+            {group["write_materialization"] for group in report["groups"]},
+            {"no-return-v1", "legacy-return-v0"},
+        )
+
     def test_missing_trial_is_problem(self) -> None:
         rows = [row(engine="missing", elapsed=3.0, rate=100.0, trial=trial) for trial in (1, 3)]
         report = audit(rows)

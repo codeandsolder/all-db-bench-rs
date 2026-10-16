@@ -12,7 +12,7 @@ Pure-Rust LSM engine. Its durability API is explicit: Buffer, SyncData, SyncAll.
 SurrealDB's new-generation low-level Rust storage engine, tested directly in the raw KV lane. This is distinct from SurrealDB itself: SurrealDB 3.3.4 still embeds SurrealKV 0.21.4. The raw baseline disables SurrealKV 1.0's default `encryption` Cargo feature because encryption-at-rest is outside the neutral storage-engine comparison.
 
 ### SurrealDB 3.3.4
-Tested in the record/document lane through its embedded SurrealKV 0.21.4 backend. The raw-KV lane separately tests SurrealKV 1.0.0; SurrealDB 3.3.4 has not yet moved its internal backend to that generation. SurrealDB 3.3 exposes storage sync modes, so sync=every and sync=never can be selected explicitly. The record-concurrency lane gives each client a native cloned Surreal handle; only typed QueryError::TransactionConflict failures are retried, with retry count and time retained in the result.
+Tested in the record/document lane through its embedded SurrealKV 0.21.4 backend. The raw-KV lane separately tests SurrealKV 1.0.0; SurrealDB 3.3.4 has not yet moved its internal backend to that generation. SurrealDB 3.3 exposes storage sync modes, so sync=every and sync=never can be selected explicitly. Read cases materialize the same group+payload fields as the SQL products; write-only cases use parameterized `RETURN NONE` mutations so SurrealDB is not uniquely charged for returning/deserializing the written record. The record-concurrency lane gives each client a native cloned Surreal handle; only typed QueryError::TransactionConflict failures are retried, with retry count and time retained in the result.
 
 ### TurboKV 0.6.0
 Recent async Rust LSM-style embedded store. It explicitly distinguishes fast(), durable() (WAL without per-write sync), and paranoid() (sync before acknowledgement). The benchmark maps the primary power-loss-durable comparison to paranoid(), not to the misleadingly named durable() preset.
@@ -23,7 +23,8 @@ Recent compact Rust embedded KV. File-backed commits call sync_data before publi
 ### sled 1.0.0-alpha.124
 The sled project has an active 1.0 alpha line again. Included because the implementation has materially moved beyond the long-stagnant 0.34 release commonly used in older comparisons. Sync results explicitly call Db::flush after each measured write transaction.
 
-Recovery in this alpha currently spawns the host-global `sync` command (the upstream source marks both calls `TODO NOCOMMIT`.) That happens before the benchmark measured interval, but it can block behind unrelated dirty filesystems on a deliberately busy-host smoke run. The KV concurrency smoke therefore grants sled a 900 s case ceiling while leaving the normal smoke ceiling at 60 s; quick/full performance lanes retain their normal timeouts and quiet-host admission.
+Recovery in this alpha currently spawns the host-global `sync` command (the upstream source marks both calls `TODO NOCOMMIT`). That happens before the benchmark measured interval, but it can block behind unrelated dirty filesystems on a deliberately busy-host smoke run. The KV concurrency smoke therefore grants sled a 900 s case ceiling while leaving the normal smoke ceiling at 60 s; quick/full performance lanes retain their normal timeouts and quiet-host admission.
+
 ### heed 0.22.1 / LMDB
 Not a pure-Rust storage engine, but still a valuable mmap/B+tree reference with a thin Rust API. Kept as a reference rather than described as a Rust-native engine.
 
@@ -40,7 +41,7 @@ Production-oriented pure-Rust store from the Parity/Substrate ecosystem. The ben
 - **paritydb-hash** uses the normal hash-indexed column for point/mixed/write workloads. It has no ordered range API and is omitted from range-scan.
 - **paritydb-btree** enables ParityDB's ordered B-tree column and therefore participates in range-scan as well as point/mixed/write workloads.
 
-Compression remains disabled by ParityDB's column default. ParityDB's public commit() deliberately publishes into an in-memory overlay and returns before its background commit/WAL/data-sync pipeline finishes. The database can recover to a consistent older state, but acknowledged commits may be lost if the process dies before background persistence catches up. There is no public durable-before-return commit primitive in 0.5.6, so both configurations participate in the **relaxed/background-durability lane only**. A fake sync result would be materially misleading.
+Compression remains disabled by ParityDB's column default. ParityDB's public commit() deliberately publishes into an in-memory overlay and returns before its background commit/WAL/data-sync pipeline finishes. The database can recover to a consistent older state, but acknowledged commits may be lost if the process dies before background persistence catches up. There is no public durable-before-return commit primitive in 0.5.7, so both configurations participate in the **relaxed/background-durability lane only**. A fake sync result would be materially misleading.
 
 ### RocksDB 0.25.0
 Mature C++ LSM reference exposed through the current Rust rocksdb crate. Included despite not being Rust-native because it is the most useful production LSM baseline. The neutral raw-KV lane explicitly disables compression while retaining WAL; relaxed/sync differ only in the RocksDB write sync flag.
@@ -52,13 +53,13 @@ Mature mmap/B+tree-family reference beside LMDB/heed. Uses NoWriteMap. Sync maps
 Pure-Rust transactional single-file copy-on-write/journal engine. The adapter uses a ByteVec -> ByteVec Replace index to provide true KV semantics. Sync uses foreground transaction fsync; relaxed uses Persy's background-sync transaction mode.
 
 ### Turso 0.8.3
-Record/SQL product lane. The concurrency benchmark opens one independent `Database::connect()` connection per client rather than cloning a `Connection`, because Turso connection clones share a connection-operation gate. Its native 60 s busy timeout keeps writer lock wait inside measured transaction latency.
+Record/SQL product lane. Integer IDs and group keys are bound as native integer values rather than converted to decimal strings by the harness. The concurrency benchmark opens one independent `Database::connect()` connection per client rather than cloning a `Connection`, because Turso connection clones share a connection-operation gate. Its native 60 s busy timeout keeps writer lock wait inside measured transaction latency.
 
 ### SQLite 3.54.0 / rusqlite 0.40.2
 Record/SQL lane baseline. rusqlite 0.40.2 normally bundles SQLite 3.53.2, so the benchmark links it against a project-local build of the actual current SQLite 3.54.0. WAL mode is fixed; synchronous=NORMAL/FULL provides relaxed/sync comparison. Concurrency uses one independent WAL connection per client with SQLite's native 60 s busy timeout, so lock serialization is measured rather than hidden by benchmark retries.
 
 ### SurrealDB 3.3.4 / RocksDB backend
-Same SurrealDB record workload with RocksDB underneath, isolating backend contribution from query/document-layer cost. Kept in a separate Cargo package because SurrealDB's forked RocksDB native sys crate and standalone rocksdb 0.25.0 both declare links="rocksdb" and Cargo correctly refuses to link both into one package graph. Its concurrency binary stays in that isolated package and uses native cloned Surreal handles with the same typed conflict-retry accounting as the SurrealKV-backed product.
+Same SurrealDB record workload with RocksDB underneath, including the same full-record reads and parameterized no-return mutations, isolating backend contribution from query/document-layer cost. Kept in a separate Cargo package because SurrealDB's forked RocksDB native sys crate and standalone rocksdb 0.25.0 both declare links="rocksdb" and Cargo correctly refuses to link both into one package graph. Its concurrency binary stays in that isolated package and uses native cloned Surreal handles with the same typed conflict-retry accounting as the SurrealKV-backed product.
 
 ### RoughDB 0.11.1 — implemented experimental lane
 Current 2026 pure-Rust LevelDB port with WAL, MANIFEST, SSTables, background compaction and a runtime per-write sync flag. It maps cleanly to both durability lanes. Compression is explicitly disabled in the neutral comparison so it matches the standalone RocksDB baseline policy.

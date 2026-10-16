@@ -13,6 +13,8 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Iterable
 
+from concurrency_support_provenance import support_identity
+
 SAFE_OP_SCALE_WORKLOADS = {"point-read", "range-scan", "read-heavy"}
 STATE_CHANGING_WORKLOADS = {"balanced", "tiny-txn", "write-burst", "churn", "delete-burst"}
 TARGET_SECONDS = 3.0
@@ -56,31 +58,35 @@ def parse_jobs(run_dir: Path, support: dict[str, Any]) -> list[dict[str, Any]]:
     path = run_dir / "jobs.txt"
     if not path.is_file():
         raise ValueError(f"missing jobs.txt: {path}")
-    profile = str(support["profile"])
-    default_ops = int(support["default_ops"])
-    records = int(support["records"])
     jobs: list[dict[str, Any]] = []
     for line_no, line in enumerate(path.read_text().splitlines(), 1):
         if not line.strip():
             continue
         fields = line.split("|")
-        if len(fields) != 6:
-            raise ValueError(f"invalid jobs.txt line {line_no}: {line!r}")
-        scenario, engine, durability, workload, clients_raw, trial_raw = fields
-        clients = int(clients_raw)
-        trial = int(trial_raw)
-        jobs.append(
-            {
-                "scenario": f"concurrency-{scenario}",
-                "engine": engine,
-                "durability": durability,
-                "workload": workload,
-                "clients": clients,
-                "trial": trial,
-                "records": records,
+        if len(fields) == 6:
+            profile = str(support["profile"])
+            default_ops = int(support["default_ops"])
+            records = int(support["records"])
+            scenario, engine, durability, workload, clients_raw, trial_raw = fields
+            clients = int(clients_raw)
+            trial = int(trial_raw)
+            jobs.append({
+                "scenario": f"concurrency-{scenario}", "engine": engine,
+                "durability": durability, "workload": workload, "clients": clients,
+                "trial": trial, "records": records,
                 "ops": stock_ops(profile, workload, default_ops, records, clients),
-            }
-        )
+            })
+        elif len(fields) == 11:
+            scenario, engine, durability, workload, clients_raw, records_raw, ops_raw, trial_raw, state, write, slots_raw = fields
+            jobs.append({
+                "scenario": scenario, "engine": engine, "durability": durability,
+                "workload": workload, "clients": int(clients_raw), "records": int(records_raw),
+                "ops": int(ops_raw), "trial": int(trial_raw),
+                "state_evolution": state, "write_pattern": write,
+                "bounded_churn_slots": int(slots_raw),
+            })
+        else:
+            raise ValueError(f"invalid jobs.txt line {line_no}: {line!r}")
     return jobs
 
 
@@ -117,14 +123,43 @@ def _median(values: Iterable[float]) -> float:
     return float(statistics.median(seq))
 
 
-def audit(run_dir: Path, additional_runs: Iterable[Path] = ()) -> dict[str, Any]:
+def audit(
+    run_dir: Path,
+    additional_runs: Iterable[Path] = (),
+    *,
+    expected_admission_policy: str | None = None,
+) -> dict[str, Any]:
     support = read_json(run_dir / "support.json")
     if support.get("lane") != "kv-concurrency":
         raise ValueError(f"expected kv-concurrency support, got {support.get('lane')!r}")
+    measurement_identity = None
+    if expected_admission_policy is not None:
+        measurement_identity = support_identity(
+            support,
+            expected_lane="kv-concurrency",
+            repo=Path(__file__).resolve().parents[1],
+            runner_name="run-kv-concurrency-plan.sh",
+            expected_admission=expected_admission_policy,
+            label=str(run_dir / "support.json"),
+        )
     jobs = parse_jobs(run_dir, support)
     extra_runs = list(additional_runs)
     rows = read_cases(run_dir)
     for extra in extra_runs:
+        if measurement_identity is not None:
+            extra_support_path = extra / "support.json"
+            if not extra_support_path.is_file():
+                raise ValueError(f"missing additional-run support: {extra_support_path}")
+            extra_identity = support_identity(
+                read_json(extra_support_path),
+                expected_lane="kv-concurrency",
+                repo=Path(__file__).resolve().parents[1],
+                runner_name="run-kv-concurrency-plan.sh",
+                expected_admission=expected_admission_policy,
+                label=str(extra_support_path),
+            )
+            if extra_identity != measurement_identity:
+                raise ValueError(f"additional run measurement identity differs: {extra}")
         rows.extend(read_cases(extra))
     seen_rows: set[tuple[Any, ...]] = set()
     for row in rows:
@@ -135,10 +170,16 @@ def audit(run_dir: Path, additional_runs: Iterable[Path] = ()) -> dict[str, Any]
 
     planned_groups: dict[tuple[Any, ...], dict[str, Any]] = {}
     planned_families: dict[tuple[Any, ...], set[int]] = defaultdict(set)
+    planned_family_work: dict[tuple[Any, ...], tuple[int, int]] = {}
     for job in jobs:
         ck = client_key(job)
         planned_groups.setdefault(ck, job)
-        planned_families[family_key(job)].add(int(job["clients"]))
+        fk = family_key(job)
+        planned_families[fk].add(int(job["clients"]))
+        work = (int(job["records"]), int(job["ops"]))
+        previous = planned_family_work.setdefault(fk, work)
+        if previous != work:
+            raise ValueError(f"family total-work mismatch: {fk}: {previous} != {work}")
 
     observed: dict[tuple[Any, ...], list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
@@ -189,9 +230,7 @@ def audit(run_dir: Path, additional_runs: Iterable[Path] = ()) -> dict[str, Any]
         scenario, engine, durability, workload = fk
         observed_groups = by_family_observed.get(fk, [])
         missing_clients = sorted(clients - {int(item["clients"]) for item in observed_groups})
-        current_ops = stock_ops(
-            str(support["profile"]), workload, int(support["default_ops"]), int(support["records"]), max(clients)
-        )
+        current_records, current_ops = planned_family_work[fk]
         entry: dict[str, Any] = {
             "scenario": scenario,
             "engine": engine,
@@ -199,7 +238,7 @@ def audit(run_dir: Path, additional_runs: Iterable[Path] = ()) -> dict[str, Any]
             "workload": workload,
             "clients": sorted(clients),
             "missing_clients": missing_clients,
-            "current_records": int(support["records"]),
+            "current_records": current_records,
             "current_ops": current_ops,
             "observed_client_groups": len(observed_groups),
             "planned_client_groups": len(clients),
@@ -262,6 +301,7 @@ def audit(run_dir: Path, additional_runs: Iterable[Path] = ()) -> dict[str, Any]
         "run_dir": str(run_dir),
         "additional_run_dirs": [str(path) for path in extra_runs],
         "source_support": support,
+        "measurement_identity": measurement_identity,
         "thresholds": {
             "floor_seconds": FLOOR_SECONDS,
             "target_seconds": TARGET_SECONDS,
@@ -323,8 +363,13 @@ def main() -> int:
     parser.add_argument("--json-out", type=Path)
     parser.add_argument("--markdown-out", type=Path)
     parser.add_argument("--probe-plan-out", type=Path)
+    parser.add_argument("--expected-admission-policy")
     args = parser.parse_args()
-    report = audit(args.run_dir, args.additional_run)
+    report = audit(
+        args.run_dir,
+        args.additional_run,
+        expected_admission_policy=args.expected_admission_policy,
+    )
     if args.json_out:
         args.json_out.parent.mkdir(parents=True, exist_ok=True)
         args.json_out.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")

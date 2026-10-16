@@ -1,7 +1,7 @@
 use crate::base::metrics::{ProcDelta, ProcSnapshot, SystemDelta, SystemSnapshot};
 use crate::base::{
-    Durability, Engine, EngineKind, Quantiles, RecordData, dir_size, hist, payload, peak_rss_kib,
-    quantiles, record,
+    Durability, Engine, EngineKind, Quantiles, READ_MATERIALIZATION, RecordData,
+    WRITE_MATERIALIZATION, dir_size, hist, payload, peak_rss_kib, quantiles, record,
 };
 use anyhow::{Context, Result, bail};
 use clap::{Parser, ValueEnum};
@@ -114,6 +114,8 @@ struct Measurement {
     window_ops: u64,
     payload_bytes: usize,
     txn_size: usize,
+    read_materialization: &'static str,
+    write_materialization: &'static str,
     trial: u32,
     seed: u64,
     scenario: String,
@@ -435,7 +437,7 @@ pub(crate) async fn run() -> Result<()> {
     let db_bytes_final = dir_size(&path);
 
     let result = Measurement {
-        format_version: 6,
+        format_version: 7,
         lane: "record-sustained",
         engine: args.engine,
         engine_version: args.engine.version(),
@@ -448,6 +450,8 @@ pub(crate) async fn run() -> Result<()> {
         window_ops: args.window_ops,
         payload_bytes: args.payload_bytes,
         txn_size: args.txn_size,
+        read_materialization: READ_MATERIALIZATION,
+        write_materialization: WRITE_MATERIALIZATION,
         trial: args.trial,
         seed: args.seed,
         scenario: args.scenario.clone(),

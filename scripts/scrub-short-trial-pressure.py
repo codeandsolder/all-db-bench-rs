@@ -147,6 +147,8 @@ def scrub(
                 "engine": row.get("engine"),
                 "durability": row.get("durability"),
                 "workload": row.get("workload"),
+                "read_materialization": row.get("read_materialization", "legacy-read-v0"),
+                "write_materialization": row.get("write_materialization", "legacy-return-v0"),
                 "thresholds": {
                     "max_elapsed_s": max_elapsed_s,
                     "max_runqueue_fraction": max_runqueue_fraction,

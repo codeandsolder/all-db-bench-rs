@@ -63,6 +63,35 @@ class StockShortPressureTests(unittest.TestCase):
         self.assertEqual(repair["suggested_trials"], 3)
         self.assertEqual(repair["pressure_trials"], [2])
 
+    def test_record_pressure_identity_includes_materialization_semantics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run = Path(tmp)
+            (run / "results.ndjson").write_text("{}\n")
+            corrected = group("sqlite", "accepted", workload="point-read")
+            corrected.update(read_materialization="full-record-v1", write_materialization="no-return-v1")
+            legacy = dict(corrected, read_materialization="legacy-read-v0", write_materialization="legacy-return-v0")
+            audit = {
+                "sizing_policy_version": 3,
+                "thresholds": {"expect_trials": 3},
+                "groups": [corrected, legacy],
+            }
+            report = {
+                "thresholds": {"max_elapsed_s": 0.5},
+                "available_cpus": 8,
+                "rejected": 1,
+                "cases": [{
+                    "engine": "sqlite", "durability": "relaxed", "workload": "point-read",
+                    "read_materialization": "full-record-v1",
+                    "write_materialization": "no-return-v1",
+                    "trial": 2,
+                }],
+            }
+            plan = MODULE.build_plan(run, audit, report, lane="record")
+        self.assertEqual(plan["repair_group_count"], 1)
+        repair = plan["groups"][0]
+        self.assertEqual(repair["read_materialization"], "full-record-v1")
+        self.assertEqual(repair["write_materialization"], "no-return-v1")
+
     def test_tiny_txn_runner_override_is_lane_specific(self) -> None:
         self.assertEqual(MODULE.runner_ops_override("kv", "tiny-txn", 5_000), 50_000)
         self.assertEqual(MODULE.runner_ops_override("record", "tiny-txn", 5_000), 10_000)
