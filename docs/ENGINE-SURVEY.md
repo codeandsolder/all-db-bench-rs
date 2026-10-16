@@ -9,7 +9,7 @@ Pure-Rust copy-on-write B+tree, ACID/MVCC. This remains the main B+tree-style re
 Pure-Rust LSM engine. Its durability API is explicit: Buffer, SyncData, SyncAll. The old benchmark accidentally measured commit without the required persist call; this suite does not.
 
 ### SurrealKV 1.0.0
-SurrealDB's low-level Rust storage engine, tested directly in the raw KV lane. This is distinct from SurrealDB itself.
+SurrealDB's new-generation low-level Rust storage engine, tested directly in the raw KV lane. This is distinct from SurrealDB itself: SurrealDB 3.3.4 still embeds SurrealKV 0.21.4. The raw baseline disables SurrealKV 1.0's default `encryption` Cargo feature because encryption-at-rest is outside the neutral storage-engine comparison.
 
 ### SurrealDB 3.3.4
 Tested in the record/document lane through its embedded SurrealKV 0.21.4 backend. The raw-KV lane separately tests SurrealKV 1.0.0; SurrealDB 3.3.4 has not yet moved its internal backend to that generation. SurrealDB 3.3 exposes storage sync modes, so sync=every and sync=never can be selected explicitly. The record-concurrency lane gives each client a native cloned Surreal handle; only typed QueryError::TransactionConflict failures are retried, with retry count and time retained in the result.

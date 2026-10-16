@@ -12,7 +12,7 @@ Engines:
 
 - redb 4.4.0
 - Fjall 3.1.12
-- SurrealKV 1.0.0
+- SurrealKV 1.0.0 (default encryption feature disabled in the neutral raw-KV baseline)
 - heed 0.22.1 / LMDB reference
 - sled 1.0.0-alpha.124
 - lkv 0.2.1
