@@ -21,7 +21,7 @@ mkdir -p "$RUN_DIR"/{cases,stderr,noise} "$DATA_DIR"
 free_bytes=$(df -B1 --output=avail "$DATA_DIR" | tail -n1 | tr -d ' ')
 min_free_bytes=$((10 * 1024 * 1024 * 1024))
 (( free_bytes >= min_free_bytes )) || { echo "refusing record concurrency plan: free=$free_bytes required=$min_free_bytes" >&2; exit 75; }
-"$ROOT/scripts/ensure-sqlite-3.53.4.sh" >/dev/null
+"$ROOT/scripts/ensure-sqlite-3.54.0.sh" >/dev/null
 [[ -s "$RUN_DIR/host-start.txt" ]] || "$ROOT/scripts/capture-host-metadata.sh" "$RUN_DIR/host-start.txt" "$ROOT"
 
 TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target}

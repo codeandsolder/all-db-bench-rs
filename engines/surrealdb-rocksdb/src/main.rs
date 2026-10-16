@@ -137,7 +137,7 @@ pub(crate) enum Engine {
 
 impl EngineKind {
     pub(crate) fn version(self) -> &'static str {
-        "SurrealDB 3.3.0 / surrealdb-rocksdb 0.24.0-surreal.5"
+        "SurrealDB 3.3.4 / surrealdb-kvs-rocksdb 3.3.4"
     }
 
     pub(crate) fn mapping(self, d: Durability) -> &'static str {

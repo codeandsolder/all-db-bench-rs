@@ -51,7 +51,7 @@ The summarizer aggregates independent trials using the median and IQR. It does n
 
     ./scripts/validate.sh
 
-The static validation gate checks the pinned Rust 1.99.0 toolchain, formatting, shell syntax, all Python analysis scripts through `uv`, all in-tree benchmark binaries, and the isolated SurrealDB/RocksDB package. Run the smoke matrices after that to exercise every configured adapter against real database files.
+The static validation gate checks the pinned Rust 1.99.1 toolchain, formatting, shell syntax, all Python analysis scripts through `uv`, all in-tree benchmark binaries, and the isolated SurrealDB/RocksDB package. Run the smoke matrices after that to exercise every configured adapter against real database files.
 
 ## Wide/comprehensive campaigns
 
@@ -142,8 +142,8 @@ The runner installs pinned official Linux/amd64 binaries under `.deps/tsdb`, sta
 
 ## Latest engine set
 
-All engine versions are pinned to the latest published usable release verified on 2026-10-04. Raw KV includes redb 4.3.0, Fjall 3.1.12, SurrealKV 0.21.4, heed/LMDB 0.22.1, sled 1.0.0-alpha.124, lkv 0.2.1, Manifold 3.1.0, TurboKV 0.6.0, ParityDB 0.5.6 in hash and ordered-B-tree configurations, RocksDB 0.25.0, libmdbx 0.9.0, Persy 1.8.1, RoughDB 0.10.1, jammdb 0.11.0 and lsm-db 1.0.0.
+All engine versions are pinned to the latest published usable release verified on 2026-10-16. Raw KV includes redb 4.4.0, Fjall 3.1.12, SurrealKV 1.0.0, heed/LMDB 0.22.1, sled 1.0.0-alpha.124, lkv 0.2.1, Manifold 3.1.0, TurboKV 0.6.0, ParityDB 0.5.7 in hash and ordered-B-tree configurations, RocksDB 0.25.0, libmdbx 0.9.0, Persy 1.8.1, RoughDB 0.11.1, jammdb 0.11.0 and lsm-db 1.1.0.
 
-The record lane includes SurrealDB 3.3.0/SurrealKV, Turso 0.8.2-pre.2, SQLite 3.53.4 via rusqlite 0.40.2, and an isolated SurrealDB 3.3.0/RocksDB package. SQLite is built project-locally under .deps/sqlite-3.53.4 because rusqlite's bundled copy is older than current SQLite.
+The record lane includes SurrealDB 3.3.4 on its internal SurrealKV 0.21.4 backend, Turso 0.8.3, SQLite 3.54.0 via rusqlite 0.40.2, and an isolated SurrealDB 3.3.4/RocksDB package. SQLite is built project-locally under .deps/sqlite-3.54.0 because rusqlite's bundled copy is older than current SQLite.
 
-Final benchmark binaries are compiled locally with rustc 1.99.0 through scripts/cargo-local-1.99.sh; do not distribute target-cpu=native compilation across heterogeneous workers.
+Final benchmark binaries are compiled locally with rustc 1.99.1 through scripts/cargo-local-1.99.sh; do not distribute target-cpu=native compilation across heterogeneous workers.
