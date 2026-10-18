@@ -21,6 +21,30 @@ class KvQuickIdleTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             MODULE.parse_io_full_avg10("some avg10=1\n")
 
+    def test_audit_runs_non_executable_script_through_uv(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / "results" / "runs" / "kv").mkdir(parents=True)
+            audit_dir = repo / "audit"
+            original_run = MODULE.subprocess.run
+            calls = []
+
+            class Result:
+                returncode = 0
+
+            def fake_run(argv, **kwargs):
+                calls.append((argv, kwargs))
+                return Result()
+
+            MODULE.subprocess.run = fake_run
+            try:
+                MODULE.audit(repo, "kv", audit_dir)
+            finally:
+                MODULE.subprocess.run = original_run
+
+            self.assertEqual(calls[0][0][:4], ["uv", "run", "--script", str(repo / "scripts" / "audit_baseline_sizing.py")])
+            self.assertEqual(calls[0][1]["cwd"], repo)
+
     def test_lock_is_exclusive(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             lock = Path(tmp) / "lock"
