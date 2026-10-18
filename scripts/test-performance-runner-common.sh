@@ -29,7 +29,7 @@ CASE_MIN_FREE_GIB=1000000
 set +e
 performance_check_io_quiet quick profile-floor >/dev/null 2>&1
 profile_floor_rc=$?
-PERFORMANCE_MIN_FREE_GIB=0 CASE_MIN_FREE_GIB=0 performance_check_io_quiet quick explicit-override >/dev/null 2>&1
+ALLOW_BUSY=1 PERFORMANCE_MIN_FREE_GIB=0 CASE_MIN_FREE_GIB=0 performance_check_io_quiet quick explicit-override >/dev/null 2>&1
 explicit_override_rc=$?
 set -e
 [[ $profile_floor_rc -eq 75 ]]
