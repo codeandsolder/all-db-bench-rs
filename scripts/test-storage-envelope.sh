@@ -16,6 +16,24 @@ JSON
 out=$("$ROOT/scripts/run-storage-envelope.sh" "$TMP/native.json" -- sh -c 'printf "%s %s\n" "$DBBENCH_STORAGE_PROFILE_ID" "$DBBENCH_STORAGE_ROOT"')
 [[ "$out" == "test-native $TMP" ]] || { echo "unexpected native wrapper output: $out" >&2; exit 1; }
 
+# Storage-bearing campaign scripts must route DB payloads through the profile root.
+while IFS= read -r script; do
+  [[ -n "$script" ]] || continue
+  # Literal source pattern, not shell expansion.
+  # shellcheck disable=SC2016
+  grep -Fq 'DATA_DIR="${DBBENCH_STORAGE_ROOT:-$ROOT}/data/runs/$RUN_ID"' "$ROOT/scripts/$script" || {
+    echo "storage root routing missing from $script" >&2
+    exit 1
+  }
+done <<'SCRIPTS'
+run-kv-matrix.sh
+run-kv-dimensional-matrix.sh
+run-kv-concurrency-matrix.sh
+run-record-matrix.sh
+run-tsdb-matrix.sh
+run-io-baseline.sh
+SCRIPTS
+
 jq '.expected.hostname = "definitely-not-this-host.invalid"' "$TMP/native.json" >"$TMP/bad.json"
 set +e
 "$ROOT/scripts/run-storage-envelope.sh" "$TMP/bad.json" -- true >/dev/null 2>&1

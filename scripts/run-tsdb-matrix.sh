@@ -55,7 +55,7 @@ else
   RESUME_ORDER_POLICY=fixed-initial
 fi
 RUN_DIR="$ROOT/results/runs/$RUN_ID"
-DATA_DIR="$ROOT/data/runs/$RUN_ID"
+DATA_DIR="${DBBENCH_STORAGE_ROOT:-$ROOT}/data/runs/$RUN_ID"
 mkdir -p "$RUN_DIR"/{cases,client,server-before,server-after,stderr,server-logs,server-configs,noise} "$DATA_DIR"
 HOST_NAME=$(hostname)
 MACHINE_ID_SHA256=$(sha256sum /etc/machine-id | awk '{print $1}')

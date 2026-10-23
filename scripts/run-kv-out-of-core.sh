@@ -23,7 +23,7 @@ fi
 
 RUN_ID=${RUN_ID:-"$(date -u +%Y%m%dT%H%M%SZ)-kv-out-of-core-$PROFILE"}
 RUN_DIR="$ROOT/results/runs/$RUN_ID"
-DATA_DIR="$ROOT/data/runs/$RUN_ID"
+DATA_DIR="${DBBENCH_STORAGE_ROOT:-$ROOT}/data/runs/$RUN_ID"
 mkdir -p "$RUN_DIR"/{cases,stderr} "$DATA_DIR"
 "$ROOT/scripts/capture-host-metadata.sh" "$RUN_DIR/host-start.txt" "$ROOT"
 

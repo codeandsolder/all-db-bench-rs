@@ -32,7 +32,7 @@ if [[ -n "$KV_IMPORTED_CASES_MANIFEST" ]]; then
 fi
 RUN_ID=${RUN_ID:-"$(date -u +%Y%m%dT%H%M%SZ)-kv-$PROFILE"}
 RUN_DIR="$ROOT/results/runs/$RUN_ID"
-DATA_DIR="$ROOT/data/runs/$RUN_ID"
+DATA_DIR="${DBBENCH_STORAGE_ROOT:-$ROOT}/data/runs/$RUN_ID"
 mkdir -p "$RUN_DIR"/{cases,stderr,noise} "$DATA_DIR"
 
 free_bytes=$(df -B1 --output=avail "$DATA_DIR" | tail -n1 | tr -d ' ')

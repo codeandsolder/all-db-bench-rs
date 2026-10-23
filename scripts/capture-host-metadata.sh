@@ -3,8 +3,9 @@ set -euo pipefail
 OUT=${1:?usage: capture-host-metadata.sh OUTPUT [BENCH_ROOT]}
 ROOT=${2:-/srv/scratch/db-bench-2026-09-27}
 mkdir -p "$(dirname "$OUT")"
-SOURCE=$(findmnt -T "$ROOT" -n -o SOURCE 2>/dev/null || true)
-FSTYPE=$(findmnt -T "$ROOT" -n -o FSTYPE 2>/dev/null || true)
+STORAGE_ROOT=${DBBENCH_STORAGE_ROOT:-$ROOT}
+SOURCE=$(findmnt -T "$STORAGE_ROOT" -n -o SOURCE 2>/dev/null || true)
+FSTYPE=$(findmnt -T "$STORAGE_ROOT" -n -o FSTYPE 2>/dev/null || true)
 DEV=""
 if [[ "$SOURCE" == /dev/* ]]; then
   DEV=$(basename "$SOURCE")
@@ -14,6 +15,7 @@ fi
 {
   echo "captured_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "benchmark_root=$ROOT"
+  echo "storage_root=$STORAGE_ROOT"
   echo "source=$SOURCE"
   echo "whole_device=$DEV"
   echo
@@ -58,9 +60,9 @@ fi
   done
   echo
   echo "## filesystem"
-  df -hT "$ROOT"
-  findmnt -T "$ROOT" -o TARGET,SOURCE,FSTYPE,OPTIONS
-  stat -f "$ROOT"
+  df -hT "$STORAGE_ROOT"
+  findmnt -T "$STORAGE_ROOT" -o TARGET,SOURCE,FSTYPE,OPTIONS
+  stat -f "$STORAGE_ROOT"
   if [[ "$FSTYPE" == zfs ]] && command -v zfs >/dev/null 2>&1; then
     echo
     echo "## zfs dataset"

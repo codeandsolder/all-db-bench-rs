@@ -21,7 +21,7 @@ PLAN=$(readlink -f "$PLAN")
 PLAN_SHA=$(sha256sum "$PLAN" | awk '{print $1}')
 
 RUN_DIR="$ROOT/results/runs/$RUN_ID"
-DATA_DIR="$ROOT/data/runs/$RUN_ID"
+DATA_DIR="${DBBENCH_STORAGE_ROOT:-$ROOT}/data/runs/$RUN_ID"
 mkdir -p "$RUN_DIR"/{cases,stderr,noise} "$DATA_DIR"
 free_bytes=$(df -B1 --output=avail "$DATA_DIR" | tail -n1 | tr -d ' ')
 min_free_bytes=$((MIN_FREE_GIB * 1024 * 1024 * 1024))

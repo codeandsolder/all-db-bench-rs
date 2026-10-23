@@ -25,7 +25,7 @@ read -r TX1000_RECORDS TX1000_OPS TX1000_WINDOW TX1000_PAYLOAD < <(record_sustai
 
 RUN_ID=${RUN_ID:-"$(date -u +%Y%m%dT%H%M%SZ)-record-sustained-$PROFILE"}
 RUN_DIR="$ROOT/results/runs/$RUN_ID"
-DATA_DIR="$ROOT/data/runs/$RUN_ID"
+DATA_DIR="${DBBENCH_STORAGE_ROOT:-$ROOT}/data/runs/$RUN_ID"
 mkdir -p "$RUN_DIR"/{cases,stderr,noise} "$DATA_DIR"
 if [[ "${MATRIX_PLAN_ONLY:-0}" != 1 ]]; then
   free_bytes=$(df -B1 --output=avail "$DATA_DIR" | tail -n1 | tr -d ' ')

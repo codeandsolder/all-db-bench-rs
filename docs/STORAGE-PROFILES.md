@@ -77,7 +77,7 @@ Within Acer, ZFS compression/cache/recordsize variants are directly comparable b
   "format_version": 1,
   "id": "example-bounded-v1",
   "mode": "bounded",
-  "root": "/path/that/contains/benchmark/data",
+  "root": "/dedicated/storage/profile/root",
   "expected": {
     "hostname": "host.example",
     "filesystem": "ext4",
@@ -103,6 +103,10 @@ Within Acer, ZFS compression/cache/recordsize variants are directly comparable b
   }
 }
 ```
+
+The profile root is the storage base for database payloads. When a campaign is wrapped by `run-storage-envelope.sh`, storage-bearing runners place case data under `root/data/runs/RUN_ID` while results/provenance stay under the canonical source checkout. This separation is deliberate: moving a benchmark checkout must not silently move the database to a different filesystem.
+
+`capture-host-metadata.sh` follows the same storage root when recording filesystem, block-device, ZFS and ARC metadata. The source checkout remains the source of Git/toolchain provenance.
 
 `expected.zfs` is optional and is validated only on a ZFS profile. Mount options are treated as required members, not an exact option string. A native profile uses `"mode": "native"` and may omit `limits`.
 

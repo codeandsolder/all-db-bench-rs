@@ -44,7 +44,7 @@ esac
 ROOT=${ROOT:-/srv/scratch/db-bench-2026-09-27}
 RUN_ID=${RUN_ID:-"$(date -u +%Y%m%dT%H%M%SZ)-powerloss-$BENCH_KIND-$PROFILE"}
 RUN_DIR="$ROOT/results/runs/$RUN_ID"
-DATA_DIR="$ROOT/data/runs/$RUN_ID"
+DATA_DIR="${DBBENCH_STORAGE_ROOT:-$ROOT}/data/runs/$RUN_ID"
 BASE_DIR="$DATA_DIR/powerloss-bases"
 WORK_ROOT="$DATA_DIR/powerloss-work"
 MOUNT_DIR="$WORK_ROOT/mount"

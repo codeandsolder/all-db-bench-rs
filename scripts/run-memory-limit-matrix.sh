@@ -33,7 +33,7 @@ fi
 MEM_KIB=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)
 RUN_ID=${RUN_ID:-"$(date -u +%Y%m%dT%H%M%SZ)-memory-limit-$PROFILE"}
 RUN_DIR="$ROOT/results/runs/$RUN_ID"
-DATA_DIR="$ROOT/data/runs/$RUN_ID"
+DATA_DIR="${DBBENCH_STORAGE_ROOT:-$ROOT}/data/runs/$RUN_ID"
 mkdir -p "$RUN_DIR"/{cases,stderr,cgroup} "$DATA_DIR"
 "$ROOT/scripts/capture-host-metadata.sh" "$RUN_DIR/host-start.txt" "$ROOT"
 

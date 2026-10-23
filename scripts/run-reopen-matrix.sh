@@ -27,7 +27,7 @@ source "$ROOT/scripts/kv-matrix-policy.sh"
 # shellcheck source=performance-runner-common.sh
 source "$ROOT/scripts/performance-runner-common.sh"
 RUN_ID=${RUN_ID:-"$(date -u +%Y%m%dT%H%M%SZ)-reopen-$CACHE-$PROFILE"}
-RUN_DIR="$ROOT/results/runs/$RUN_ID"; DATA_DIR="$ROOT/data/runs/$RUN_ID"
+RUN_DIR="$ROOT/results/runs/$RUN_ID"; DATA_DIR="${DBBENCH_STORAGE_ROOT:-$ROOT}/data/runs/$RUN_ID"
 mkdir -p "$RUN_DIR"/{cases,stderr,noise} "$DATA_DIR"
 if [[ "${MATRIX_PLAN_ONLY:-0}" != 1 ]]; then
   free_bytes=$(df -B1 --output=avail "$DATA_DIR" | tail -n1 | tr -d ' ')

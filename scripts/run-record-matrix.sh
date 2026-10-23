@@ -17,7 +17,7 @@ ROOT=${ROOT:-"$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"}
 # shellcheck source=record-result-cleanup.sh
 source "$ROOT/scripts/record-result-cleanup.sh"
 RUN_ID=${RUN_ID:-"$(date -u +%Y%m%dT%H%M%SZ)-record-$PROFILE"}
-RUN_DIR="$ROOT/results/runs/$RUN_ID"; DATA_DIR="$ROOT/data/runs/$RUN_ID"
+RUN_DIR="$ROOT/results/runs/$RUN_ID"; DATA_DIR="${DBBENCH_STORAGE_ROOT:-$ROOT}/data/runs/$RUN_ID"
 mkdir -p "$RUN_DIR"/{cases,stderr,noise} "$DATA_DIR"
 free_bytes=$(df -B1 --output=avail "$DATA_DIR" | tail -n1 | tr -d ' '); min_free_bytes=$((MIN_FREE_GIB * 1024 * 1024 * 1024))
 (( free_bytes >= min_free_bytes )) || { echo "refusing record run: free=$free_bytes required=$min_free_bytes" >&2; exit 75; }

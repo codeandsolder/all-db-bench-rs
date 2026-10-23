@@ -35,7 +35,7 @@ source "$ROOT/scripts/record-result-cleanup.sh"
 CASE_TIMEOUT_S=$(concurrency_case_timeout_s "$PROFILE") || exit 2
 command -v timeout >/dev/null || { echo "GNU timeout is required" >&2; exit 2; }
 RUN_ID=${RUN_ID:-"$(date -u +%Y%m%dT%H%M%SZ)-record-concurrency-$PROFILE"}
-RUN_DIR="$ROOT/results/runs/$RUN_ID"; DATA_DIR="$ROOT/data/runs/$RUN_ID"
+RUN_DIR="$ROOT/results/runs/$RUN_ID"; DATA_DIR="${DBBENCH_STORAGE_ROOT:-$ROOT}/data/runs/$RUN_ID"
 mkdir -p "$RUN_DIR"/{cases,stderr,noise} "$DATA_DIR"
 free_bytes=$(df -B1 --output=avail "$DATA_DIR" | tail -n1 | tr -d ' ')
 min_free_bytes=$((MIN_FREE_GIB * 1024 * 1024 * 1024))
