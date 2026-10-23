@@ -26,6 +26,10 @@ fi
   [[ -x "$RUSTC_REAL" ]] && "$RUSTC_REAL" --version --verbose || true
   "$ROOT/scripts/cargo-local-1.99.sh" --version || true
   echo "benchmark_cargo_home=${DB_BENCH_CARGO_HOME:-/tmp/db-bench-cargo-home}"
+  echo "storage_profile_id=${DBBENCH_STORAGE_PROFILE_ID:-}"
+  echo "storage_profile_sha256=${DBBENCH_STORAGE_PROFILE_SHA256:-}"
+  echo "storage_profile_path=${DBBENCH_STORAGE_PROFILE_PATH:-}"
+  echo "storage_profile_root=${DBBENCH_STORAGE_ROOT:-}"
   cc --version 2>/dev/null | head -n1 || true
   c++ --version 2>/dev/null | head -n1 || true
   uv --version || true
