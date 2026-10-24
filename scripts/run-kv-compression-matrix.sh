@@ -62,6 +62,13 @@ else
 fi
 
 BIN_SHA=$(sha256sum "$BIN" | awk '{print $1}')
+HARNESS_COMMIT=$(git -C "$ROOT" rev-parse HEAD)
+if [[ "$BUILD_PROFILE" == external ]]; then
+  BENCH_SOURCE_COMMIT=${BENCH_SOURCE_COMMIT:-}
+else
+  BENCH_SOURCE_COMMIT=${BENCH_SOURCE_COMMIT:-$HARNESS_COMMIT}
+fi
+[[ "$BENCH_SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo "invalid or missing BENCH_SOURCE_COMMIT=$BENCH_SOURCE_COMMIT" >&2; exit 2; }
 RUNNER_SHA=$(sha256sum "$ROOT/scripts/run-kv-compression-matrix.sh" | awk '{print $1}')
 FOOTPRINT_SHA=$(sha256sum "$ROOT/scripts/capture-storage-footprint.py" | awk '{print $1}')
 COUNTERS_SHA=$(sha256sum "$ROOT/scripts/capture-storage-counters.sh" | awk '{print $1}')
@@ -123,7 +130,8 @@ SUPPORT_NEW="$RUN_DIR/support.json.new"
 jq -n \
   --arg lane kv-compression --arg profile "$PROFILE" --arg host "$HOST_NAME" \
   --arg machine "$MACHINE_ID_SHA256" --arg fs "$FILESYSTEM" --arg source "$SOURCE" \
-  --arg build "$BUILD_PROFILE" --arg binary "$BIN_SHA" --arg runner "$RUNNER_SHA" \
+  --arg build "$BUILD_PROFILE" --arg binary "$BIN_SHA" --arg benchmark_source_commit "$BENCH_SOURCE_COMMIT" \
+  --arg harness_commit "$HARNESS_COMMIT" --arg runner "$RUNNER_SHA" \
   --arg footprint "$FOOTPRINT_SHA" --arg counters "$COUNTERS_SHA" --arg settle "$SETTLE_SHA" \
   --arg common "$COMMON_SHA" --arg noise "$NOISE_SHA" --arg storage_profile_id "$PROFILE_ID" \
   --arg storage_profile_mode "$PROFILE_MODE" --arg storage_profile_sha256 "$PROFILE_SHA" \
@@ -135,6 +143,7 @@ jq -n \
     settle_ms:$settle_ms,case_count:$case_count,engines:($engines|split(" ")),
     workloads:($workloads|split(" ")),value_sizes:($values|split(" ")|map(tonumber)),
     value_patterns:($patterns|split(" ")),build_profile:$build,benchmark_binary_sha256:$binary,
+    benchmark_source_commit:$benchmark_source_commit,harness_commit:$harness_commit,
     runner_sha256:$runner,footprint_helper_sha256:$footprint,storage_counter_helper_sha256:$counters,
     storage_settle_helper_sha256:$settle,storage_settle_protocol:"sync-before-baseline+sync-before-physical-snapshot+sync-after-cleanup-v1",
     performance_common_sha256:$common,continuous_noise_guard_sha256:$noise,
