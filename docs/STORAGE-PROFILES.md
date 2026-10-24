@@ -43,7 +43,7 @@ A direct validation showed that Linux blk-cgroup bandwidth limits do apply throu
 
 The initial native calibration on `off-all` measured about 814 MB/s 128 KiB QD1 direct reads and 115 MB/s writes. Small-I/O scaling is intentionally not idealized away: 4 KiB QD1 was about 3.41k read / 960 write IOPS, while QD16 was only about 3.17k / 1.26k IOPS and developed multi-millisecond latency with long tails. A 4 KiB `fdatasync` workload sustained about 238 writes/s (sync p50 ~2.67 ms, p99 ~20.1 ms, max ~301 ms). This is a useful ZFS/recordsize/CoW/TXG characteristic, not a defect in the benchmark.
 
-The bounded v1 ZFS contract uses eight CPUs, 16 GiB RAM, no swap, 512 MiB/s read, 96 MiB/s write, 3k read IOPS and 900 write IOPS on the underlying NVMe partition. These are physical-I/O ceilings, not logical database-operation targets; ZFS aggregation and writeback remain part of the stack and delivered rates are still recorded.
+The bounded v1 ZFS contract uses the common cross-host compute envelope: four physical cores using Asus logical CPUs `0,2,4,6` (one SMT thread per core), 8 GiB RAM and no swap, plus 512 MiB/s read, 96 MiB/s write, 3k read IOPS and 900 write IOPS on the underlying NVMe partition. These are physical-I/O ceilings, not logical database-operation targets; ZFS aggregation and writeback remain part of the stack and delivered rates are still recorded. A matching cold-storage ext4 profile uses the same CPU/memory/I/O ceilings so ext4-versus-ZFS bounded results can be interpreted as deployment-stack behavior under the same resource ceiling rather than as different-sized machines.
 
 ### cold-storage: ext4 NVMe-backed root tier
 
@@ -52,6 +52,8 @@ Current host has four vCPUs (AMD EPYC 9655 under KVM). `/dev/sda3` is ext4 and h
 The 2026-10-23 calibration measured about 3.03 GB/s sequential read, 0.97 GB/s sequential write, 9.0k/28.6k 4 KiB QD1 read/write IOPS, and 97.2k/83.6k QD16 read/write IOPS. The 4 KiB `fdatasync` path sustained about 3.38k writes/s, with sync p99 about 0.50 ms, p99.9 about 14.1 ms, and a maximum observed sync latency around 660 ms. QEMU still advertises the device as rotational, write-back, and without FUA; the profile therefore records it as the observed fast root tier rather than asserting physical-media identity.
 
 The bounded v1 contract caps the tier at 1 GiB/s read, 768 MiB/s write, 80k read IOPS and 60k write IOPS, with four CPUs, 8 GiB RAM and no swap.
+
+For cross-host filesystem comparison, `cold-storage-fast-root-common-nvme-bounded-v1` applies the same 4 CPU / 8 GiB / no-swap and 512 MiB/s read / 96 MiB/s write / 3k read / 900 write IOPS ceiling used by the Asus bounded ZFS profiles. Keep this common-envelope result separate from the faster tier-bounded result.
 
 ### cold-storage: ext4 HDD/scratch tier
 

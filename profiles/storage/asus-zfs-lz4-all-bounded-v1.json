@@ -21,9 +21,9 @@
     }
   },
   "limits": {
-    "allowed_cpus": "0-7",
-    "cpu_quota_percent": 800,
-    "memory_max_bytes": 17179869184,
+    "allowed_cpus": "0,2,4,6",
+    "cpu_quota_percent": 400,
+    "memory_max_bytes": 8589934592,
     "memory_swap_max_bytes": 0,
     "io": {
       "device": "/dev/nvme0n1p3",
@@ -33,5 +33,5 @@
       "write_iops": 900
     }
   },
-  "calibration_basis": "2026-10-24 Asus ZFS native calibration; conservative physical-I/O ceilings. blk-cgroup enforcement through OpenZFS was independently validated with a 32 MiB/s cap."
+  "calibration_basis": "2026-10-24 Asus ZFS native calibration; common bounded compute envelope is 4 physical cores (CPUs 0,2,4,6)/8 GiB/no swap, with conservative ZFS physical-I/O ceilings. blk-cgroup enforcement through OpenZFS was independently validated with a 32 MiB/s cap."
 }

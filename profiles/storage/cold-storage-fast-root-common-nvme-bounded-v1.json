@@ -1,0 +1,26 @@
+{
+  "format_version": 1,
+  "id": "cold-storage-fast-root-common-nvme-bounded-v1",
+  "mode": "bounded",
+  "root": "/srv/db-bench-storage/nvme",
+  "expected": {
+    "hostname": "cold-storage.onhir.com",
+    "filesystem": "ext4",
+    "source": "/dev/sda3",
+    "mount_options": ["rw", "relatime", "errors=remount-ro"]
+  },
+  "limits": {
+    "allowed_cpus": "0-3",
+    "cpu_quota_percent": 400,
+    "memory_max_bytes": 8589934592,
+    "memory_swap_max_bytes": 0,
+    "io": {
+      "device": "/dev/sda",
+      "read_bps": 536870912,
+      "write_bps": 100663296,
+      "read_iops": 3000,
+      "write_iops": 900
+    }
+  },
+  "interpretation": "Common bounded NVMe-class envelope matching the Asus ZFS bounded profiles: 4 CPUs, 8 GiB RAM, no swap, 512 MiB/s read, 96 MiB/s write, 3k/900 read/write IOPS. Use for cross-host ext4-vs-ZFS stack comparisons; retain the faster cold-storage tier-bounded profile separately."
+}
