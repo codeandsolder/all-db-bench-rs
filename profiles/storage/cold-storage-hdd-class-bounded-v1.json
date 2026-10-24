@@ -1,0 +1,26 @@
+{
+  "format_version": 1,
+  "id": "cold-storage-hdd-class-bounded-v1",
+  "mode": "bounded",
+  "root": "/srv/scratch/db-bench-storage/hdd",
+  "expected": {
+    "hostname": "cold-storage.onhir.com",
+    "filesystem": "ext4",
+    "source": "/dev/sdc",
+    "mount_options": ["rw", "noatime"]
+  },
+  "limits": {
+    "allowed_cpus": "0-3",
+    "cpu_quota_percent": 400,
+    "memory_max_bytes": 8589934592,
+    "memory_swap_max_bytes": 0,
+    "io": {
+      "device": "/dev/sdc",
+      "read_bps": 188743680,
+      "write_bps": 188743680,
+      "read_iops": 200,
+      "write_iops": 150
+    }
+  },
+  "interpretation": "Reproducible HDD-class throughput/IOPS ceiling on the real rotational/scratch stack. The cgroup ceiling does not emulate seek distributions and intentionally does not hide the underlying ~50 s FLUSH pathology."
+}

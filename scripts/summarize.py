@@ -49,6 +49,7 @@ def group_key(r: dict) -> tuple:
         r.get("clients", 1),
         r.get("value_bytes", r.get("payload_bytes")),
         r.get("value_pattern", "pseudo-random"),
+        r.get("engine_compression", "default"),
         r.get("key_bytes", 8),
         r.get("key_shape", "sequential"),
         r.get("access_pattern", "auto"),
@@ -69,7 +70,8 @@ def concurrency_identity(item: dict) -> tuple:
         item["format_version"], item["scenario"], item["engine"],
         item["engine_version"], item["durability"], item["workload"],
         item["records"], item["ops_requested"], item["value_bytes"],
-        item["value_pattern"], item["key_bytes"], item["key_shape"],
+        item["value_pattern"], item.get("engine_compression", "default"),
+        item["key_bytes"], item["key_shape"],
         item["access_pattern"], item["miss_percent"], item["write_pattern"],
         item["state_evolution"], item["bounded_churn_slots"],
         item["txn_size"], item.get("read_materialization", "legacy-read-v0"),
@@ -120,6 +122,7 @@ def main() -> None:
             clients,
             value_bytes,
             value_pattern,
+            engine_compression,
             key_bytes,
             key_shape,
             access_pattern,
@@ -169,6 +172,10 @@ def main() -> None:
                 "clients": clients,
                 "value_bytes": value_bytes,
                 "value_pattern": value_pattern,
+                "engine_compression": engine_compression,
+                "engine_compression_mapping": sorted({
+                    r.get("engine_compression_mapping", "legacy/default") for r in rs
+                }),
                 "key_bytes": key_bytes,
                 "key_shape": key_shape,
                 "access_pattern": access_pattern,
@@ -184,7 +191,8 @@ def main() -> None:
                 "configuration": (
                     (
                         f"clients={clients} k={key_bytes}/{key_shape} "
-                        f"v={value_bytes}/{value_pattern} access={access_pattern} "
+                        f"v={value_bytes}/{value_pattern} compression={engine_compression} "
+                        f"access={access_pattern} "
                         f"miss={miss_percent}% write={write_pattern} "
                         f"state={state_evolution}/slots={bounded_churn_slots}"
                     )

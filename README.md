@@ -104,6 +104,13 @@ Dimensional KV sweeps (locality, misses, key shape/size, value entropy, write pl
 
     ./scripts/run-kv-dimensional-matrix.sh quick
 
+Controlled engine/filesystem compression measurements use the same storage profiles. `quick` and `full` require a storage envelope; the runner retains apparent bytes, filesystem-allocated blocks, block-device traffic, ZFS dataset snapshots where applicable, CPU/latency, and comparisons against the same engine with compression disabled:
+
+    sudo -E ./scripts/run-storage-envelope.sh profiles/storage/PROFILE.json -- \
+      ./scripts/run-kv-compression-matrix.sh quick
+
+The KV compression lane covers pseudo-random, zero, repeated, structured-binary and structured-text values and exposes explicit `default|none|lz4|snappy|zstd` engine compression where the selected engine supports it. Unsupported engine/codec pairs fail rather than silently falling back.
+
 Windowed sustained-write / compaction-cliff campaigns:
 
     ./scripts/run-kv-sustained-matrix.sh quick

@@ -1,0 +1,26 @@
+{
+  "format_version": 1,
+  "id": "cold-storage-fast-root-bounded-v1",
+  "mode": "bounded",
+  "root": "/srv/db-bench-storage/nvme",
+  "expected": {
+    "hostname": "cold-storage.onhir.com",
+    "filesystem": "ext4",
+    "source": "/dev/sda3",
+    "mount_options": ["rw", "relatime", "errors=remount-ro"]
+  },
+  "limits": {
+    "allowed_cpus": "0-3",
+    "cpu_quota_percent": 400,
+    "memory_max_bytes": 8589934592,
+    "memory_swap_max_bytes": 0,
+    "io": {
+      "device": "/dev/sda",
+      "read_bps": 1073741824,
+      "write_bps": 805306368,
+      "read_iops": 80000,
+      "write_iops": 60000
+    }
+  },
+  "calibration_basis": "2026-10-23 native calibration; ceilings deliberately below observed 97k/84k QD16 IOPS and 3.03/0.97 GB/s sequential throughput."
+}

@@ -12,7 +12,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use fjall::{Database as FjallDb, Keyspace, KeyspaceCreateOptions, PersistMode};
+use fjall::{
+    CompressionType as FjallCompression, Database as FjallDb, Keyspace, KeyspaceCreateOptions,
+    PersistMode, config::CompressionPolicy as FjallCompressionPolicy,
+};
 use heed::{Database as HeedDb, Env as HeedEnv, EnvFlags, EnvOpenOptions, types::Bytes};
 use manifold::{
     Durability as ManifoldDurability, TableDefinition as ManifoldTableDefinition,
@@ -21,10 +24,14 @@ use manifold::{
 use parity_db::{Db as ParityDb, Options as ParityOptions};
 use redb::{Database as RedbDb, Durability as RedbDurability, ReadableDatabase, TableDefinition};
 use surrealkv::{
-    Durability as SurrealDurability, LSMIterator, Mode as SurrealMode, Tree as SurrealTree,
+    CompressionType as SurrealCompression, Durability as SurrealDurability, LSMIterator,
+    Mode as SurrealMode, Options as SurrealOptions, Tree as SurrealTree,
     TreeBuilder as SurrealTreeBuilder,
 };
-use turbokv::{Db as TurboDb, DbOptions as TurboOptions, WriteBatch as TurboBatch};
+use turbokv::{
+    Compression as TurboCompression, Db as TurboDb, DbOptions as TurboOptions,
+    WriteBatch as TurboBatch,
+};
 
 #[cfg(feature = "kv-external")]
 use libmdbx::{
@@ -130,6 +137,18 @@ pub(crate) enum ValuePattern {
     PseudoRandom,
     Zeros,
     Repeated,
+    StructuredBinary,
+    StructuredText,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, ValueEnum, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum EngineCompression {
+    Default,
+    None,
+    Lz4,
+    Snappy,
+    Zstd,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, ValueEnum, PartialEq, Eq)]
@@ -157,6 +176,8 @@ struct Args {
     value_bytes: usize,
     #[arg(long, value_enum, default_value_t = ValuePattern::PseudoRandom)]
     value_pattern: ValuePattern,
+    #[arg(long, value_enum, default_value_t = EngineCompression::Default)]
+    engine_compression: EngineCompression,
     #[arg(long, default_value_t = 8)]
     key_bytes: usize,
     #[arg(long, value_enum, default_value_t = KeyShape::Sequential)]
@@ -263,6 +284,8 @@ struct Measurement {
     ops_completed: u64,
     value_bytes: usize,
     value_pattern: ValuePattern,
+    engine_compression: EngineCompression,
+    engine_compression_mapping: &'static str,
     key_bytes: usize,
     key_shape: KeyShape,
     access_pattern: AccessPattern,
@@ -451,12 +474,96 @@ impl EngineKind {
     }
 }
 
+fn compression_override_supported(kind: EngineKind) -> bool {
+    match kind {
+        EngineKind::Fjall | EngineKind::Surrealkv | EngineKind::Turbokv => true,
+        #[cfg(feature = "kv-external")]
+        EngineKind::Rocksdb => true,
+        _ => false,
+    }
+}
+
+fn compression_mapping(kind: EngineKind, compression: EngineCompression) -> Result<&'static str> {
+    Ok(match (kind, compression) {
+        (EngineKind::Fjall, EngineCompression::Default) => {
+            "Fjall default: L0/L1 data blocks uncompressed, L2+ LZ4; journal default unchanged"
+        }
+        (EngineKind::Fjall, EngineCompression::None) => {
+            "Fjall data blocks uncompressed; journal compression disabled"
+        }
+        (EngineKind::Fjall, EngineCompression::Lz4) => {
+            "Fjall data blocks LZ4 at every level; journal LZ4"
+        }
+        (EngineKind::Fjall, EngineCompression::Snappy | EngineCompression::Zstd) => {
+            bail!("Fjall 3.1.12 exposes LZ4 but not the requested codec")
+        }
+        (EngineKind::Surrealkv, EngineCompression::Default | EngineCompression::None) => {
+            "SurrealKV SSTable compression disabled; WAL compression unchanged"
+        }
+        (EngineKind::Surrealkv, EngineCompression::Snappy) => {
+            "SurrealKV SSTable blocks Snappy at every level; WAL compression unchanged"
+        }
+        (EngineKind::Surrealkv, EngineCompression::Zstd) => {
+            "SurrealKV SSTable blocks Zstd at every level; WAL compression unchanged"
+        }
+        (EngineKind::Surrealkv, EngineCompression::Lz4) => {
+            bail!("SurrealKV 1.0.0 SSTables do not expose LZ4 compression")
+        }
+        (EngineKind::Turbokv, EngineCompression::Default | EngineCompression::Lz4) => {
+            "TurboKV SSTable compression LZ4; WAL compression unchanged"
+        }
+        (EngineKind::Turbokv, EngineCompression::None) => {
+            "TurboKV SSTable compression disabled; WAL compression unchanged"
+        }
+        (EngineKind::Turbokv, EngineCompression::Snappy) => {
+            "TurboKV SSTable compression Snappy; WAL compression unchanged"
+        }
+        (EngineKind::Turbokv, EngineCompression::Zstd) => {
+            "TurboKV SSTable compression Zstd; WAL compression unchanged"
+        }
+        #[cfg(feature = "kv-external")]
+        (EngineKind::Rocksdb, EngineCompression::Default | EngineCompression::None) => {
+            "RocksDB benchmark SSTable compression disabled; WAL compression unchanged"
+        }
+        #[cfg(feature = "kv-external")]
+        (EngineKind::Rocksdb, EngineCompression::Lz4) => {
+            "RocksDB SSTable compression LZ4; WAL compression unchanged"
+        }
+        #[cfg(feature = "kv-external")]
+        (EngineKind::Rocksdb, EngineCompression::Snappy) => {
+            "RocksDB SSTable compression Snappy; WAL compression unchanged"
+        }
+        #[cfg(feature = "kv-external")]
+        (EngineKind::Rocksdb, EngineCompression::Zstd) => {
+            "RocksDB SSTable compression Zstd; WAL compression unchanged"
+        }
+        (_, EngineCompression::Default) => {
+            "engine native/default compression configuration; no benchmark override"
+        }
+        _ => bail!("engine {kind:?} does not expose the requested benchmark compression override"),
+    })
+}
+
 impl Engine {
     pub(crate) async fn open(
         kind: EngineKind,
         durability: Durability,
         path: &Path,
     ) -> Result<Self> {
+        Self::open_with_compression(kind, durability, path, EngineCompression::Default).await
+    }
+
+    pub(crate) async fn open_with_compression(
+        kind: EngineKind,
+        durability: Durability,
+        path: &Path,
+        compression: EngineCompression,
+    ) -> Result<Self> {
+        if compression != EngineCompression::Default && !compression_override_supported(kind) {
+            bail!(
+                "engine {kind:?} does not expose a benchmarked compression override; use --engine-compression default"
+            );
+        }
         fs::create_dir_all(path)?;
         match kind {
             EngineKind::Redb => {
@@ -469,12 +576,42 @@ impl Engine {
                 Ok(Self::Redb(db))
             }
             EngineKind::Fjall => {
-                let db = FjallDb::builder(path.join("fjall")).open()?;
-                let keyspace = db.keyspace("kv", KeyspaceCreateOptions::default)?;
+                let mut builder = FjallDb::builder(path.join("fjall"));
+                let keyspace_options = match compression {
+                    EngineCompression::Default => KeyspaceCreateOptions::default(),
+                    EngineCompression::None => {
+                        builder = builder.journal_compression(FjallCompression::None);
+                        KeyspaceCreateOptions::default()
+                            .data_block_compression_policy(FjallCompressionPolicy::disabled())
+                    }
+                    EngineCompression::Lz4 => {
+                        builder = builder.journal_compression(FjallCompression::Lz4);
+                        KeyspaceCreateOptions::default().data_block_compression_policy(
+                            FjallCompressionPolicy::all(FjallCompression::Lz4),
+                        )
+                    }
+                    EngineCompression::Snappy | EngineCompression::Zstd => {
+                        bail!("Fjall 3.1.12 exposes LZ4 but not the requested codec")
+                    }
+                };
+                let db = builder.open()?;
+                let keyspace = db.keyspace("kv", move || keyspace_options)?;
                 Ok(Self::Fjall { db, keyspace })
             }
             EngineKind::Surrealkv => {
-                let tree = SurrealTreeBuilder::new()
+                let opts = match compression {
+                    EngineCompression::Default => SurrealOptions::default(),
+                    EngineCompression::None => SurrealOptions::default()
+                        .with_compression_per_level(vec![SurrealCompression::None]),
+                    EngineCompression::Snappy => SurrealOptions::default()
+                        .with_compression_per_level(vec![SurrealCompression::SnappyCompression]),
+                    EngineCompression::Zstd => SurrealOptions::default()
+                        .with_compression_per_level(vec![SurrealCompression::ZstdCompression]),
+                    EngineCompression::Lz4 => {
+                        bail!("SurrealKV 1.0.0 SSTables do not expose LZ4 compression")
+                    }
+                };
+                let tree = SurrealTreeBuilder::with_options(opts)
                     .with_path(path.join("surrealkv"))
                     .build()?;
                 Ok(Self::Surrealkv(tree))
@@ -535,6 +672,13 @@ impl Engine {
                     Durability::Relaxed => TurboOptions::durable(),
                     Durability::Sync => TurboOptions::paranoid(),
                 };
+                let opts = match compression {
+                    EngineCompression::Default => opts,
+                    EngineCompression::None => opts.with_compression(TurboCompression::None),
+                    EngineCompression::Lz4 => opts.with_compression(TurboCompression::Lz4),
+                    EngineCompression::Snappy => opts.with_compression(TurboCompression::Snappy),
+                    EngineCompression::Zstd => opts.with_compression(TurboCompression::Zstd),
+                };
                 Ok(Self::Turbokv(Some(
                     TurboDb::open_with_options(path.join("turbokv"), opts).await?,
                 )))
@@ -563,7 +707,13 @@ impl Engine {
             EngineKind::Rocksdb => {
                 let mut opts = RocksOptions::default();
                 opts.create_if_missing(true);
-                opts.set_compression_type(RocksCompression::None);
+                let codec = match compression {
+                    EngineCompression::Default | EngineCompression::None => RocksCompression::None,
+                    EngineCompression::Lz4 => RocksCompression::Lz4,
+                    EngineCompression::Snappy => RocksCompression::Snappy,
+                    EngineCompression::Zstd => RocksCompression::Zstd,
+                };
+                opts.set_compression_type(codec);
                 Ok(Self::Rocksdb(RocksDb::open(&opts, path.join("rocksdb"))?))
             }
             #[cfg(feature = "kv-external")]
@@ -1190,6 +1340,35 @@ pub(crate) fn value(id: u64, len: usize, salt: u64, pattern: ValuePattern) -> Ve
             }
             out
         }
+        ValuePattern::StructuredBinary => {
+            let mut out = vec![0u8; len];
+            let mut x = mix_u64(id ^ salt ^ 0x7374_7275_6374_6269);
+            for (block_index, chunk) in out.chunks_mut(64).enumerate() {
+                let mut block = [0u8; 64];
+                block[..16].copy_from_slice(b"DBBENCH-STRUCTv1");
+                block[16..24].copy_from_slice(&id.to_le_bytes());
+                block[24..32].copy_from_slice(&(block_index as u64).to_le_bytes());
+                x = mix_u64(x.wrapping_add(block_index as u64));
+                block[32..40].copy_from_slice(&x.to_le_bytes());
+                block[40..].fill((block_index % 7) as u8);
+                chunk.copy_from_slice(&block[..chunk.len()]);
+            }
+            out
+        }
+        ValuePattern::StructuredText => {
+            let seed = mix_u64(id ^ salt ^ 0x7374_7275_6374_7478);
+            let record = format!(
+                r#"{{"kind":"dbbench","version":1,"id":{id},"region":"r{:02}","state":"active","counter":{},"message":"repeatable structured payload for compression testing"}}"#,
+                id % 8,
+                seed % 100_000,
+            );
+            let bytes = record.as_bytes();
+            let mut out = vec![0u8; len];
+            for chunk in out.chunks_mut(bytes.len()) {
+                chunk.copy_from_slice(&bytes[..chunk.len()]);
+            }
+            out
+        }
         ValuePattern::PseudoRandom => {
             let mut x = id ^ salt ^ 0x9e37_79b9_7f4a_7c15;
             let mut out = vec![0u8; len];
@@ -1695,11 +1874,13 @@ async fn main() -> Result<()> {
     }
 
     let mapping = args.engine.durability_mapping(args.durability)?;
+    let compression_mapping = compression_mapping(args.engine, args.engine_compression)?;
     let run_name = format!(
-        "{:?}-{:?}-{:?}-n{}-k{}-{:?}-v{}-{:?}-tx{}-scan{}-trial{}",
+        "{:?}-{:?}-{:?}-c{:?}-n{}-k{}-{:?}-v{}-{:?}-tx{}-scan{}-trial{}",
         args.engine,
         args.durability,
         args.workload,
+        args.engine_compression,
         args.records,
         args.key_bytes,
         args.key_shape,
@@ -1734,7 +1915,12 @@ async fn main() -> Result<()> {
     let open_system_before = SystemSnapshot::capture();
     let open_process_before = ProcSnapshot::capture();
     let open_started = Instant::now();
-    let mut engine = Engine::open(args.engine, args.durability, &path).await?;
+    let mut engine = if args.engine_compression == EngineCompression::Default {
+        Engine::open(args.engine, args.durability, &path).await?
+    } else {
+        Engine::open_with_compression(args.engine, args.durability, &path, args.engine_compression)
+            .await?
+    };
     let open_elapsed = open_started.elapsed();
     let open_process_after = ProcSnapshot::capture();
     let open_system_after = SystemSnapshot::capture();
@@ -1784,7 +1970,7 @@ async fn main() -> Result<()> {
     let db_bytes = dir_size(&path);
 
     let result = Measurement {
-        format_version: 7,
+        format_version: 8,
         engine: args.engine,
         engine_version: args.engine.version(),
         durability: args.durability,
@@ -1795,6 +1981,8 @@ async fn main() -> Result<()> {
         ops_completed: completed,
         value_bytes: args.value_bytes,
         value_pattern: args.value_pattern,
+        engine_compression: args.engine_compression,
+        engine_compression_mapping: compression_mapping,
         key_bytes: args.key_bytes,
         key_shape: args.key_shape,
         access_pattern: args.access_pattern,
@@ -1847,4 +2035,48 @@ async fn main() -> Result<()> {
         fs::remove_dir_all(&path).context("remove completed run database")?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod compression_value_tests {
+    use super::*;
+
+    #[test]
+    fn value_patterns_are_sized_and_deterministic() {
+        let patterns = [
+            ValuePattern::PseudoRandom,
+            ValuePattern::Zeros,
+            ValuePattern::Repeated,
+            ValuePattern::StructuredBinary,
+            ValuePattern::StructuredText,
+        ];
+        for pattern in patterns {
+            let a = value(42, 4096, 7, pattern);
+            let b = value(42, 4096, 7, pattern);
+            assert_eq!(a.len(), 4096);
+            assert_eq!(a, b);
+        }
+        assert!(
+            value(42, 257, 7, ValuePattern::Zeros)
+                .iter()
+                .all(|&x| x == 0)
+        );
+        assert_ne!(
+            value(42, 4096, 7, ValuePattern::PseudoRandom),
+            value(42, 4096, 7, ValuePattern::StructuredBinary)
+        );
+        assert!(
+            String::from_utf8(value(42, 4096, 7, ValuePattern::StructuredText))
+                .expect("structured text pattern must be UTF-8")
+                .contains("dbbench")
+        );
+    }
+
+    #[test]
+    fn explicit_compression_support_is_intentional() {
+        assert!(compression_override_supported(EngineKind::Fjall));
+        assert!(compression_override_supported(EngineKind::Surrealkv));
+        assert!(compression_override_supported(EngineKind::Turbokv));
+        assert!(!compression_override_supported(EngineKind::Redb));
+    }
 }

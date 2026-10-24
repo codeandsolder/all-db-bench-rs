@@ -13,8 +13,8 @@ cat >"$TMP/native.json" <<JSON
 JSON
 
 # shellcheck disable=SC2016
-out=$("$ROOT/scripts/run-storage-envelope.sh" "$TMP/native.json" -- sh -c 'printf "%s %s\n" "$DBBENCH_STORAGE_PROFILE_ID" "$DBBENCH_STORAGE_ROOT"')
-[[ "$out" == "test-native $TMP" ]] || { echo "unexpected native wrapper output: $out" >&2; exit 1; }
+out=$("$ROOT/scripts/run-storage-envelope.sh" "$TMP/native.json" -- sh -c 'printf "%s %s %s\n" "$DBBENCH_STORAGE_PROFILE_ID" "$DBBENCH_STORAGE_PROFILE_MODE" "$DBBENCH_STORAGE_ROOT"')
+[[ "$out" == "test-native native $TMP" ]] || { echo "unexpected native wrapper output: $out" >&2; exit 1; }
 
 # Storage-bearing campaign scripts must route DB payloads through the profile root.
 while IFS= read -r script; do

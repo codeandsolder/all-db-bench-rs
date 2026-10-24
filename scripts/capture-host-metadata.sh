@@ -4,6 +4,25 @@ OUT=${1:?usage: capture-host-metadata.sh OUTPUT [BENCH_ROOT]}
 ROOT=${2:-/srv/scratch/db-bench-2026-09-27}
 mkdir -p "$(dirname "$OUT")"
 STORAGE_ROOT=${DBBENCH_STORAGE_ROOT:-$ROOT}
+PROFILE_SIDECAR="$(dirname "$OUT")/storage-profile.json"
+PROFILE_SIDECAR_NEW="$PROFILE_SIDECAR.new.$$"
+command -v jq >/dev/null 2>&1 || { echo "required tool not found: jq" >&2; exit 127; }
+jq -n \
+  --arg id "${DBBENCH_STORAGE_PROFILE_ID:-}" \
+  --arg mode "${DBBENCH_STORAGE_PROFILE_MODE:-}" \
+  --arg sha256 "${DBBENCH_STORAGE_PROFILE_SHA256:-}" \
+  --arg root "$STORAGE_ROOT" \
+  '{format_version:1,id:$id,mode:$mode,sha256:$sha256,root:$root}' > "$PROFILE_SIDECAR_NEW"
+if [[ -s "$PROFILE_SIDECAR" ]]; then
+  if ! cmp -s "$PROFILE_SIDECAR" "$PROFILE_SIDECAR_NEW"; then
+    rm -f "$PROFILE_SIDECAR_NEW"
+    echo "refusing run/resume: storage profile identity changed: $PROFILE_SIDECAR" >&2
+    exit 2
+  fi
+  rm -f "$PROFILE_SIDECAR_NEW"
+else
+  mv "$PROFILE_SIDECAR_NEW" "$PROFILE_SIDECAR"
+fi
 SOURCE=$(findmnt -T "$STORAGE_ROOT" -n -o SOURCE 2>/dev/null || true)
 FSTYPE=$(findmnt -T "$STORAGE_ROOT" -n -o FSTYPE 2>/dev/null || true)
 DEV=""
@@ -29,6 +48,7 @@ fi
   "$ROOT/scripts/cargo-local-1.99.sh" --version || true
   echo "benchmark_cargo_home=${DB_BENCH_CARGO_HOME:-/tmp/db-bench-cargo-home}"
   echo "storage_profile_id=${DBBENCH_STORAGE_PROFILE_ID:-}"
+  echo "storage_profile_mode=${DBBENCH_STORAGE_PROFILE_MODE:-}"
   echo "storage_profile_sha256=${DBBENCH_STORAGE_PROFILE_SHA256:-}"
   echo "storage_profile_path=${DBBENCH_STORAGE_PROFILE_PATH:-}"
   echo "storage_profile_root=${DBBENCH_STORAGE_ROOT:-}"

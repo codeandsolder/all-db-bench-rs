@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TextIO
 
-from idle_supervisor_common import storage_preflight, write_status as supervisor_write_status
+from idle_supervisor_common import io_pressure_preflight, storage_preflight, write_status as supervisor_write_status
 from performance_support_provenance import support_identity, verify_binary_manifest
 
 DEFAULT_LOCK = Path("/run/lock/all-db-bench-performance.lock")
@@ -67,12 +67,9 @@ def preflight_host(repo: Path, *, max_io_full_avg10: float = 5.0) -> int:
     storage_rc = storage_preflight(repo)
     if storage_rc != 0:
         return storage_rc
-    try:
-        pressure = parse_io_full_avg10(Path("/proc/pressure/io").read_text())
-    except (OSError, ValueError):
-        return 2
-    if pressure > max_io_full_avg10:
-        return 75
+    pressure_rc = io_pressure_preflight(max_io_full_avg10)
+    if pressure_rc != 0:
+        return pressure_rc
     proc = subprocess.run(
         [sys.executable, str(repo / "scripts" / "check-external-noise.py"), "--sample-ms", "250"],
         cwd=repo,

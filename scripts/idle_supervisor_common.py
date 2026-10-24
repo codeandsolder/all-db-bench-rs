@@ -22,12 +22,36 @@ def minimum_free_bytes() -> int:
 
 
 def storage_preflight(path: Path) -> int:
+    profile_root = os.environ.get("DBBENCH_STORAGE_ROOT")
+    if profile_root:
+        path = Path(profile_root)
     try:
         free = shutil.disk_usage(path).free
         required = minimum_free_bytes()
     except (OSError, ValueError):
         return 2
     return 75 if free < required else 0
+
+
+def io_pressure_preflight(max_io_full_avg10: float, pressure_path: Path = Path("/proc/pressure/io")) -> int:
+    if os.environ.get("DBBENCH_STORAGE_PROFILE_MODE") == "bounded":
+        return 0
+    try:
+        raw = pressure_path.read_text()
+        pressure = None
+        for line in raw.splitlines():
+            parts = line.split()
+            if parts and parts[0] == "full":
+                for part in parts[1:]:
+                    if part.startswith("avg10="):
+                        pressure = float(part.split("=", 1)[1])
+                        break
+                break
+        if pressure is None:
+            return 2
+    except (OSError, ValueError):
+        return 2
+    return 75 if pressure > max_io_full_avg10 else 0
 
 
 def write_status(path: Path, **fields: Any) -> bool:

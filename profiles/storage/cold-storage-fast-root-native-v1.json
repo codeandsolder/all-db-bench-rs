@@ -1,0 +1,27 @@
+{
+  "format_version": 1,
+  "id": "cold-storage-fast-root-native-v1",
+  "mode": "native",
+  "root": "/srv/db-bench-storage/nvme",
+  "expected": {
+    "hostname": "cold-storage.onhir.com",
+    "filesystem": "ext4",
+    "source": "/dev/sda3",
+    "mount_options": ["rw", "relatime", "errors=remount-ro"]
+  },
+  "calibration": {
+    "date": "2026-10-23",
+    "working_set_bytes": 2147483648,
+    "runtime_seconds": 8,
+    "seqread_1m_q1_bps": 3031806063,
+    "seqwrite_1m_q1_bps": 970083495,
+    "randread_4k_q1_iops": 9031.496063,
+    "randwrite_4k_q1_iops": 28550.306212,
+    "randread_4k_q16_iops": 97210.348706,
+    "randwrite_4k_q16_iops": 83607.299088,
+    "fdatasync_4k_iops": 3376.577928,
+    "fdatasync_p99_ns": 501760,
+    "fdatasync_p999_ns": 14090240,
+    "note": "QEMU reports rotational/write-back/no-FUA despite fast-tier performance; profile name describes observed tier, not physical media identity."
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "format_version": 1,
+  "id": "asus-zfs-off-all-native-v1",
+  "mode": "native",
+  "root": "/srv/db-bench-zfs/off-all",
+  "expected": {
+    "hostname": "cachyasus",
+    "filesystem": "zfs",
+    "source": "zpcachyos/dbbench/off-all",
+    "zfs": {
+      "compression": "off",
+      "recordsize": "128K",
+      "atime": "off",
+      "sync": "standard",
+      "logbias": "latency",
+      "primarycache": "all",
+      "secondarycache": "all",
+      "xattr": "sa",
+      "dnodesize": "legacy",
+      "refquota": "120G"
+    }
+  },
+  "calibration": {
+    "date": "2026-10-24",
+    "seqread_128k_q1_bps": 813937297,
+    "seqwrite_128k_q1_bps": 114671648,
+    "randread_4k_q1_iops": 3414.573178,
+    "randwrite_4k_q1_iops": 960.259935,
+    "randread_4k_q16_iops": 3172.728409,
+    "randwrite_4k_q16_iops": 1262.934266,
+    "fdatasync_4k_iops": 237.95549,
+    "fdatasync_p50_ns": 2670592,
+    "fdatasync_p99_ns": 20054016,
+    "fdatasync_max_ns": 300694520,
+    "note": "Direct I/O on ZFS intentionally reflects recordsize/CoW/TXG behavior; QD16 small-I/O does not scale like raw NVMe."
+  }
+}

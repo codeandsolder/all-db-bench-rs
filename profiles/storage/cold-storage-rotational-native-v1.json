@@ -1,0 +1,23 @@
+{
+  "format_version": 1,
+  "id": "cold-storage-rotational-native-v1",
+  "mode": "native",
+  "root": "/srv/scratch/db-bench-storage/hdd",
+  "expected": {
+    "hostname": "cold-storage.onhir.com",
+    "filesystem": "ext4",
+    "source": "/dev/sdc",
+    "mount_options": ["rw", "noatime"]
+  },
+  "calibration": {
+    "date": "2026-10-23",
+    "working_set_bytes": 536870912,
+    "runtime_seconds": 8,
+    "seqread_1m_q1_bps": 6439286737,
+    "seqwrite_1m_q1_bps": 4630981319,
+    "randread_4k_q16_iops": 104104.23697,
+    "randwrite_4k_q16_iops": 74794.150731,
+    "first_fdatasync_ns": 50173928646,
+    "note": "Virtual rotational/write-back/no-FUA stack: direct I/O appears host-cache-fast while FLUSH is pathological. Preserve this native behavior; do not interpret direct IOPS as bare-HDD capability."
+  }
+}
