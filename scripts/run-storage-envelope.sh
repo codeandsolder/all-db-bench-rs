@@ -112,6 +112,7 @@ fi
 
 UNIT_SAFE=$(printf '%s' "$PROFILE_ID" | tr -c 'A-Za-z0-9_.-' '-')
 UNIT="dbbench-storage-${UNIT_SAFE}-$$"
+CALLER_CWD=$(pwd -P)
 
 declare -a IDENTITY_ARGS=()
 if [[ -n "${SUDO_UID:-}" && -n "${SUDO_GID:-}" && "${SUDO_UID}" != 0 ]]; then
@@ -119,6 +120,7 @@ if [[ -n "${SUDO_UID:-}" && -n "${SUDO_GID:-}" && "${SUDO_UID}" != 0 ]]; then
 fi
 
 exec systemd-run --quiet --wait --collect --pipe --unit="$UNIT" \
+  --working-directory="$CALLER_CWD" \
   "${IDENTITY_ARGS[@]}" \
   --setenv="DBBENCH_STORAGE_PROFILE_ID=$DBBENCH_STORAGE_PROFILE_ID" \
   --setenv="DBBENCH_STORAGE_PROFILE_MODE=$DBBENCH_STORAGE_PROFILE_MODE" \
