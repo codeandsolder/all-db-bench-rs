@@ -25,7 +25,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 redb = "=4.4.0"
 fjall = "=3.1.12"
 surrealkv = { version = "=1.0.0", default-features = false }
-heed = "=0.22.1"
+heed = "=0.23.0"
 sled = "=1.0.0-alpha.124"
 lkv = "=0.2.1"
 manifold-db = "=3.1.0"
