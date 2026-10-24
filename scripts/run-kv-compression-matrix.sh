@@ -65,6 +65,7 @@ BIN_SHA=$(sha256sum "$BIN" | awk '{print $1}')
 RUNNER_SHA=$(sha256sum "$ROOT/scripts/run-kv-compression-matrix.sh" | awk '{print $1}')
 FOOTPRINT_SHA=$(sha256sum "$ROOT/scripts/capture-storage-footprint.py" | awk '{print $1}')
 COUNTERS_SHA=$(sha256sum "$ROOT/scripts/capture-storage-counters.sh" | awk '{print $1}')
+SETTLE_SHA=$(sha256sum "$ROOT/scripts/settle-storage-path.sh" | awk '{print $1}')
 COMMON_SHA=$(sha256sum "$ROOT/scripts/performance-runner-common.sh" | awk '{print $1}')
 NOISE_SHA=$(sha256sum "$ROOT/scripts/run-with-continuous-noise.py" | awk '{print $1}')
 HOST_NAME=$(hostname)
@@ -123,8 +124,8 @@ jq -n \
   --arg lane kv-compression --arg profile "$PROFILE" --arg host "$HOST_NAME" \
   --arg machine "$MACHINE_ID_SHA256" --arg fs "$FILESYSTEM" --arg source "$SOURCE" \
   --arg build "$BUILD_PROFILE" --arg binary "$BIN_SHA" --arg runner "$RUNNER_SHA" \
-  --arg footprint "$FOOTPRINT_SHA" --arg counters "$COUNTERS_SHA" --arg common "$COMMON_SHA" \
-  --arg noise "$NOISE_SHA" --arg storage_profile_id "$PROFILE_ID" \
+  --arg footprint "$FOOTPRINT_SHA" --arg counters "$COUNTERS_SHA" --arg settle "$SETTLE_SHA" \
+  --arg common "$COMMON_SHA" --arg noise "$NOISE_SHA" --arg storage_profile_id "$PROFILE_ID" \
   --arg storage_profile_mode "$PROFILE_MODE" --arg storage_profile_sha256 "$PROFILE_SHA" \
   --arg engines "${ENGINES[*]}" --arg workloads "${WORKLOADS[*]}" \
   --arg values "${VALUE_SIZES[*]}" --arg patterns "${PATTERNS[*]}" \
@@ -135,6 +136,7 @@ jq -n \
     workloads:($workloads|split(" ")),value_sizes:($values|split(" ")|map(tonumber)),
     value_patterns:($patterns|split(" ")),build_profile:$build,benchmark_binary_sha256:$binary,
     runner_sha256:$runner,footprint_helper_sha256:$footprint,storage_counter_helper_sha256:$counters,
+    storage_settle_helper_sha256:$settle,storage_settle_protocol:"sync-before-baseline+sync-before-physical-snapshot+sync-after-cleanup-v1",
     performance_common_sha256:$common,continuous_noise_guard_sha256:$noise,
     hostname:$host,machine_id_sha256:$machine,filesystem:$fs,source:$source,
     storage_profile:{id:$storage_profile_id,mode:$storage_profile_mode,sha256:$storage_profile_sha256},
@@ -193,6 +195,7 @@ for job in "${ORDERED[@]}"; do
   performance_check_io_quiet "$PROFILE" "before:$case_id" || exit $?
   performance_check_external_noise "$ROOT" "$PROFILE" "before:$case_id" "$noise_before" || exit $?
   rm -rf -- "$db_path"; rm -f "$raw" "$out"
+  "$ROOT/scripts/settle-storage-path.sh" "$DATA_DIR" || exit $?
   storage_before=$("$ROOT/scripts/capture-storage-counters.sh" "$DATA_DIR") || exit $?
   dataset_before=$("$ROOT/scripts/capture-storage-footprint.py" "$DATA_DIR") || exit $?
 
@@ -213,11 +216,13 @@ for job in "${ORDERED[@]}"; do
   if (( noise_rc != 0 )); then
     performance_preserve_noise_rejection "$RUN_DIR" "$case_id" post-external "$noise_before" "$noise_during" "$noise_after"
     rm -rf -- "$db_path"; rm -f "$raw" "$out"
+    "$ROOT/scripts/settle-storage-path.sh" "$DATA_DIR" || exit $?
     exit "$noise_rc"
   fi
   if (( rc == 75 )) && performance_continuous_rejected "$noise_during"; then
     performance_preserve_noise_rejection "$RUN_DIR" "$case_id" continuous "$noise_before" "$noise_during" "$noise_after"
     rm -rf -- "$db_path"; rm -f "$raw" "$out"
+    "$ROOT/scripts/settle-storage-path.sh" "$DATA_DIR" || exit $?
     exit 75
   fi
   if (( rc != 0 )) || [[ ! -s "$raw" ]] || [[ $(wc -l < "$raw") -ne 1 ]]; then
@@ -225,9 +230,11 @@ for job in "${ORDERED[@]}"; do
     jq -cn --arg case_id "$case_id" --arg stderr "$err" --argjson rc "$rc" \
       '{case_id:$case_id,returncode:$rc,stderr:$stderr}' >> "$RUN_DIR/failures.ndjson"
     rm -rf -- "$db_path"; rm -f "$raw"
+    "$ROOT/scripts/settle-storage-path.sh" "$DATA_DIR" || exit $?
     continue
   fi
 
+  "$ROOT/scripts/settle-storage-path.sh" "$DATA_DIR" || exit $?
   footprint=$("$ROOT/scripts/capture-storage-footprint.py" "$db_path") || exit $?
   dataset_after=$("$ROOT/scripts/capture-storage-footprint.py" "$DATA_DIR") || exit $?
   storage_after=$("$ROOT/scripts/capture-storage-counters.sh" "$DATA_DIR") || exit $?
@@ -248,6 +255,7 @@ for job in "${ORDERED[@]}"; do
         definition:"key_bytes + value_bytes; excludes engine metadata and encoding overhead"}}}' \
     "$raw" > "$out"
   rm -rf -- "$db_path"
+  "$ROOT/scripts/settle-storage-path.sh" "$DATA_DIR" || exit $?
   [[ -s "$err" ]] || rm -f "$err"
 done
 

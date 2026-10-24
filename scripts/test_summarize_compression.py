@@ -74,6 +74,28 @@ class CompressionSummaryTests(unittest.TestCase):
         self.assertEqual(value, 120 * (4096 + 8))
         self.assertTrue(math.isfinite(value))
 
+    def test_zfs_uses_dataset_deltas_not_st_blocks(self) -> None:
+        none = row("none", throughput=100.0, cpu_ns=20_000, allocated=1536, sectors_written=100)
+        zstd = row("zstd", throughput=90.0, cpu_ns=24_000, allocated=512, sectors_written=70)
+        for item, used_delta, logical_delta in [(none, 1_000_000, 2_000_000), (zstd, 500_000, 1_200_000)]:
+            item["compression_storage"]["footprint"]["allocated_block_bytes_reliable"] = False
+            item["compression_storage"]["dataset_snapshot"] = {
+                "before": {"zfs_dataset": {"used": 10_000_000, "logicalused": 20_000_000}},
+                "after": {"zfs_dataset": {
+                    "used": 10_000_000 + used_delta,
+                    "logicalused": 20_000_000 + logical_delta,
+                }},
+            }
+
+        groups = M.summarize([none, zstd])
+        compressed = next(x for x in groups if x["engine_compression"] == "zstd")
+        self.assertFalse(compressed["db_allocated_block_bytes_reliable"])
+        self.assertIsNone(compressed["db_allocated_block_bytes_median"])
+        self.assertIsNone(compressed["logical_live_per_allocated_byte_median"])
+        self.assertIsNone(compressed["vs_none"]["allocated_block_bytes_ratio"])
+        self.assertAlmostEqual(compressed["vs_none"]["zfs_dataset_used_ratio"], 0.5)
+        self.assertAlmostEqual(compressed["vs_none"]["zfs_dataset_logicalused_ratio"], 0.6)
+
 
 if __name__ == "__main__":
     unittest.main()

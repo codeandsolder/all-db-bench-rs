@@ -57,6 +57,12 @@ def main() -> None:
         "mount_target": target,
         "apparent_bytes": apparent,
         "allocated_block_bytes": allocated,
+        "allocated_block_bytes_reliable": filesystem != "zfs",
+        "allocated_block_bytes_semantics": (
+            "stat.st_blocks*512; not a physical-allocation measure on ZFS"
+            if filesystem == "zfs"
+            else "stat.st_blocks*512 filesystem block accounting"
+        ),
         "file_count": files,
         "directory_count": directories,
         "symlink_count": symlinks,

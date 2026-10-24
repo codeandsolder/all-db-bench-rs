@@ -88,7 +88,14 @@ def summarize(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             for r in rs
         ]
         apparent = [float(r["compression_storage"]["footprint"]["apparent_bytes"]) for r in rs]
-        allocated = [float(r["compression_storage"]["footprint"]["allocated_block_bytes"]) for r in rs]
+        allocation_reliable = all(
+            bool(r["compression_storage"]["footprint"].get("allocated_block_bytes_reliable", True))
+            for r in rs
+        )
+        allocated = (
+            [float(r["compression_storage"]["footprint"]["allocated_block_bytes"]) for r in rs]
+            if allocation_reliable else []
+        )
         logical = [float(logical_live_bytes(r)) for r in rs]
         dev = [device_bytes(r) for r in rs]
         process_read = [float(r["measured_process"].get("read_bytes", 0)) for r in rs]
@@ -114,10 +121,12 @@ def summarize(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "cpu_ns_per_op_median": median(cpu_ns_op),
             "db_apparent_bytes_median": median(apparent),
             "db_allocated_block_bytes_median": median(allocated),
+            "db_allocated_block_bytes_reliable": allocation_reliable,
             "logical_live_kv_bytes_median": median(logical),
-            "logical_live_per_allocated_byte_median": median([
-                l / a if a else math.nan for l, a in zip(logical, allocated)
-            ]),
+            "logical_live_per_allocated_byte_median": (
+                median([l / a if a else math.nan for l, a in zip(logical, allocated)])
+                if allocation_reliable else None
+            ),
             "lifecycle_device_read_bytes_median": median([float(x[0]) for x in dev]),
             "lifecycle_device_write_bytes_median": median([float(x[1]) for x in dev]),
             "zfs_dataset_used_delta_median": median(zfs_used),
@@ -152,9 +161,14 @@ def summarize(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "throughput_ratio": ratio(item["ops_per_s_median"], base["ops_per_s_median"]),
             "cpu_ns_per_op_ratio": ratio(item["cpu_ns_per_op_median"], base["cpu_ns_per_op_median"]),
             "apparent_bytes_ratio": ratio(item["db_apparent_bytes_median"], base["db_apparent_bytes_median"]),
-            "allocated_block_bytes_ratio": ratio(item["db_allocated_block_bytes_median"], base["db_allocated_block_bytes_median"]),
+            "allocated_block_bytes_ratio": (
+                ratio(item["db_allocated_block_bytes_median"], base["db_allocated_block_bytes_median"])
+                if item["db_allocated_block_bytes_reliable"] and base["db_allocated_block_bytes_reliable"]
+                else None
+            ),
             "device_write_bytes_ratio": ratio(item["lifecycle_device_write_bytes_median"], base["lifecycle_device_write_bytes_median"]),
             "zfs_dataset_used_ratio": ratio(item["zfs_dataset_used_delta_median"], base["zfs_dataset_used_delta_median"]),
+            "zfs_dataset_logicalused_ratio": ratio(item["zfs_dataset_logicalused_delta_median"], base["zfs_dataset_logicalused_delta_median"]),
         }
     return out
 
@@ -168,19 +182,22 @@ def markdown(summary: list[dict[str, Any]]) -> str:
         "# KV compression summary",
         "",
         "Ratios are relative to the same engine/workload/value-shape case with engine compression `none`. ",
-        "Allocated-block bytes are filesystem block accounting, not guaranteed physical-media bytes; lifecycle device bytes come from block counters.",
+        "Filesystem allocated-block bytes use stat.st_blocks and are suppressed on ZFS, where they are not a physical-allocation measure. ZFS used/logical-used deltas are captured after a pool sync; lifecycle device bytes come from block counters after the same durable settle.",
         "",
-        "| Engine | Codec | Workload | Value | Shape | ops/s | CPU ns/op | alloc MiB | logical/alloc | thr/none | CPU/none | alloc/none |",
-        "|---|---|---|---:|---|---:|---:|---:|---:|---:|---:|---:|",
+        "| Engine | Codec | Workload | Value | Shape | ops/s | CPU ns/op | alloc MiB | ZFS used Δ MiB | ZFS logical Δ MiB | device write MiB | thr/none | CPU/none | physical/none |",
+        "|---|---|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for x in summary:
         vn = x.get("vs_none") or {}
         lines.append(
             f"| {x['engine']} | {x['engine_compression']} | {x['workload']} | {x['value_bytes']} | {x['value_pattern']} | "
             f"{fnum(x['ops_per_s_median'], 0)} | {fnum(x['cpu_ns_per_op_median'], 0)} | "
-            f"{fnum((x['db_allocated_block_bytes_median'] or 0)/(1024*1024), 2)} | "
-            f"{fnum(x['logical_live_per_allocated_byte_median'], 2)} | {fnum(vn.get('throughput_ratio'), 3)} | "
-            f"{fnum(vn.get('cpu_ns_per_op_ratio'), 3)} | {fnum(vn.get('allocated_block_bytes_ratio'), 3)} |"
+            f"{fnum(None if x['db_allocated_block_bytes_median'] is None else x['db_allocated_block_bytes_median']/(1024*1024), 2)} | "
+            f"{fnum(None if x['zfs_dataset_used_delta_median'] is None else x['zfs_dataset_used_delta_median']/(1024*1024), 2)} | "
+            f"{fnum(None if x['zfs_dataset_logicalused_delta_median'] is None else x['zfs_dataset_logicalused_delta_median']/(1024*1024), 2)} | "
+            f"{fnum(None if x['lifecycle_device_write_bytes_median'] is None else x['lifecycle_device_write_bytes_median']/(1024*1024), 2)} | "
+            f"{fnum(vn.get('throughput_ratio'), 3)} | {fnum(vn.get('cpu_ns_per_op_ratio'), 3)} | "
+            f"{fnum(vn.get('zfs_dataset_used_ratio') if x['zfs_dataset_used_delta_median'] is not None else vn.get('allocated_block_bytes_ratio'), 3)} |"
         )
     lines.append("")
     return "\n".join(lines)

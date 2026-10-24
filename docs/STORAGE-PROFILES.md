@@ -119,6 +119,8 @@ Compression is a separate campaign layered across storage profiles. At minimum r
 
 For ZFS additionally retain dataset `logicalused`, `used`, `compressratio` and ARC deltas.
 
+ZFS dataset accounting is sampled only after an explicit pool sync: each case syncs before its baseline snapshot, again after engine close before physical/dataset counters are captured, and again after deleting the case before the next baseline. The foreground throughput/latency interval excludes these syncs. This prevents TXG-lagged `used/logicalused` values and deferred frees from leaking across case boundaries. `stat.st_blocks` is retained only as diagnostic filesystem accounting and is not interpreted as physical allocation on ZFS.
+
 The data-shape matrix should cover deterministic high-entropy bytes; zero/repeated data; moderately compressible structured binary; structured text/document records with repeated schema; TSDB smooth versus noisy values; low-cardinality/stable versus high-cardinality/churning labels; and regular versus jittered timestamps where relevant.
 
 Prometheus Remote Write should record protobuf bytes before Snappy, compressed request bytes after Snappy, protobuf encoding CPU and Snappy CPU separately.
