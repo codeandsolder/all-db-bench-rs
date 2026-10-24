@@ -9,6 +9,7 @@ grep -Fx 'Environment=SCCACHE_START_SERVER=1' "$ROOT/scripts/sccache-native-root
 grep -Fx 'Environment=SCCACHE_NO_DAEMON=1' "$ROOT/scripts/sccache-native-root.service"
 grep -Fx 'Environment=SCCACHE_IDLE_TIMEOUT=0' "$ROOT/scripts/sccache-native-root.service"
 grep -Fx 'Restart=on-failure' "$ROOT/scripts/sccache-native-root.service"
+grep -Fx 'Environment=SCCACHE_CONF=/etc/sccache/client-native-dist.conf' "$ROOT/scripts/sccache-native-root.service.d/60-distributed-native.conf"
 grep -Fx 'basedirs = ["/srv/scratch", "/home/jan"]' "$ROOT/scripts/sccache-native-local.conf"
 ! grep -q '^\[dist\]' "$ROOT/scripts/sccache-native-local.conf"
 TMP=$(mktemp -d)
@@ -62,8 +63,8 @@ grep -F 'refusing uncached compilation' "$TMP/missing.err"
 # recursion through machine-wide compiler shims such as /usr/local/bin/c++.
 printf 'int demo(void) { return 0; }\n' > "$TMP/demo.c"
 printf 'int demo_cpp() { return 0; }\n' > "$TMP/demo.cc"
-timeout 30 "$ROOT/scripts/sccache-native-cc.sh" -c "$TMP/demo.c" -o "$TMP/demo.o"
-timeout 30 "$ROOT/scripts/sccache-native-cxx.sh" -c "$TMP/demo.cc" -o "$TMP/demo++.o"
+timeout 120 "$ROOT/scripts/sccache-native-cc.sh" -c "$TMP/demo.c" -o "$TMP/demo.o"
+timeout 120 "$ROOT/scripts/sccache-native-cxx.sh" -c "$TMP/demo.cc" -o "$TMP/demo++.o"
 test -s "$TMP/demo.o"
 test -s "$TMP/demo++.o"
 

@@ -62,7 +62,7 @@ printf '  "rustc_version": "%s",\n' "$rustc_version" >> "$manifest_tmp"
 printf '  "target_cpu": "native",\n' >> "$manifest_tmp"
 printf '  "read_materialization": "full-record-v1",\n' >> "$manifest_tmp"
 printf '  "write_materialization": "no-return-v1",\n' >> "$manifest_tmp"
-printf '  "build_cache": "sccache-local-only",\n' >> "$manifest_tmp"
+printf '  "build_cache": "sccache-native-safe-dist",\n' >> "$manifest_tmp"
 printf '  "binaries": {\n' >> "$manifest_tmp"
 
 names=(

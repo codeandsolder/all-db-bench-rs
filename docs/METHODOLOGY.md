@@ -33,7 +33,7 @@ SurrealDB 3.3.4, Turso 0.8.3, and SQLite 3.54.0 via rusqlite 0.40.2 are tested s
 
 ## Benchmark build identity
 
-Performance binaries are built with rustc 1.99.1 and `target-cpu=native`. Benchmark compilation is still required to pass through sccache: repo-local wrappers use a dedicated local-only sccache port/configuration with no `[dist]` section, so native CPU codegen remains host-specific while compiler outputs remain cacheable. Missing sccache or compiler wrappers are hard errors; the harness does not silently fall back to direct compilation.
+Performance binaries are built with rustc 1.99.1 and `target-cpu=native`. Benchmark compilation must pass through the dedicated sccache service on port 4237. Our fork fingerprints the requesting host native CPU/features into the cache identity and converts distributed native Rust requests into an explicit proven-equivalent CPU/feature set before dispatch; unresolved or unsafe native requests stay local or bypass cache. Missing sccache or compiler wrappers are hard errors.
 
 ## Durability
 
@@ -138,7 +138,7 @@ The relaxed lane is deliberately secondary. It answers "what does this engine co
 
 ## Build isolation on cold-storage
 
-Cargo build artifacts are directed to `/tmp/rust-db-realistic-bench-target`, and the benchmark-local Cargo registry/source cache defaults to `/tmp/db-bench-cargo-home`. This keeps both generated objects and crate-source/registry metadata off the measured `/srv/scratch` filesystem and avoids the shared Sentinel Cargo cache. `scripts/cargo-local-1.99.sh` pins rustc 1.99.1 and requires repo-local Rust/C/C++ sccache wrappers. Those wrappers use a dedicated local-only sccache daemon/configuration with no distributed scheduler and with cross-path canonicalization disabled, so `target-cpu=native` remains host-specific while compiler outputs are still cached; missing sccache is a hard failure rather than a direct-compiler fallback. The benchmark data itself remains under `/srv/scratch/db-bench-2026-09-27/data`.
+Cargo build artifacts are kept outside the measured database root, and the benchmark-local Cargo registry/source cache defaults to `/tmp/db-bench-cargo-home`. `scripts/cargo-local-1.99.sh` pins rustc 1.99.1 and requires repo-local Rust/C/C++ sccache wrappers connected to the managed port-4237 native service. That service uses canonical Rust paths, the shared scheduler, and Garage; the fork makes `target-cpu=native` safe by resolving and hashing the requester native profile and using explicit proven-equivalent codegen remotely. Missing sccache is a hard failure rather than a direct-compiler fallback. Measured database data lives on the selected storage-profile root.
 
 ## Durability syscall sanity check
 

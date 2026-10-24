@@ -9,8 +9,8 @@ if [[ -z "$SCCACHE_BIN" || ! -x "$SCCACHE_BIN" ]]; then
 fi
 
 export SCCACHE_SERVER_PORT="${DB_BENCH_SCCACHE_PORT:-4237}"
-# The benchmark cache daemon is a managed local-only service. Clients must
-# never auto-spawn a differently configured server if it is unavailable.
+# The benchmark cache daemon is a managed native-safe service. It may use the shared
+# scheduler, but clients must never auto-spawn a differently configured server.
 export SCCACHE_START_SERVER="${DB_BENCH_SCCACHE_START_SERVER:-0}"
 export SCCACHE_CONF="${DB_BENCH_NATIVE_SCCACHE_CONF:-$SCRIPT_DIR/sccache-native-local.conf}"
 unset SCCACHE_EXPERIMENTAL_CANONICAL_RUST || true
