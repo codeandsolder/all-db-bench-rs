@@ -49,6 +49,7 @@ def group_key(r: dict) -> tuple:
         r.get("clients", 1),
         r.get("value_bytes", r.get("payload_bytes")),
         r.get("value_pattern", "pseudo-random"),
+        r.get("payload_pattern", "hex-random"),
         r.get("engine_compression", "default"),
         r.get("key_bytes", 8),
         r.get("key_shape", "sequential"),
@@ -70,7 +71,8 @@ def concurrency_identity(item: dict) -> tuple:
         item["format_version"], item["scenario"], item["engine"],
         item["engine_version"], item["durability"], item["workload"],
         item["records"], item["ops_requested"], item["value_bytes"],
-        item["value_pattern"], item.get("engine_compression", "default"),
+        item["value_pattern"], item.get("payload_pattern", "hex-random"),
+        item.get("engine_compression", "default"),
         item["key_bytes"], item["key_shape"],
         item["access_pattern"], item["miss_percent"], item["write_pattern"],
         item["state_evolution"], item["bounded_churn_slots"],
@@ -122,6 +124,7 @@ def main() -> None:
             clients,
             value_bytes,
             value_pattern,
+            payload_pattern,
             engine_compression,
             key_bytes,
             key_shape,
@@ -172,6 +175,7 @@ def main() -> None:
                 "clients": clients,
                 "value_bytes": value_bytes,
                 "value_pattern": value_pattern,
+                "payload_pattern": payload_pattern,
                 "engine_compression": engine_compression,
                 "engine_compression_mapping": sorted({
                     r.get("engine_compression_mapping", "legacy/default") for r in rs
@@ -198,14 +202,14 @@ def main() -> None:
                     )
                     if lane == "kv-concurrency"
                     else (
-                        f"clients={clients} payload={value_bytes} txn={txn_size}"
+                        f"clients={clients} payload={value_bytes}/{payload_pattern} txn={txn_size}"
                         if lane == "record-concurrency"
                         else (
                             f"k={key_bytes}/{key_shape} v={value_bytes}/{value_pattern} "
                             f"access={access_pattern} miss={miss_percent}% "
                             f"write={write_pattern} settle={settle_ms}ms"
                             if lane == "kv"
-                            else f"payload={value_bytes} txn={txn_size}"
+                            else f"payload={value_bytes}/{payload_pattern} txn={txn_size}"
                         )
                     )
                 ),

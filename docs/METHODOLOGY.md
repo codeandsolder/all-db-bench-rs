@@ -314,6 +314,16 @@ Hashed keys deliberately destroy ID order. They are valid for point/update tests
 
 Foreground workload timing ends before the settle window begins. During settling, the engine remains open and the harness samples process CPU/I/O, shared-host pressure context and database size at fixed intervals. This makes "fast foreground because work was deferred" visible without charging that work to the foreground latency distribution.
 
+## Controlled compression campaign
+
+Compression is measured as an explicit result class rather than allowed to leak into the neutral baseline. `scripts/run-kv-compression-matrix.sh` varies both deterministic value compressibility and the engine codec where the adapter exposes a real selectable codec. `scripts/run-record-compression-matrix.sh` instead keeps each record product's native/default compression behavior and varies deterministic payload shape across `hex-random`, broad random ASCII, zeros, repeated 8-byte blocks and structured text. This avoids inventing a fake common codec API for products that do not expose one.
+
+Quick/full compression runs require a named storage profile through `run-storage-envelope.sh`; smoke is functional only. Every case is randomized and resumable, binds benchmark and support-tool hashes into `support.json`, uses the ordinary pre/continuous/post host-noise discipline, settles storage before physical snapshots, and retains the raw benchmark result plus storage counters and footprint evidence. A changed support identity can replace an empty run's support manifest, but once any case has been accepted the resume is refused rather than mixing semantics.
+
+`tools/benchctl` is the native support boundary for this lane. `storage-footprint` records apparent bytes, filesystem allocated blocks, file/directory/symlink counts, mount identity and ZFS dataset properties when applicable. `summarize-compression` aggregates both compression lanes. Non-ZFS physical-size comparisons use allocated filesystem blocks, not apparent bytes; on ZFS that measure is suppressed and settled dataset `used` deltas are used instead. Linux block-stat sector counters are interpreted in their defined 512-byte units.
+
+KV ratios are relative to the same engine **and engine version**, workload, value size/shape, durability, record/op counts and settle protocol with engine compression `none`. Record-product ratios are relative to the same engine/version/workload/payload-size case using deterministic `hex-random`. Engine version is deliberately part of baseline identity so a result cannot silently compare against a baseline produced by another engine release.
+
 ## Sustained-write / compaction-cliff campaign
 
 `scripts/run-kv-sustained-matrix.sh` is a separate raw-KV result class for behavior that a single aggregate throughput number hides: write stalls, compaction/checkpoint cliffs, write amplification spikes and recovery after a stall.

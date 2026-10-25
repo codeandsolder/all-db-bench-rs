@@ -28,6 +28,14 @@ bash -n scripts/*.sh
 uv run python -m py_compile scripts/*.py
 uv run python -m unittest discover -s scripts -p 'test_*.py'
 
+BENCHCTL_TARGET_DIR=${BENCHCTL_TARGET_DIR:-${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target}}
+"$ROOT/scripts/cargo-local-1.99.sh" fmt \
+  --manifest-path "$ROOT/tools/benchctl/Cargo.toml" -- --check
+CARGO_TARGET_DIR="$BENCHCTL_TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" test --locked \
+  --manifest-path "$ROOT/tools/benchctl/Cargo.toml"
+CARGO_TARGET_DIR="$BENCHCTL_TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" clippy --locked \
+  --manifest-path "$ROOT/tools/benchctl/Cargo.toml" -- -D warnings
+
 CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target} \
   "$ROOT/scripts/cargo-local-1.99.sh" check --locked --features kv-all --bin kvbench
 CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target} \

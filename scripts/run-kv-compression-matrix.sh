@@ -50,6 +50,11 @@ fi
 
 [[ -s "$RUN_DIR/host-start.txt" ]] || "$ROOT/scripts/capture-host-metadata.sh" "$RUN_DIR/host-start.txt" "$ROOT" || exit $?
 TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target}
+BENCHCTL_TARGET_DIR=${BENCHCTL_TARGET_DIR:-$TARGET_DIR}
+BENCHCTL="$BENCHCTL_TARGET_DIR/debug/all-db-benchctl"
+CARGO_TARGET_DIR="$BENCHCTL_TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" build --locked \
+  --manifest-path "$ROOT/tools/benchctl/Cargo.toml" --bin all-db-benchctl || exit $?
+BENCHCTL_SHA=$(sha256sum "$BENCHCTL" | awk '{print $1}')
 if [[ -n "${BENCH_BIN:-}" ]]; then
   BIN="$BENCH_BIN"; BUILD_PROFILE=external
   [[ -x "$BIN" ]] || { echo "BENCH_BIN is not executable: $BIN" >&2; exit 2; }
@@ -70,7 +75,6 @@ else
 fi
 [[ "$BENCH_SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo "invalid or missing BENCH_SOURCE_COMMIT=$BENCH_SOURCE_COMMIT" >&2; exit 2; }
 RUNNER_SHA=$(sha256sum "$ROOT/scripts/run-kv-compression-matrix.sh" | awk '{print $1}')
-FOOTPRINT_SHA=$(sha256sum "$ROOT/scripts/capture-storage-footprint.py" | awk '{print $1}')
 COUNTERS_SHA=$(sha256sum "$ROOT/scripts/capture-storage-counters.sh" | awk '{print $1}')
 SETTLE_SHA=$(sha256sum "$ROOT/scripts/settle-storage-path.sh" | awk '{print $1}')
 COMMON_SHA=$(sha256sum "$ROOT/scripts/performance-runner-common.sh" | awk '{print $1}')
@@ -132,7 +136,7 @@ jq -n \
   --arg machine "$MACHINE_ID_SHA256" --arg fs "$FILESYSTEM" --arg source "$SOURCE" \
   --arg build "$BUILD_PROFILE" --arg binary "$BIN_SHA" --arg benchmark_source_commit "$BENCH_SOURCE_COMMIT" \
   --arg harness_commit "$HARNESS_COMMIT" --arg runner "$RUNNER_SHA" \
-  --arg footprint "$FOOTPRINT_SHA" --arg counters "$COUNTERS_SHA" --arg settle "$SETTLE_SHA" \
+  --arg benchctl "$BENCHCTL_SHA" --arg counters "$COUNTERS_SHA" --arg settle "$SETTLE_SHA" \
   --arg common "$COMMON_SHA" --arg noise "$NOISE_SHA" --arg storage_profile_id "$PROFILE_ID" \
   --arg storage_profile_mode "$PROFILE_MODE" --arg storage_profile_sha256 "$PROFILE_SHA" \
   --arg engines "${ENGINES[*]}" --arg workloads "${WORKLOADS[*]}" \
@@ -144,7 +148,7 @@ jq -n \
     workloads:($workloads|split(" ")),value_sizes:($values|split(" ")|map(tonumber)),
     value_patterns:($patterns|split(" ")),build_profile:$build,benchmark_binary_sha256:$binary,
     benchmark_source_commit:$benchmark_source_commit,harness_commit:$harness_commit,
-    runner_sha256:$runner,footprint_helper_sha256:$footprint,storage_counter_helper_sha256:$counters,
+    runner_sha256:$runner,benchctl_binary_sha256:$benchctl,storage_counter_helper_sha256:$counters,
     storage_settle_helper_sha256:$settle,storage_settle_protocol:"sync-before-baseline+sync-before-physical-snapshot+sync-after-cleanup-v1",
     performance_common_sha256:$common,continuous_noise_guard_sha256:$noise,
     hostname:$host,machine_id_sha256:$machine,filesystem:$fs,source:$source,
@@ -155,8 +159,12 @@ jq -n \
 if [[ -s "$RUN_DIR/support.json" ]]; then
   if ! cmp -s "$RUN_DIR/support.json" "$SUPPORT_NEW"; then
     existing=$(find "$RUN_DIR/cases" -type f -name '*.json' | wc -l)
-    rm -f "$SUPPORT_NEW"
-    (( existing == 0 )) || { echo "refusing compression resume: support identity changed" >&2; exit 2; }
+    if (( existing != 0 )); then
+      rm -f "$SUPPORT_NEW"
+      echo "refusing compression resume: support identity changed" >&2
+      exit 2
+    fi
+    mv "$SUPPORT_NEW" "$RUN_DIR/support.json"
   else
     rm -f "$SUPPORT_NEW"
   fi
@@ -206,7 +214,7 @@ for job in "${ORDERED[@]}"; do
   rm -rf -- "$db_path"; rm -f "$raw" "$out"
   "$ROOT/scripts/settle-storage-path.sh" "$DATA_DIR" || exit $?
   storage_before=$("$ROOT/scripts/capture-storage-counters.sh" "$DATA_DIR") || exit $?
-  dataset_before=$("$ROOT/scripts/capture-storage-footprint.py" "$DATA_DIR") || exit $?
+  dataset_before=$("$BENCHCTL" storage-footprint "$DATA_DIR") || exit $?
 
   cmd=("$BIN" --engine "$engine" --engine-compression "$codec" --durability sync
     --workload "$workload" --records "$RECORDS" --ops "$OPS" --value-bytes "$value_bytes"
@@ -244,19 +252,21 @@ for job in "${ORDERED[@]}"; do
   fi
 
   "$ROOT/scripts/settle-storage-path.sh" "$DATA_DIR" || exit $?
-  footprint=$("$ROOT/scripts/capture-storage-footprint.py" "$db_path") || exit $?
-  dataset_after=$("$ROOT/scripts/capture-storage-footprint.py" "$DATA_DIR") || exit $?
+  footprint=$("$BENCHCTL" storage-footprint "$db_path") || exit $?
+  dataset_after=$("$BENCHCTL" storage-footprint "$DATA_DIR") || exit $?
   storage_after=$("$ROOT/scripts/capture-storage-counters.sh" "$DATA_DIR") || exit $?
   printf '%s\n' "$footprint" > "$RUN_DIR/footprints/$case_id.json"
   jq -cn --argjson before "$storage_before" --argjson after "$storage_after" \
     '{before:$before,after:$after}' > "$RUN_DIR/storage/$case_id.json"
 
+  foreground_records=0
+  [[ "$workload" == write-burst ]] && foreground_records=$OPS
   jq -c \
     --argjson footprint "$footprint" --argjson dataset_before "$dataset_before" \
     --argjson dataset_after "$dataset_after" --argjson storage_before "$storage_before" \
     --argjson storage_after "$storage_after" \
     --argjson prefill_payload_bytes "$((RECORDS * (value_bytes + 8)))" \
-    --argjson foreground_payload_bytes "$((OPS * (value_bytes + 8)))" \
+    --argjson foreground_payload_bytes "$((foreground_records * (value_bytes + 8)))" \
     '. + {lane:"kv-compression",compression_storage:{footprint:$footprint,
       dataset_snapshot:{before:$dataset_before,after:$dataset_after},
       storage_counters:{before:$storage_before,after:$storage_after},
@@ -270,7 +280,7 @@ done
 
 find "$RUN_DIR/cases" -type f -name '*.json' -print0 | sort -z | xargs -0 -r cat > "$RUN_DIR/results.ndjson"
 "$ROOT/scripts/capture-host-metadata.sh" "$RUN_DIR/host-end.txt" "$ROOT" || exit $?
-uv run --script "$ROOT/scripts/summarize-compression.py" "$RUN_DIR/results.ndjson" \
+"$BENCHCTL" summarize-compression "$RUN_DIR/results.ndjson" \
   --json-out "$RUN_DIR/summary.json" --markdown-out "$RUN_DIR/summary.md" || exit $?
 printf 'run=%s total=%s failures=%s results=%s\n' "$RUN_ID" "$TOTAL" "$FAILURES" "$RUN_DIR/results.ndjson"
 exit $(( FAILURES > 0 ? 1 : 0 ))

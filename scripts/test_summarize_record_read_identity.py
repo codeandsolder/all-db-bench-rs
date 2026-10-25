@@ -15,7 +15,7 @@ SPEC.loader.exec_module(M)
 
 def row() -> dict:
     return {
-        "format_version": 7,
+        "format_version": 8,
         "lane": "record",
         "scenario": "baseline-core",
         "engine": "sqlite",
@@ -25,6 +25,7 @@ def row() -> dict:
         "records": 10_000,
         "ops_requested": 10_000,
         "payload_bytes": 512,
+        "payload_pattern": "hex-random",
         "txn_size": 100,
         "read_materialization": "full-record-v1",
         "write_materialization": "no-return-v1",
@@ -42,6 +43,16 @@ class SummarizeRecordReadIdentityTests(unittest.TestCase):
         missing.pop("read_materialization")
         explicit = dict(row(), read_materialization="legacy-read-v0")
         self.assertEqual(M.group_key(missing), M.group_key(explicit))
+
+    def test_payload_pattern_is_identity(self) -> None:
+        baseline = row()
+        compressed_shape = dict(baseline, payload_pattern="zeros")
+        self.assertNotEqual(M.group_key(baseline), M.group_key(compressed_shape))
+
+    def test_missing_payload_pattern_defaults_to_legacy_hex_random(self) -> None:
+        missing = row()
+        missing.pop("payload_pattern")
+        self.assertEqual(M.group_key(missing), M.group_key(row()))
 
     def test_write_materialization_is_identity(self) -> None:
         corrected = row()

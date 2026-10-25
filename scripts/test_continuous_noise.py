@@ -5,7 +5,7 @@ import sys
 import unittest
 from pathlib import Path
 
-SCRIPT = Path("/srv/scratch/db-bench-work/record-read-semantics/scripts/run-with-continuous-noise.py")
+SCRIPT = Path(__file__).with_name("run-with-continuous-noise.py")
 SPEC = importlib.util.spec_from_file_location("run_with_continuous_noise", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 M = importlib.util.module_from_spec(SPEC)

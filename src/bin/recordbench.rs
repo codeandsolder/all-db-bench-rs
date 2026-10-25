@@ -8,6 +8,9 @@ use serde::{Deserialize, Serialize};
 #[path = "../metrics.rs"]
 pub(crate) mod metrics;
 use metrics::{ProcDelta, ProcSnapshot, SystemDelta, SystemSnapshot};
+#[path = "../record_payload.rs"]
+mod record_payload;
+use record_payload::{PayloadPattern, payload_for};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -63,6 +66,8 @@ struct Args {
     ops: u64,
     #[arg(long, default_value_t = 512)]
     payload_bytes: usize,
+    #[arg(long, value_enum, default_value = "hex-random")]
+    payload_pattern: PayloadPattern,
     #[arg(long, default_value_t = 100)]
     txn_size: usize,
     #[arg(long, default_value_t = 1)]
@@ -166,6 +171,7 @@ struct Measurement {
     ops_requested: u64,
     ops_completed: u64,
     payload_bytes: usize,
+    payload_pattern: PayloadPattern,
     txn_size: usize,
     read_materialization: &'static str,
     write_materialization: &'static str,
@@ -219,20 +225,6 @@ impl EngineKind {
             (Self::Sqlite, Durability::Sync) => "SQLite 3.54.0 WAL journal_mode + synchronous=FULL",
         }
     }
-}
-
-pub(crate) fn payload(id: u64, len: usize, salt: u64) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut x = id ^ salt ^ 0x9e37_79b9_7f4a_7c15;
-    let mut out = String::with_capacity(len);
-    for _ in 0..len {
-        x ^= x >> 12;
-        x ^= x << 25;
-        x ^= x >> 27;
-        x = x.wrapping_mul(0x2545_f491_4f6c_dd1d);
-        out.push(HEX[(x as usize) & 15] as char);
-    }
-    out
 }
 
 pub(crate) fn hist() -> Histogram<u64> {
@@ -584,7 +576,7 @@ async fn prefill(engine: &Engine, args: &Args) -> Result<()> {
             id,
             RecordData {
                 bucket: (id % 100) as u32,
-                payload: payload(id, args.payload_bytes, args.seed),
+                payload: payload_for(args.payload_pattern, id, args.payload_bytes, args.seed),
             },
         ));
         if rows.len() == batch {
@@ -652,7 +644,12 @@ async fn run(
                     let id = rng.random_range(0..args.records);
                     let data = RecordData {
                         bucket: (id % 100) as u32,
-                        payload: payload(id, args.payload_bytes, args.seed ^ done),
+                        payload: payload_for(
+                            args.payload_pattern,
+                            id,
+                            args.payload_bytes,
+                            args.seed ^ done,
+                        ),
                     };
                     let t = Instant::now();
                     engine.upsert_one(id, &data).await?;
@@ -667,7 +664,12 @@ async fn run(
                 next_id += 1;
                 let data = RecordData {
                     bucket: (id % 100) as u32,
-                    payload: payload(id, args.payload_bytes, args.seed ^ done),
+                    payload: payload_for(
+                        args.payload_pattern,
+                        id,
+                        args.payload_bytes,
+                        args.seed ^ done,
+                    ),
                 };
                 let t = Instant::now();
                 engine.upsert_one(id, &data).await?;
@@ -691,7 +693,12 @@ async fn run(
                         id,
                         RecordData {
                             bucket: (id % 100) as u32,
-                            payload: payload(id, args.payload_bytes, args.seed ^ done),
+                            payload: payload_for(
+                                args.payload_pattern,
+                                id,
+                                args.payload_bytes,
+                                args.seed ^ done,
+                            ),
                         },
                     ));
                 }
@@ -865,7 +872,7 @@ async fn main() -> Result<()> {
     let db_bytes = dir_size(&path);
 
     let result = Measurement {
-        format_version: 7,
+        format_version: 8,
         lane: "record",
         engine: args.engine,
         engine_version: args.engine.version(),
@@ -876,6 +883,7 @@ async fn main() -> Result<()> {
         ops_requested: args.ops,
         ops_completed: completed,
         payload_bytes: args.payload_bytes,
+        payload_pattern: args.payload_pattern,
         txn_size: args.txn_size,
         read_materialization: READ_MATERIALIZATION,
         write_materialization: WRITE_MATERIALIZATION,

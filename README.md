@@ -104,12 +104,17 @@ Dimensional KV sweeps (locality, misses, key shape/size, value entropy, write pl
 
     ./scripts/run-kv-dimensional-matrix.sh quick
 
-Controlled engine/filesystem compression measurements use the same storage profiles. `quick` and `full` require a storage envelope; the runner retains apparent bytes, filesystem-allocated blocks, block-device traffic, ZFS dataset snapshots where applicable, CPU/latency, and comparisons against the same engine with compression disabled:
+Controlled engine/filesystem compression measurements use the same storage profiles. `quick` and `full` require a storage envelope; both runners retain apparent bytes, filesystem-allocated blocks, block-device traffic, ZFS dataset snapshots where applicable, CPU/latency, and exact support/binary provenance:
 
     sudo -E ./scripts/run-storage-envelope.sh profiles/storage/PROFILE.json -- \
       ./scripts/run-kv-compression-matrix.sh quick
 
-The KV compression lane covers pseudo-random, zero, repeated, structured-binary and structured-text values and exposes explicit `default|none|lz4|snappy|zstd` engine compression where the selected engine supports it. Unsupported engine/codec pairs fail rather than silently falling back.
+    sudo -E ./scripts/run-storage-envelope.sh profiles/storage/PROFILE.json -- \
+      ./scripts/run-record-compression-matrix.sh quick
+
+The KV compression lane covers pseudo-random, zero, repeated, structured-binary and structured-text values and exposes explicit `default|none|lz4|snappy|zstd` engine compression where the selected engine supports it. Unsupported engine/codec pairs fail rather than silently falling back. Ratios use the matching engine/version/workload/value-shape case with engine compression disabled.
+
+The record-product compression lane keeps each product's native/default compression policy and varies deterministic payload shape (`hex-random`, broad random ASCII, zeros, repeated blocks and structured text). Ratios use the matching engine/version/workload/payload-size `hex-random` case, so the result measures how each complete product responds to compressibility rather than pretending every product exposes the same codec controls. Native `tools/benchctl` owns storage-footprint capture and compression aggregation for both lanes.
 
 Windowed sustained-write / compaction-cliff campaigns:
 

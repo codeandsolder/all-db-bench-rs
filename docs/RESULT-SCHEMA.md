@@ -7,8 +7,14 @@ Each isolated benchmark invocation appends exactly one JSON object to NDJSON.
 - `format_version`: schema version.
 - `engine`, `engine_version`: exact adapter target.
 - `durability`, `durability_mapping`: comparison lane plus the concrete engine API/configuration used.
-- `workload`, `records`, `value_bytes` or `payload_bytes`, `txn_size`, `scan_len`, `trial`, `seed`: complete workload definition needed to group repetitions.
-- Current record-product rows additionally carry `read_materialization: "full-record-v1"` and `write_materialization: "no-return-v1"`. Missing markers are interpreted only as historical `legacy-read-v0` / `legacy-return-v0`; both markers are exact aggregation identity and corrected rows never merge with legacy rows. Ordinary single-client record results use `format_version: 7`.
+- `workload`, `records`, `value_bytes` or `payload_bytes`, `value_pattern` or `payload_pattern`, `txn_size`, `scan_len`, `trial`, `seed`: complete workload definition needed to group repetitions.
+- Current record-product rows additionally carry `read_materialization: "full-record-v1"` and `write_materialization: "no-return-v1"`. Missing markers are interpreted only as historical `legacy-read-v0` / `legacy-return-v0`; both markers are exact aggregation identity and corrected rows never merge with legacy rows. Ordinary single-client record results use `format_version: 8`; v8 adds explicit `payload_pattern`, whose default is the historical deterministic `hex-random` generator.
+
+## Single-client record lane — schema v8
+
+`recordbench` schema v8 adds `payload_pattern` as first-class workload identity while retaining the v7 full-record read and no-return write semantics. Supported patterns are deterministic `hex-random`, broad `random-ascii`, `zeros`, an 8-byte `repeated` block and `structured-text`. Payload length remains exact in bytes and every pattern is deterministic from record ID and seed. The generic summarizer includes `payload_pattern` in its exact-match grouping key, so unlike compressibility shapes cannot aggregate even when every other field matches.
+
+`scripts/run-record-compression-matrix.sh` wraps these source rows into `lane: "record-compression"`, preserves the original lane in `record_source_lane`, and adds `compression_storage` with settled footprint/dataset/block-counter snapshots plus the runner's explicit logical-record-byte accounting. Its native compression summarizer compares each payload shape only with the matching `hex-random` engine/version/workload/payload-size case. This result class is intentionally separate from ordinary single-client record summaries.
 
 ## Timing
 
