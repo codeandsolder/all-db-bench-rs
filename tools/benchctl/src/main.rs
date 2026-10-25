@@ -1,5 +1,6 @@
 mod compression;
 mod idle;
+mod import_concurrency;
 mod planning;
 mod scaling;
 mod storage;
@@ -48,6 +49,14 @@ enum Command {
         json_out: Option<PathBuf>,
         #[arg(long)]
         markdown_out: Option<PathBuf>,
+    },
+    ImportConcurrencyResults {
+        source: Option<PathBuf>,
+        dest: Option<PathBuf>,
+        #[arg(long = "exclude-engine")]
+        exclude_engine: Vec<String>,
+        #[arg(long)]
+        verify_run: Option<PathBuf>,
     },
     ConcurrencySizingAudit {
         #[arg(long)]
@@ -192,6 +201,17 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
+        Command::ImportConcurrencyResults {
+            source,
+            dest,
+            exclude_engine,
+            verify_run,
+        } => import_concurrency::run(import_concurrency::ImportArgs {
+            source: source.as_deref(),
+            dest: dest.as_deref(),
+            excluded_engines: &exclude_engine,
+            verify_run: verify_run.as_deref(),
+        }),
         Command::ConcurrencySizingAudit {
             repo,
             run_dir,

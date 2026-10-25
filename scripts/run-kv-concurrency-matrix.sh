@@ -67,7 +67,7 @@ IMPORT_MANIFEST="$RUN_DIR/import-manifest.json"
 IMPORT_MANIFEST_SHA=""
 if [[ -s "$IMPORT_MANIFEST" ]]; then
   IMPORT_MANIFEST_SHA=$(sha256sum "$IMPORT_MANIFEST" | awk '{print $1}')
-  uv run --script "$ROOT/scripts/import-concurrency-results.py" --verify-run "$RUN_DIR" >/dev/null || exit 2
+  "$ROOT/scripts/benchctl.sh" import-concurrency-results --verify-run "$RUN_DIR" >/dev/null || exit 2
 fi
 
 ENGINES=(redb fjall surrealkv heed sled manifold turbokv paritydb-hash paritydb-btree rocksdb mdbx persy roughdb jammdb lsmdb)
