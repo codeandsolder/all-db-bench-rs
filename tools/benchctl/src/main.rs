@@ -1,5 +1,6 @@
 mod compression;
 mod idle;
+mod planning;
 mod storage;
 mod summary;
 mod support;
@@ -36,6 +37,49 @@ enum Command {
         json_out: PathBuf,
         #[arg(long)]
         markdown_out: PathBuf,
+    },
+    ConcurrencySizingAudit {
+        #[arg(long)]
+        repo: PathBuf,
+        run_dir: PathBuf,
+        #[arg(long = "additional-run")]
+        additional_run: Vec<PathBuf>,
+        #[arg(long)]
+        json_out: Option<PathBuf>,
+        #[arg(long)]
+        markdown_out: Option<PathBuf>,
+        #[arg(long)]
+        probe_plan_out: Option<PathBuf>,
+        #[arg(long)]
+        expected_admission_policy: Option<String>,
+    },
+    KvConcurrencyPlanCalibration {
+        sizing_audit: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    KvConcurrencyPlanFinal {
+        #[arg(long)]
+        repo: PathBuf,
+        sizing_audit: PathBuf,
+        calibration_plan: PathBuf,
+        calibration_run: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long)]
+        delete_out: PathBuf,
+        #[arg(long, default_value_t = 3)]
+        trials: i64,
+    },
+    RecordConcurrencyPlanFinal {
+        #[arg(long)]
+        repo: PathBuf,
+        calibration_plan: PathBuf,
+        calibration_run: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long, default_value_t = 3)]
+        trials: i64,
     },
     ConcurrencyPlanIdle {
         #[arg(long)]
@@ -95,6 +139,59 @@ fn main() -> Result<()> {
             json_out,
             markdown_out,
         } => compression::summarize_file(&input, &json_out, &markdown_out),
+        Command::ConcurrencySizingAudit {
+            repo,
+            run_dir,
+            additional_run,
+            json_out,
+            markdown_out,
+            probe_plan_out,
+            expected_admission_policy,
+        } => planning::run_concurrency_sizing_audit(planning::AuditArgs {
+            repo: &repo,
+            run_dir: &run_dir,
+            additional_runs: &additional_run,
+            json_out: json_out.as_deref(),
+            markdown_out: markdown_out.as_deref(),
+            probe_plan_out: probe_plan_out.as_deref(),
+            expected_admission_policy: expected_admission_policy.as_deref(),
+        }),
+        Command::KvConcurrencyPlanCalibration { sizing_audit, out } => {
+            planning::run_kv_calibration(planning::KvCalibrationArgs {
+                sizing_audit: &sizing_audit,
+                out: &out,
+            })
+        }
+        Command::KvConcurrencyPlanFinal {
+            repo,
+            sizing_audit,
+            calibration_plan,
+            calibration_run,
+            out,
+            delete_out,
+            trials,
+        } => planning::run_kv_final(planning::KvFinalArgs {
+            repo: &repo,
+            sizing_audit: &sizing_audit,
+            calibration_plan: &calibration_plan,
+            calibration_run: &calibration_run,
+            out: &out,
+            delete_out: &delete_out,
+            trials,
+        }),
+        Command::RecordConcurrencyPlanFinal {
+            repo,
+            calibration_plan,
+            calibration_run,
+            out,
+            trials,
+        } => planning::run_record_final(planning::RecordFinalArgs {
+            repo: &repo,
+            calibration_plan: &calibration_plan,
+            calibration_run: &calibration_run,
+            out: &out,
+            trials,
+        }),
         Command::ConcurrencyPlanIdle {
             lane,
             repo,
