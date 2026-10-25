@@ -9,6 +9,7 @@ mod io_pressure;
 mod noise;
 mod planning;
 mod process_tree;
+mod recovery;
 mod scaling;
 mod storage;
 mod summary;
@@ -118,6 +119,13 @@ enum Command {
         input: PathBuf,
         #[arg(long)]
         expect_trials: Option<usize>,
+        #[arg(long)]
+        json_out: Option<PathBuf>,
+        #[arg(long)]
+        markdown_out: Option<PathBuf>,
+    },
+    SummarizeRecovery {
+        run_dir: PathBuf,
         #[arg(long)]
         json_out: Option<PathBuf>,
         #[arg(long)]
@@ -379,6 +387,15 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
+        Command::SummarizeRecovery {
+            run_dir,
+            json_out,
+            markdown_out,
+        } => recovery::run(recovery::RecoveryArgs {
+            run_dir: &run_dir,
+            json_out: json_out.as_deref(),
+            markdown_out: markdown_out.as_deref(),
+        }),
         Command::SummarizeIoBaseline {
             run_dir,
             json_out,

@@ -82,7 +82,7 @@ The power-loss lane is separate from SIGKILL recovery. It freezes the writer fir
 
 Summarize either SIGKILL or power-loss recovery campaigns without mixing them into throughput results:
 
-    uv run scripts/summarize-recovery.py results/runs/RUN_ID \
+    ./scripts/benchctl.sh summarize-recovery results/runs/RUN_ID \
       --json-out results/runs/RUN_ID/recovery-summary.json \
       --markdown-out results/runs/RUN_ID/recovery-summary.md
 
