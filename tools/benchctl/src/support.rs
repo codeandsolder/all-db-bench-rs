@@ -347,7 +347,11 @@ fn read_json(path: &str) -> Result<Value> {
     serde_json::from_str(&text).with_context(|| format!("invalid JSON in {path}"))
 }
 
-fn verify_plan_identity(plan: &Value, identity: &Value, actual_digest: &str) -> Result<()> {
+pub(crate) fn verify_plan_identity(
+    plan: &Value,
+    identity: &Value,
+    actual_digest: &str,
+) -> Result<()> {
     if let Some(expected) = plan.get("expected_measurement_identity")
         && !expected.is_null()
         && expected != identity

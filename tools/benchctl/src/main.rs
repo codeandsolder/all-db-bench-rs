@@ -1,4 +1,5 @@
 mod compression;
+mod idle;
 mod storage;
 mod summary;
 mod support;
@@ -36,6 +37,30 @@ enum Command {
         #[arg(long)]
         markdown_out: PathBuf,
     },
+    ConcurrencyPlanIdle {
+        #[arg(long)]
+        lane: String,
+        #[arg(long)]
+        repo: PathBuf,
+        #[arg(long)]
+        plan: PathBuf,
+        #[arg(long)]
+        run_id: String,
+        #[arg(long)]
+        bench_bin: PathBuf,
+        #[arg(long)]
+        bench_bin_sha256: String,
+        #[arg(long)]
+        rocks_bench_bin: Option<PathBuf>,
+        #[arg(long)]
+        rocks_bench_bin_sha256: Option<String>,
+        #[arg(long)]
+        lock_file: Option<PathBuf>,
+        #[arg(long)]
+        status_file: PathBuf,
+        #[arg(long, default_value_t = 1.0)]
+        busy_sleep: f64,
+    },
     SupportIdentity {
         support: String,
         #[arg(long)]
@@ -70,6 +95,37 @@ fn main() -> Result<()> {
             json_out,
             markdown_out,
         } => compression::summarize_file(&input, &json_out, &markdown_out),
+        Command::ConcurrencyPlanIdle {
+            lane,
+            repo,
+            plan,
+            run_id,
+            bench_bin,
+            bench_bin_sha256,
+            rocks_bench_bin,
+            rocks_bench_bin_sha256,
+            lock_file,
+            status_file,
+            busy_sleep,
+        } => {
+            let code = idle::run(idle::IdleArgs {
+                lane: &lane,
+                repo: &repo,
+                plan: &plan,
+                run_id: &run_id,
+                bench_bin: &bench_bin,
+                bench_bin_sha256: &bench_bin_sha256,
+                rocks_bench_bin: rocks_bench_bin.as_deref(),
+                rocks_bench_bin_sha256: rocks_bench_bin_sha256.as_deref(),
+                lock_file: lock_file.as_deref(),
+                status_file: &status_file,
+                busy_sleep_s: busy_sleep,
+            })?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+            Ok(())
+        }
         Command::SupportIdentity {
             support,
             expected_lane,
