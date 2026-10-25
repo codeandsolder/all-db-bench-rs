@@ -1,6 +1,7 @@
 mod compression;
 mod idle;
 mod import_concurrency;
+mod noise;
 mod planning;
 mod process_tree;
 mod scaling;
@@ -24,6 +25,36 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    CheckExternalNoise {
+        #[arg(long, default_value_t = 15)]
+        ignore_nice_at_least: i32,
+        #[arg(long)]
+        json_out: Option<PathBuf>,
+        #[arg(long = "exclude-pid")]
+        exclude_pid: Vec<u32>,
+        #[arg(long, default_value_t = 50.0)]
+        max_aggregate_cpu_percent: f64,
+        #[arg(long, default_value_t = 250.0)]
+        sample_ms: f64,
+    },
+    RunWithContinuousNoise {
+        #[arg(long)]
+        json_out: PathBuf,
+        #[arg(long, default_value_t = 250.0)]
+        sample_ms: f64,
+        #[arg(long, default_value_t = 15)]
+        ignore_cpu_nice_at_least: i32,
+        #[arg(long, default_value_t = 50.0)]
+        max_foreign_cpu_percent: f64,
+        #[arg(long, default_value_t = 2.0)]
+        max_foreign_io_average_mib_s: f64,
+        #[arg(long, default_value_t = 8.0)]
+        max_foreign_io_rate_mib_s: f64,
+        #[arg(long)]
+        observe_only: bool,
+        #[arg(last = true, required = true)]
+        command: Vec<String>,
+    },
     StorageFootprint {
         path: PathBuf,
     },
@@ -191,6 +222,50 @@ enum Command {
 
 fn main() -> Result<()> {
     match Cli::parse().command {
+        Command::CheckExternalNoise {
+            ignore_nice_at_least,
+            json_out,
+            exclude_pid,
+            max_aggregate_cpu_percent,
+            sample_ms,
+        } => {
+            let code = noise::run_external(noise::ExternalNoiseArgs {
+                ignore_nice_at_least,
+                json_out: json_out.as_deref(),
+                exclude_pids: &exclude_pid,
+                max_aggregate_cpu_percent,
+                sample_ms,
+            })?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+            Ok(())
+        }
+        Command::RunWithContinuousNoise {
+            json_out,
+            sample_ms,
+            ignore_cpu_nice_at_least,
+            max_foreign_cpu_percent,
+            max_foreign_io_average_mib_s,
+            max_foreign_io_rate_mib_s,
+            observe_only,
+            command,
+        } => {
+            let code = noise::run_continuous(noise::ContinuousNoiseArgs {
+                json_out: &json_out,
+                sample_ms,
+                ignore_cpu_nice_at_least,
+                max_foreign_cpu_percent,
+                max_foreign_io_average_mib_s,
+                max_foreign_io_rate_mib_s,
+                observe_only,
+                command: &command,
+            })?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+            Ok(())
+        }
         Command::StorageFootprint { path } => storage::print_footprint(&path),
         Command::Summarize {
             input,

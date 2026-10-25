@@ -285,18 +285,14 @@ fn preflight_host(repo: &Path) -> i32 {
     if pressure_rc != 0 {
         return pressure_rc;
     }
-    match Command::new("uv")
-        .args(["run", "--script"])
-        .arg(repo.join("scripts/check-external-noise.py"))
-        .args(["--sample-ms", "250"])
-        .current_dir(repo)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-    {
-        Ok(status) => status.code().unwrap_or(2),
-        Err(_) => 2,
-    }
+    crate::noise::run_external(crate::noise::ExternalNoiseArgs {
+        ignore_nice_at_least: 15,
+        json_out: Some(Path::new("/dev/null")),
+        exclude_pids: &[],
+        max_aggregate_cpu_percent: 50.0,
+        sample_ms: 250.0,
+    })
+    .unwrap_or(2)
 }
 
 fn value_as_i64(value: Option<&Value>) -> Option<i64> {

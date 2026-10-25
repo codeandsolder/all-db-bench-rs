@@ -33,7 +33,7 @@ for runner in "${runners[@]}"; do
     run-record-matrix.sh)
       rg -Fq 'ADMISSION_POLICY=pre-io+pre/continuous/post-external-v3' "$path" && \
       rg -q 'continuous_noise_guard_sha256' "$path" && \
-      rg -q 'run-with-continuous-noise.py' "$path" || {
+      rg -q 'run-with-continuous-noise' "$path" || {
         echo "missing continuous record-baseline admission provenance in $runner" >&2
         exit 1
       }

@@ -152,7 +152,7 @@ def preflight_host(repo: Path, *, max_io_full_avg10: float) -> int:
     if pressure_rc != 0:
         return pressure_rc
     proc = subprocess.run(
-        [sys.executable, str(repo / "scripts" / "check-external-noise.py"), "--sample-ms", "250"],
+        [str(repo / "scripts" / "benchctl.sh"), "check-external-noise", "--sample-ms", "250"],
         cwd=repo,
         check=False,
         stdout=subprocess.DEVNULL,

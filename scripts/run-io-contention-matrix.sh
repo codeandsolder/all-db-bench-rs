@@ -161,7 +161,7 @@ check_external_noise() {
     tmp=$(mktemp)
     remove_tmp=1
   fi
-  uv run --script "$ROOT/scripts/check-external-noise.py" --json-out "$tmp"
+  "$ROOT/scripts/benchctl.sh" check-external-noise --json-out "$tmp"
   rc=$?
   if (( rc != 0 )); then
     echo "refusing I/O-contention performance case due to external host work ($phase): $(cat "$tmp" 2>/dev/null)" >&2

@@ -61,8 +61,8 @@ def source_identity(repo: Path, support: dict[str, Any]) -> dict[str, Any]:
         "kv_matrix_policy_sha256": repo / "scripts" / "kv-matrix-policy.sh",
         "performance_common_sha256": repo / "scripts" / "performance-runner-common.sh",
         "continuous_noise_common_sha256": repo / "scripts" / "continuous-noise-runner-common.sh",
-        "noise_guard_sha256": repo / "scripts" / "check-external-noise.py",
-        "continuous_noise_guard_sha256": repo / "scripts" / "run-with-continuous-noise.py",
+        "noise_guard_sha256": repo / "tools" / "benchctl" / "src" / "noise.rs",
+        "continuous_noise_guard_sha256": repo / "tools" / "benchctl" / "src" / "noise.rs",
     }
     for field, path in file_fields.items():
         if support.get(field) != sha256(path):

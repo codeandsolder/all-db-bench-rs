@@ -302,11 +302,11 @@ pub(crate) fn support_identity(
             ),
             (
                 "noise_guard_sha256",
-                repo.join("scripts/check-external-noise.py"),
+                repo.join("tools/benchctl/src/noise.rs"),
             ),
             (
                 "continuous_noise_guard_sha256",
-                repo.join("scripts/run-with-continuous-noise.py"),
+                repo.join("tools/benchctl/src/noise.rs"),
             ),
         ] {
             let actual = sha256(&path)?;
@@ -428,8 +428,8 @@ mod tests {
             "concurrency_runner_common_sha256": sha256(&repo.join("scripts/concurrency-runner-common.sh"))?,
             "continuous_noise_common_sha256": sha256(&repo.join("scripts/continuous-noise-runner-common.sh"))?,
             "concurrency_policy_sha256": sha256(&repo.join("scripts/concurrency-matrix-policy.sh"))?,
-            "noise_guard_sha256": sha256(&repo.join("scripts/check-external-noise.py"))?,
-            "continuous_noise_guard_sha256": sha256(&repo.join("scripts/run-with-continuous-noise.py"))?,
+            "noise_guard_sha256": sha256(&repo.join("tools/benchctl/src/noise.rs"))?,
+            "continuous_noise_guard_sha256": sha256(&repo.join("tools/benchctl/src/noise.rs"))?,
             "benchmark_binary_sha256": "a".repeat(64),
             "build_profile": "external",
             "hostname": "test-host",

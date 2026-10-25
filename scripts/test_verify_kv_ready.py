@@ -22,6 +22,8 @@ class VerifyKvReadyTests(unittest.TestCase):
         selected = root / "selected"
         binary_dir = root / "bin"
         (repo / "scripts").mkdir(parents=True)
+        (repo / "tools" / "benchctl" / "src").mkdir(parents=True)
+        (repo / "tools" / "benchctl" / "src" / "noise.rs").write_text("native noise policy\n")
         selected.mkdir()
         binary_dir.mkdir()
         for name in (
@@ -29,8 +31,6 @@ class VerifyKvReadyTests(unittest.TestCase):
             "kv-matrix-policy.sh",
             "performance-runner-common.sh",
             "continuous-noise-runner-common.sh",
-            "check-external-noise.py",
-            "run-with-continuous-noise.py",
         ):
             (repo / "scripts" / name).write_text(name + "\n")
         binary = binary_dir / "kvbench"
@@ -60,11 +60,11 @@ class VerifyKvReadyTests(unittest.TestCase):
             "kv_matrix_policy_sha256": "kv-matrix-policy.sh",
             "performance_common_sha256": "performance-runner-common.sh",
             "continuous_noise_common_sha256": "continuous-noise-runner-common.sh",
-            "noise_guard_sha256": "check-external-noise.py",
-            "continuous_noise_guard_sha256": "run-with-continuous-noise.py",
         }
         for field, filename in fields.items():
             support[field] = MODULE.sha256(repo / "scripts" / filename)
+        support["noise_guard_sha256"] = MODULE.sha256(repo / "tools" / "benchctl" / "src" / "noise.rs")
+        support["continuous_noise_guard_sha256"] = support["noise_guard_sha256"]
         for run_id in ("stock", "resize"):
             run = repo / "results" / "runs" / run_id
             run.mkdir(parents=True)

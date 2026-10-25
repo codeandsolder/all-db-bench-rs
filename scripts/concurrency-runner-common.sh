@@ -36,7 +36,8 @@ concurrency_check_io_quiet() {
 concurrency_check_external_noise() {
   local root=$1 profile=$2 phase=$3 evidence=$4 rc
   [[ "$profile" == smoke || "${ALLOW_EXTERNAL_NOISE:-0}" == 1 ]] && return 0
-  if uv run --script "$root/scripts/check-external-noise.py" --json-out "$evidence"; then rc=0; else rc=$?; fi
+  continuous_noise_prepare_benchctl "$root" || return $?
+  if "$CONTINUOUS_NOISE_BENCHCTL" check-external-noise --json-out "$evidence"; then rc=0; else rc=$?; fi
   if (( rc != 0 )); then
     echo "refusing concurrency performance case due to external host work ($phase)" >&2
   fi

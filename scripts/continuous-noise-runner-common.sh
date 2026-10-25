@@ -6,10 +6,32 @@ CONTINUOUS_NOISE_MAX_CPU_PERCENT=${CONTINUOUS_NOISE_MAX_CPU_PERCENT:-50}
 CONTINUOUS_NOISE_MAX_IO_AVERAGE_MIB_S=${CONTINUOUS_NOISE_MAX_IO_AVERAGE_MIB_S:-2}
 CONTINUOUS_NOISE_MAX_IO_RATE_MIB_S=${CONTINUOUS_NOISE_MAX_IO_RATE_MIB_S:-8}
 
+CONTINUOUS_NOISE_BENCHCTL_READY=${CONTINUOUS_NOISE_BENCHCTL_READY:-0}
+CONTINUOUS_NOISE_BENCHCTL=${CONTINUOUS_NOISE_BENCHCTL:-}
+
+continuous_noise_prepare_benchctl() {
+  local root=$1 target_dir
+  if [[ "$CONTINUOUS_NOISE_BENCHCTL_READY" == 1 && -x "$CONTINUOUS_NOISE_BENCHCTL" ]]; then
+    return 0
+  fi
+  target_dir=${BENCHCTL_TARGET_DIR:-${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target}}
+  CONTINUOUS_NOISE_BENCHCTL=${BENCHCTL_BIN:-$target_dir/debug/all-db-benchctl}
+  if [[ -z "${BENCHCTL_BIN:-}" ]]; then
+    CARGO_TARGET_DIR="$target_dir" "$root/scripts/cargo-local-1.99.sh" build --locked \
+      --manifest-path "$root/tools/benchctl/Cargo.toml" --bin all-db-benchctl
+  fi
+  [[ -x "$CONTINUOUS_NOISE_BENCHCTL" ]] || {
+    echo "missing benchctl binary: $CONTINUOUS_NOISE_BENCHCTL" >&2
+    return 2
+  }
+  CONTINUOUS_NOISE_BENCHCTL_READY=1
+}
+
 continuous_noise_run() {
   local root=$1 evidence=$2
   shift 2
-  uv run --script "$root/scripts/run-with-continuous-noise.py" \
+  continuous_noise_prepare_benchctl "$root" || return $?
+  "$CONTINUOUS_NOISE_BENCHCTL" run-with-continuous-noise \
     --json-out "$evidence" \
     --sample-ms "$CONTINUOUS_NOISE_SAMPLE_MS" \
     --max-foreign-cpu-percent "$CONTINUOUS_NOISE_MAX_CPU_PERCENT" \
