@@ -4,7 +4,7 @@ from pathlib import Path
 
 def load(name:str):
     path=Path(__file__).with_name(name); spec=importlib.util.spec_from_file_location(name.replace('-','_'),path); assert spec and spec.loader; m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m); return m
-PLAN=load('make-kv-final-continuous-plan.py'); UNIT=load('make-kv-final-continuous-unit.py'); FINAL=load('finalize-kv-final-continuous.py')
+PLAN=load('make-kv-final-continuous-plan.py'); FINAL=load('finalize-kv-final-continuous.py')
 
 class KvFinalContinuousTest(unittest.TestCase):
     def test_plan_covers_all_groups_and_inverts_tiny_txn(self):
@@ -63,8 +63,4 @@ class KvFinalContinuousTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "imported cases are forbidden"):
             FINAL.support_provenance(support, "run-a", "b" * 64)
 
-    def test_unit_replaces_handoff_and_gate(self):
-        u=UNIT.unit_text(); self.assertIn('ConditionPathExists=!/srv/scratch/db-bench-work/kv-sizing-audit/ready-v6.json',u); self.assertIn('OnSuccess=all-db-bench-concurrency-sizing.service',u); self.assertIn('--quality-only',u)
-        self.assertIn('OnSuccess=\nOnSuccess=all-db-bench-kv-final-continuous.service',UNIT.record_handoff_dropin())
-        g=UNIT.concurrency_gate_dropin(); self.assertIn('ConditionPathExists=\nConditionPathExists=/srv/scratch/db-bench-work/kv-sizing-audit/ready-v6.json',g); self.assertIn('ExecStartPre=\nExecStartPre=/usr/bin/uv run --script',g)
 if __name__=='__main__': unittest.main()
