@@ -11,10 +11,15 @@ use std::{
 mod audit;
 mod kv;
 mod record;
+mod record_calibration;
 
 pub(crate) use audit::{AuditArgs, run_concurrency_sizing_audit};
 pub(crate) use kv::{KvCalibrationArgs, KvFinalArgs, run_kv_calibration, run_kv_final};
 pub(crate) use record::{RecordFinalArgs, run_record_final};
+pub(crate) use record_calibration::{
+    MaterializeArgs, RecordCalibrationArgs, run_calibration as run_record_calibration,
+    run_materialize as run_record_materialize,
+};
 
 const TARGET_SECONDS: f64 = 3.0;
 const KV_PLAN_VERSION: i64 = 2;

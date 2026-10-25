@@ -74,7 +74,7 @@ ROCKS_BENCH_SOURCE_COMMIT=${ROCKS_BENCH_SOURCE_COMMIT:-$BENCH_SOURCE_COMMIT}
 
 PLAN_TSV="$RUN_DIR/plan.tsv.new"
 META_NEW="$RUN_DIR/plan-meta.json.new"
-uv run --script "$ROOT/scripts/validate-record-concurrency-plan.py" "$PLAN" "$PLAN_TSV" "$META_NEW" || exit $?
+"$ROOT/scripts/benchctl.sh" record-concurrency-plan-materialize "$PLAN" "$PLAN_TSV" "$META_NEW" || exit $?
 if [[ -s "$RUN_DIR/plan.tsv" ]]; then
   cmp -s "$RUN_DIR/plan.tsv" "$PLAN_TSV" || { rm -f "$PLAN_TSV" "$META_NEW"; echo "refusing plan resume: materialized plan changed" >&2; exit 2; }
   rm -f "$PLAN_TSV"

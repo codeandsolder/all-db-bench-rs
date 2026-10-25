@@ -1,6 +1,7 @@
 mod compression;
 mod idle;
 mod planning;
+mod scaling;
 mod storage;
 mod summary;
 mod support;
@@ -70,6 +71,26 @@ enum Command {
         delete_out: PathBuf,
         #[arg(long, default_value_t = 3)]
         trials: i64,
+    },
+    RecordConcurrencyPlanCalibration {
+        #[arg(long)]
+        repo: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    RecordConcurrencyPlanMaterialize {
+        plan: PathBuf,
+        tsv_out: Option<PathBuf>,
+        meta_out: Option<PathBuf>,
+    },
+    ConcurrencyScalingSummary {
+        run_dir: PathBuf,
+        #[arg(long)]
+        json_out: Option<PathBuf>,
+        #[arg(long)]
+        markdown_out: Option<PathBuf>,
+        #[arg(long)]
+        allow_incomplete: bool,
     },
     RecordConcurrencyPlanFinal {
         #[arg(long)]
@@ -179,6 +200,38 @@ fn main() -> Result<()> {
             delete_out: &delete_out,
             trials,
         }),
+        Command::RecordConcurrencyPlanCalibration { repo, out } => {
+            planning::run_record_calibration(planning::RecordCalibrationArgs {
+                repo: &repo,
+                out: &out,
+            })
+        }
+        Command::RecordConcurrencyPlanMaterialize {
+            plan,
+            tsv_out,
+            meta_out,
+        } => planning::run_record_materialize(planning::MaterializeArgs {
+            plan: &plan,
+            tsv_out: tsv_out.as_deref(),
+            meta_out: meta_out.as_deref(),
+        }),
+        Command::ConcurrencyScalingSummary {
+            run_dir,
+            json_out,
+            markdown_out,
+            allow_incomplete,
+        } => {
+            let code = scaling::run(scaling::ScalingArgs {
+                run_dir: &run_dir,
+                json_out: json_out.as_deref(),
+                markdown_out: markdown_out.as_deref(),
+                allow_incomplete,
+            })?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+            Ok(())
+        }
         Command::RecordConcurrencyPlanFinal {
             repo,
             calibration_plan,
