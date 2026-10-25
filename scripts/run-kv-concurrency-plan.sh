@@ -114,7 +114,9 @@ if [[ -s "$RUN_DIR/support.json" ]]; then
 else mv "$SUPPORT_NEW" "$RUN_DIR/support.json"; fi
 
 if (( PLAN_VERSION >= 2 )); then
-  uv run --script "$ROOT/scripts/check-concurrency-support-identity.py"     --support "$RUN_DIR/support.json" --plan "$PLAN" --repo "$ROOT"     --runner run-kv-concurrency-plan.sh --lane kv-concurrency || exit $?
+  "$ROOT/scripts/benchctl.sh" support-identity "$RUN_DIR/support.json" \
+    --expected-lane kv-concurrency --repo "$ROOT" \
+    --runner-name run-kv-concurrency-plan.sh --plan "$PLAN" || exit $?
 fi
 
 RESUME_ORDER_POLICY=fixed-initial

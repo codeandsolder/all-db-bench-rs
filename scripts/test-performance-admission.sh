@@ -141,8 +141,11 @@ for runner in run-kv-concurrency-plan.sh run-record-concurrency-plan.sh; do
 done
 
 for runner in run-kv-concurrency-plan.sh run-record-concurrency-plan.sh; do
-  rg -Fq 'check-concurrency-support-identity.py' "$ROOT/scripts/$runner" || {
-    echo "concurrency plan runner lost support-identity gate: $runner" >&2
+  rg -Fq 'benchctl.sh" support-identity' "$ROOT/scripts/$runner" && \
+  rg -Fq -- '--expected-lane' "$ROOT/scripts/$runner" && \
+  rg -Fq -- '--runner-name' "$ROOT/scripts/$runner" && \
+  rg -Fq -- '--plan "$PLAN"' "$ROOT/scripts/$runner" || {
+    echo "concurrency plan runner lost native support-identity gate: $runner" >&2
     exit 1
   }
 done

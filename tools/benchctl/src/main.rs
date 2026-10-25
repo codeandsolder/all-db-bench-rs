@@ -1,6 +1,7 @@
 mod compression;
 mod storage;
 mod summary;
+mod support;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -35,6 +36,19 @@ enum Command {
         #[arg(long)]
         markdown_out: PathBuf,
     },
+    SupportIdentity {
+        support: String,
+        #[arg(long)]
+        expected_lane: String,
+        #[arg(long)]
+        repo: Option<PathBuf>,
+        #[arg(long)]
+        runner_name: Option<String>,
+        #[arg(long, default_value = support::CONTINUOUS_ADMISSION)]
+        expected_admission: String,
+        #[arg(long)]
+        plan: Option<PathBuf>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -56,5 +70,20 @@ fn main() -> Result<()> {
             json_out,
             markdown_out,
         } => compression::summarize_file(&input, &json_out, &markdown_out),
+        Command::SupportIdentity {
+            support,
+            expected_lane,
+            repo,
+            runner_name,
+            expected_admission,
+            plan,
+        } => support::run_support_identity(
+            &support,
+            &expected_lane,
+            repo.as_deref(),
+            runner_name.as_deref(),
+            &expected_admission,
+            plan.as_deref(),
+        ),
     }
 }

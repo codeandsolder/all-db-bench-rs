@@ -125,7 +125,9 @@ if [[ -s "$RUN_DIR/support.json" ]]; then
   else rm -f "$SUPPORT_NEW"; fi
 else mv "$SUPPORT_NEW" "$RUN_DIR/support.json"; fi
 
-uv run --script "$ROOT/scripts/check-concurrency-support-identity.py"   --support "$RUN_DIR/support.json" --plan "$PLAN" --repo "$ROOT"   --runner run-record-concurrency-plan.sh --lane record-concurrency || exit $?
+"$ROOT/scripts/benchctl.sh" support-identity "$RUN_DIR/support.json" \
+  --expected-lane record-concurrency --repo "$ROOT" \
+  --runner-name run-record-concurrency-plan.sh --plan "$PLAN" || exit $?
 
 RESUME_ORDER_POLICY=fixed-initial
 [[ "${MATRIX_RESUME_SHUFFLE_REMAINING:-1}" == 1 ]] && RESUME_ORDER_POLICY=reshuffle-remaining
