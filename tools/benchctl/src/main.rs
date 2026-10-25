@@ -9,6 +9,7 @@ mod io_pressure;
 mod noise;
 mod planning;
 mod process_tree;
+mod record_smoke;
 mod recovery;
 mod scaling;
 mod storage;
@@ -34,6 +35,20 @@ struct Cli {
 enum Command {
     CpuPressureWorker {
         duty_percent: f64,
+    },
+    SmokeRecordBinaries {
+        #[arg(long)]
+        bench_bin: PathBuf,
+        #[arg(long)]
+        concurrency_bin: PathBuf,
+        #[arg(long)]
+        sustained_bin: PathBuf,
+        #[arg(long)]
+        rocks_bench_bin: PathBuf,
+        #[arg(long)]
+        rocks_concurrency_bin: PathBuf,
+        #[arg(long)]
+        rocks_sustained_bin: PathBuf,
     },
     CheckExternalNoise {
         #[arg(long, default_value_t = 15)]
@@ -265,6 +280,21 @@ enum Command {
 fn main() -> Result<()> {
     match Cli::parse().command {
         Command::CpuPressureWorker { duty_percent } => cpu_pressure::run(duty_percent),
+        Command::SmokeRecordBinaries {
+            bench_bin,
+            concurrency_bin,
+            sustained_bin,
+            rocks_bench_bin,
+            rocks_concurrency_bin,
+            rocks_sustained_bin,
+        } => record_smoke::run(record_smoke::RecordSmokeArgs {
+            bench_bin: &bench_bin,
+            concurrency_bin: &concurrency_bin,
+            sustained_bin: &sustained_bin,
+            rocks_bench_bin: &rocks_bench_bin,
+            rocks_concurrency_bin: &rocks_concurrency_bin,
+            rocks_sustained_bin: &rocks_sustained_bin,
+        }),
         Command::CheckExternalNoise {
             ignore_nice_at_least,
             json_out,

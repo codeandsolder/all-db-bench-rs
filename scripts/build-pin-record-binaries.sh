@@ -33,7 +33,7 @@ do
     --bin "$bin"
 done
 
-"$ROOT/scripts/smoke-record-binaries.py" \
+"$ROOT/scripts/benchctl.sh" smoke-record-binaries \
   --bench-bin "$TARGET_DIR/release/recordbench" \
   --concurrency-bin "$TARGET_DIR/release/recordconcurrency" \
   --sustained-bin "$TARGET_DIR/release/recordsustained" \
@@ -84,6 +84,6 @@ for i in "${!names[@]}"; do
 done
 printf '  }\n}\n' >> "$manifest_tmp"
 
-uv run --no-project python -m json.tool "$manifest_tmp" >/dev/null
+jq -e . "$manifest_tmp" >/dev/null
 mv "$manifest_tmp" "$OUT/manifest.json"
 cat "$OUT/manifest.json"
