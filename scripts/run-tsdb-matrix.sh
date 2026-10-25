@@ -47,6 +47,11 @@ else
   "$ROOT/scripts/cargo-local-1.99.sh" build --release --locked --manifest-path "$TSDB_MANIFEST" --target-dir "$TARGET_DIR"
 fi
 BIN_SHA=$(sha256sum "$BIN" | awk '{print $1}')
+BENCHCTL_TARGET_DIR=${BENCHCTL_TARGET_DIR:-${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target}}
+BENCHCTL="$BENCHCTL_TARGET_DIR/debug/all-db-benchctl"
+CARGO_TARGET_DIR="$BENCHCTL_TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" build --locked \
+  --manifest-path "$ROOT/tools/benchctl/Cargo.toml" --bin all-db-benchctl
+BENCHCTL_SHA=$(sha256sum "$BENCHCTL" | awk '{print $1}')
 
 RUN_ID=${RUN_ID:-"$(date -u +%Y%m%dT%H%M%SZ)-tsdb-$PROFILE"}
 if [[ "${TSDB_RESUME_SHUFFLE_REMAINING:-0}" == 1 ]]; then
@@ -73,7 +78,7 @@ RUNNER_SHA=$(sha256sum "$ROOT/scripts/run-tsdb-matrix.sh" | awk '{print $1}')
 INSTALLER_SHA=$(sha256sum "$ROOT/scripts/ensure-tsdb-binaries.sh" | awk '{print $1}')
 PROCESS_CAPTURE_SHA=$(sha256sum "$ROOT/scripts/capture-process-tree.py" | awk '{print $1}')
 MERGE_RESULT_SHA=$(sha256sum "$ROOT/scripts/merge-tsdb-result.py" | awk '{print $1}')
-SUMMARIZER_SHA=$(sha256sum "$ROOT/scripts/summarize-tsdb.py" | awk '{print $1}')
+SUMMARIZER_SHA=$BENCHCTL_SHA
 NOISE_GUARD_SHA=$(sha256sum "$ROOT/scripts/check-external-noise.py" | awk '{print $1}')
 free_bytes=$(df -B1 --output=avail "$DATA_DIR" | tail -n1 | tr -d ' ')
 min_free_bytes=$((MIN_FREE_GIB * 1024 * 1024 * 1024))
@@ -384,7 +389,7 @@ COMPLETED=$(find "$RUN_DIR/cases" -type f -name '*.json' | wc -l)
 FAILURES=0
 [[ -s "$RUN_DIR/failures.ndjson" ]] && FAILURES=$(wc -l < "$RUN_DIR/failures.ndjson")
 summary_rc=0
-uv run --script "$ROOT/scripts/summarize-tsdb.py" "$RUN_DIR" --expect-trials "$TRIALS" \
+"$BENCHCTL" summarize-tsdb "$RUN_DIR" --expect-trials "$TRIALS" \
   --json-out "$RUN_DIR/summary.json" --markdown-out "$RUN_DIR/summary.md" || summary_rc=$?
 echo "run=$RUN_ID total=$TOTAL completed=$COMPLETED failures=$FAILURES summary_rc=$summary_rc results=$RUN_DIR/results.ndjson"
 (( FAILURES == 0 && COMPLETED == TOTAL && summary_rc == 0 ))
