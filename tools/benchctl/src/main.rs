@@ -1,5 +1,6 @@
 mod compression;
 mod storage;
+mod summary;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -18,6 +19,15 @@ enum Command {
     StorageFootprint {
         path: PathBuf,
     },
+    Summarize {
+        input: PathBuf,
+        #[arg(long)]
+        json_out: Option<PathBuf>,
+        #[arg(long)]
+        markdown_out: Option<PathBuf>,
+        #[arg(long)]
+        expect_trials: Option<usize>,
+    },
     SummarizeCompression {
         input: PathBuf,
         #[arg(long)]
@@ -30,6 +40,17 @@ enum Command {
 fn main() -> Result<()> {
     match Cli::parse().command {
         Command::StorageFootprint { path } => storage::print_footprint(&path),
+        Command::Summarize {
+            input,
+            json_out,
+            markdown_out,
+            expect_trials,
+        } => summary::summarize_file(
+            &input,
+            json_out.as_deref(),
+            markdown_out.as_deref(),
+            expect_trials,
+        ),
         Command::SummarizeCompression {
             input,
             json_out,

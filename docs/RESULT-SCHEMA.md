@@ -26,7 +26,7 @@ Each isolated benchmark invocation appends exactly one JSON object to NDJSON.
 
 For `range-scan`, one logical operation is one range query. `reads` records rows visited, while `ops_completed` records range queries, so row throughput can be derived as `reads / elapsed_s`. The baseline matrix may intentionally use a lower `ops_requested` for `lsm-db` range scans because that crate's native bounded scan traverses from the beginning of each run; compare range-scan rates using the recorded per-case operation count rather than assuming the profile-wide default.
 
-Baseline support metadata also records workload-specific effective operation budgets where they differ from the profile-wide default: `lsmdb_range_scan_ops` for the bounded `lsm-db` scan cap and `tiny_txn_ops` for one-key transaction sizing. Per-case `ops_requested` remains authoritative for aggregation; `summarize.py` never combines rows with different effective operation counts.
+Baseline support metadata also records workload-specific effective operation budgets where they differ from the profile-wide default: `lsmdb_range_scan_ops` for the bounded `lsm-db` scan cap and `tiny_txn_ops` for one-key transaction sizing. Per-case `ops_requested` remains authoritative for aggregation; `benchctl summarize` never combines rows with different effective operation counts.
 
 ## Latency
 
@@ -43,7 +43,7 @@ Write latency is per committed transaction, not divided by keys in the batch. Ke
 
 ## Aggregation
 
-`scripts/summarize.py` groups exact-compatible configurations and reports median throughput, IQR, median p99 latency, database size, peak RSS and prefill time across independent trials. It does not average unlike workload shapes or create uncertainty bands from adjacent database sizes.
+`benchctl summarize` groups exact-compatible configurations and reports median throughput, IQR, median p99 latency, database size, peak RSS and prefill time across independent trials. It does not average unlike workload shapes or create uncertainty bands from adjacent database sizes.
 
 ## Historical schema v2 additions — 2026-10-04
 
@@ -203,7 +203,7 @@ The result also records `concurrency_handle`, describing the native product surf
 
 Aggregate and per-client records include logical operations, read/write counts, transaction count, `write_conflict_retries`, elapsed time/throughput, operation-latency HDR quantiles and write-transaction HDR quantiles. SurrealDB retries are limited to typed `QueryError::TransactionConflict`; retry time remains inside the measured latency. The usual measured-process and system deltas bracket the synchronized multi-client foreground interval; client threads remain alive until the process-after snapshot so their scheduler accounting is retained.
 
-`client_elapsed_s_*`, `client_ops_per_s_*` and `client_throughput_max_min_ratio` have the same fairness meanings as the raw-KV concurrency lane. `scripts/summarize.py` uses a matching `record-concurrency` c1 row to derive `speedup_vs_c1`, `parallel_efficiency_vs_c1`, and p99 multipliers; it never substitutes a single-client `record` row. `state_evolution` is part of generic and scaling-family identity, so bounded steady-state rows cannot silently merge with append-growth diagnostics.
+`client_elapsed_s_*`, `client_ops_per_s_*` and `client_throughput_max_min_ratio` have the same fairness meanings as the raw-KV concurrency lane. `benchctl summarize` uses a matching `record-concurrency` c1 row to derive `speedup_vs_c1`, `parallel_efficiency_vs_c1`, and p99 multipliers; it never substitutes a single-client `record` row. `state_evolution` is part of generic and scaling-family identity, so bounded steady-state rows cannot silently merge with append-growth diagnostics.
 
 For write-burst, `ops_requested` must be divisible by `txn_size` and work is partitioned as whole transactions. In bounded mode `txn_size <= records` is required so one atomic batch cannot wrap onto the same logical record twice. Native Turso/SQLite busy waits are inside measured transaction latency rather than represented as benchmark retry counters.
 
@@ -280,4 +280,4 @@ Identity/configuration replaces raw-KV key/value-shape fields with `payload_byte
 
 New `kvbench` raw-KV results use `format_version: 7`. The additive change brackets database open/recovery separately from prefill and foreground work: `open_s` is accompanied by `open_process` and `open_system_delta`, using the same task-level CPU/runqueue and system-PSI accounting model as the measured foreground interval. This lets reopen lanes reject short open attempts that were contaminated inside the open interval even when outer host snapshots were quiet.
 
-Older v6 rows remain valid and continue to summarize; `scripts/summarize.py` now emits `open_s_median` when `open_s` is present and includes open time in Markdown as milliseconds. Because `format_version` is part of the grouping identity, v6 and v7 rows are never silently aggregated together. Record-product and sustained-specific schemas remain at their existing versions until they independently adopt this additive accounting.
+Older v6 rows remain valid and continue to summarize; `benchctl summarize` now emits `open_s_median` when `open_s` is present and includes open time in Markdown as milliseconds. Because `format_version` is part of the grouping identity, v6 and v7 rows are never silently aggregated together. Record-product and sustained-specific schemas remain at their existing versions until they independently adopt this additive accounting.

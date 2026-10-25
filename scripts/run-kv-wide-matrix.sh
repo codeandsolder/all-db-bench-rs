@@ -179,7 +179,7 @@ done
 
 find "$RUN_DIR/cases" -type f -name '*.json' -print0 | sort -z | xargs -0 -r cat > "$RUN_DIR/results.ndjson"
 "$ROOT/scripts/capture-host-metadata.sh" "$RUN_DIR/host-end.txt" "$ROOT"
-uv run --script "$ROOT/scripts/summarize.py" "$RUN_DIR/results.ndjson" \
+"$ROOT/scripts/benchctl.sh" summarize "$RUN_DIR/results.ndjson" \
   --expect-trials "$TRIALS" --json-out "$RUN_DIR/summary.json" --markdown-out "$RUN_DIR/summary.md" || true
 printf 'run=%s total=%s failures=%s results=%s\n' "$RUN_ID" "$TOTAL" "$FAILURES" "$RUN_DIR/results.ndjson"
 exit $(( FAILURES > 0 ? 1 : 0 ))

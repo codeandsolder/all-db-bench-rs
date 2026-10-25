@@ -43,8 +43,8 @@ def finalize_one(
     subprocess.run(command, cwd=repo, check=True)
     subprocess.run(
         [
-            sys.executable,
-            str(repo / "scripts" / "summarize.py"),
+            str(repo / "scripts" / "benchctl.sh"),
+            "summarize",
             str(ndjson),
             "--json-out",
             str(summary),

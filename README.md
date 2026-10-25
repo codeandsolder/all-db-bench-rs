@@ -41,7 +41,7 @@ See docs/METHODOLOGY.md before interpreting results. In particular, SurrealDB/Tu
 
 ## Summarize a completed run
 
-    uv run --script scripts/summarize.py results/runs/RUN_ID/results.ndjson \
+    ./scripts/benchctl.sh summarize results/runs/RUN_ID/results.ndjson \
       --json-out results/runs/RUN_ID/summary.json \
       --markdown-out results/runs/RUN_ID/summary.md
 
