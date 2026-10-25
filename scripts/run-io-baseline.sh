@@ -9,7 +9,7 @@ case "$PROFILE" in
 esac
 
 ROOT=${ROOT:-$(cd -- "$(dirname -- "$0")/.." && pwd)}
-for tool in fio jq findmnt sha256sum uv awk; do
+for tool in fio jq findmnt sha256sum awk; do
   command -v "$tool" >/dev/null 2>&1 || { echo "required tool not found: $tool" >&2; exit 127; }
 done
 CPUS=$(getconf _NPROCESSORS_ONLN)
@@ -204,7 +204,7 @@ run buffered-seqread-1m-q1 "$FILE" --rw=read --bs=1M --ioengine=psync --direct=0
 run fdatasync-write-4k-q1 "$FILE" --rw=write --bs=4k --ioengine=psync --direct=0 --fdatasync=1 || exit $?
 
 "$ROOT/scripts/capture-host-metadata.sh" "$RUN_DIR/host-end.txt" "$ROOT" || exit $?
-uv run --script "$ROOT/scripts/summarize-io-baseline.py" "$RUN_DIR" \
+"$ROOT/scripts/benchctl.sh" summarize-io-baseline "$RUN_DIR" \
   --json-out "$RUN_DIR/summary.json" --markdown-out "$RUN_DIR/summary.md" || exit $?
 
 READ_SHA=$(sha256sum "$CAL_READ_JSON" | awk '{print $1}')

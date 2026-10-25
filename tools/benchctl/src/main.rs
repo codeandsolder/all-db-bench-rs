@@ -2,6 +2,9 @@
 mod compression;
 mod idle;
 mod import_concurrency;
+mod io_baseline;
+mod io_evidence;
+mod io_pressure;
 mod noise;
 mod planning;
 mod process_tree;
@@ -109,6 +112,22 @@ enum Command {
     },
     SummarizeSustained {
         input: PathBuf,
+        #[arg(long)]
+        expect_trials: Option<usize>,
+        #[arg(long)]
+        json_out: Option<PathBuf>,
+        #[arg(long)]
+        markdown_out: Option<PathBuf>,
+    },
+    SummarizeIoBaseline {
+        run_dir: PathBuf,
+        #[arg(long)]
+        json_out: Option<PathBuf>,
+        #[arg(long)]
+        markdown_out: Option<PathBuf>,
+    },
+    SummarizeIoPressure {
+        run_dir: PathBuf,
         #[arg(long)]
         expect_trials: Option<usize>,
         #[arg(long)]
@@ -346,6 +365,38 @@ fn main() -> Result<()> {
         } => {
             let code = sustained::run(sustained::SustainedArgs {
                 input: &input,
+                expect_trials,
+                json_out: json_out.as_deref(),
+                markdown_out: markdown_out.as_deref(),
+            })?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+            Ok(())
+        }
+        Command::SummarizeIoBaseline {
+            run_dir,
+            json_out,
+            markdown_out,
+        } => {
+            let code = io_baseline::run(io_baseline::IoBaselineArgs {
+                run_dir: &run_dir,
+                json_out: json_out.as_deref(),
+                markdown_out: markdown_out.as_deref(),
+            })?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+            Ok(())
+        }
+        Command::SummarizeIoPressure {
+            run_dir,
+            expect_trials,
+            json_out,
+            markdown_out,
+        } => {
+            let code = io_pressure::run(io_pressure::IoPressureArgs {
+                run_dir: &run_dir,
                 expect_trials,
                 json_out: json_out.as_deref(),
                 markdown_out: markdown_out.as_deref(),

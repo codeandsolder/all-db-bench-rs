@@ -2,7 +2,7 @@
 set -u -o pipefail
 
 PROFILE=${1:-quick}
-for tool in fio jq findmnt sha256sum uv awk realpath shuf; do
+for tool in fio jq findmnt sha256sum awk realpath shuf; do
   command -v "$tool" >/dev/null 2>&1 || { echo "required tool not found: $tool" >&2; exit 127; }
 done
 BASELINE_DIR=${2:-${BASELINE_DIR:-}}
@@ -596,7 +596,7 @@ find "$RUN_DIR/cases" -type f -name '*.json' -print0 | sort -z | xargs -0 -r cat
 "$ROOT/scripts/benchctl.sh" summarize "$RUN_DIR/results.ndjson" \
   --expect-trials "$TRIALS" --json-out "$RUN_DIR/summary.json" --markdown-out "$RUN_DIR/summary.md"
 summary_rc=$?
-uv run --script "$ROOT/scripts/summarize-io-pressure.py" "$RUN_DIR" \
+"$ROOT/scripts/benchctl.sh" summarize-io-pressure "$RUN_DIR" \
   --expect-trials "$TRIALS" --json-out "$RUN_DIR/pressure-summary.json" \
   --markdown-out "$RUN_DIR/pressure-summary.md"
 pressure_summary_rc=$?
