@@ -107,10 +107,8 @@ def audit(repo: Path, run_id: str, audit_dir: Path, json_out: Path | None = None
     markdown_out.parent.mkdir(parents=True, exist_ok=True)
     proc = subprocess.run(
         [
-            "uv",
-            "run",
-            "--script",
-            str(repo / "scripts" / "audit_baseline_sizing.py"),
+            str(repo / "scripts" / "benchctl.sh"),
+            "audit-baseline-sizing",
             str(run_dir / "results.ndjson"),
             "--json-out",
             str(json_out),

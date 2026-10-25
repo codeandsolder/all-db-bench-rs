@@ -227,7 +227,7 @@ def stages(
         (
             "kv-refine-quality",
             [
-                script(repo, "refine-stock-quality-repairs.py"), str(paths.kv_quality_initial),
+                script(repo, "benchctl.sh"), "refine-stock-quality-repairs", str(paths.kv_quality_initial),
                 str(paths.kv_audit), str(run_root), "--resize-prefix", paths.kv_resize_prefix,
                 "--json-out", str(paths.kv_quality_refined),
                 "--markdown-out", str(paths.kv_quality_refined.with_suffix(".md")),
@@ -236,7 +236,7 @@ def stages(
         (
             "record-refine-quality",
             [
-                script(repo, "refine-stock-quality-repairs.py"), str(paths.record_quality_initial),
+                script(repo, "benchctl.sh"), "refine-stock-quality-repairs", str(paths.record_quality_initial),
                 str(paths.record_audit), str(run_root), "--resize-prefix", paths.record_resize_prefix,
                 "--json-out", str(paths.record_quality_refined),
                 "--markdown-out", str(paths.record_quality_refined.with_suffix(".md")),

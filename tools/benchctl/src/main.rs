@@ -1,4 +1,5 @@
 #![recursion_limit = "256"]
+mod baseline_sizing;
 mod compression;
 mod cpu_pressure;
 mod idle;
@@ -33,6 +34,40 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    AuditBaselineSizing {
+        results: PathBuf,
+        #[arg(long, default_value_t = 3)]
+        expect_trials: i64,
+        #[arg(long, default_value_t = 2.0)]
+        read_only_min_seconds: f64,
+        #[arg(long, default_value_t = 3.0)]
+        read_only_target_seconds: f64,
+        #[arg(long, default_value_t = 0.75)]
+        stateful_min_total_seconds: f64,
+        #[arg(long, default_value_t = 1.0)]
+        stateful_target_total_seconds: f64,
+        #[arg(long, default_value_t = 51)]
+        stateful_max_trials: i64,
+        #[arg(long, default_value_t = 0.10)]
+        max_cv: f64,
+        #[arg(long, default_value_t = 0.25)]
+        max_relative_spread: f64,
+        #[arg(long)]
+        json_out: Option<PathBuf>,
+        #[arg(long)]
+        markdown_out: Option<PathBuf>,
+    },
+    RefineStockQualityRepairs {
+        quality_plan: PathBuf,
+        sizing_audit: PathBuf,
+        resize_root: PathBuf,
+        #[arg(long)]
+        resize_prefix: String,
+        #[arg(long)]
+        json_out: PathBuf,
+        #[arg(long)]
+        markdown_out: Option<PathBuf>,
+    },
     CpuPressureWorker {
         duty_percent: f64,
     },
@@ -279,6 +314,54 @@ enum Command {
 
 fn main() -> Result<()> {
     match Cli::parse().command {
+        Command::AuditBaselineSizing {
+            results,
+            expect_trials,
+            read_only_min_seconds,
+            read_only_target_seconds,
+            stateful_min_total_seconds,
+            stateful_target_total_seconds,
+            stateful_max_trials,
+            max_cv,
+            max_relative_spread,
+            json_out,
+            markdown_out,
+        } => {
+            let code = baseline_sizing::run_audit(baseline_sizing::AuditArgs {
+                results: &results,
+                expect_trials,
+                config: baseline_sizing::SizingConfig {
+                    read_only_min_seconds,
+                    read_only_target_seconds,
+                    stateful_min_total_seconds,
+                    stateful_target_total_seconds,
+                    stateful_max_trials,
+                    max_cv,
+                    max_relative_spread,
+                },
+                json_out: json_out.as_deref(),
+                markdown_out: markdown_out.as_deref(),
+            })?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+            Ok(())
+        }
+        Command::RefineStockQualityRepairs {
+            quality_plan,
+            sizing_audit,
+            resize_root,
+            resize_prefix,
+            json_out,
+            markdown_out,
+        } => baseline_sizing::run_refine(baseline_sizing::RefineArgs {
+            quality_plan: &quality_plan,
+            sizing_audit: &sizing_audit,
+            resize_root: &resize_root,
+            resize_prefix: &resize_prefix,
+            json_out: &json_out,
+            markdown_out: markdown_out.as_deref(),
+        }),
         Command::CpuPressureWorker { duty_percent } => cpu_pressure::run(duty_percent),
         Command::SmokeRecordBinaries {
             bench_bin,

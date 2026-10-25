@@ -21,7 +21,7 @@ class RecordQuickIdleTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             MODULE.parse_io_full_avg10("some avg10=1\n")
 
-    def test_audit_runs_non_executable_script_through_uv(self) -> None:
+    def test_audit_runs_native_benchctl(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             (repo / "results" / "runs" / "record").mkdir(parents=True)
@@ -42,7 +42,7 @@ class RecordQuickIdleTests(unittest.TestCase):
             finally:
                 MODULE.subprocess.run = original_run
 
-            self.assertEqual(calls[0][0][:4], ["uv", "run", "--script", str(repo / "scripts" / "audit_baseline_sizing.py")])
+            self.assertEqual(calls[0][0][:2], [str(repo / "scripts" / "benchctl.sh"), "audit-baseline-sizing"])
             self.assertEqual(calls[0][1]["cwd"], repo)
 
     def test_lock_is_exclusive(self) -> None:

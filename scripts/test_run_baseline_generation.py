@@ -23,7 +23,7 @@ SCRIPT_NAMES = (
     "audit-stock-short-pressure.py",
     "run-kv-sizing-followups.py",
     "run-record-sizing-followups.py",
-    "refine-stock-quality-repairs.py",
+    "benchctl.sh",
     "finalize-baseline-sizing.py",
     "verify-kv-ready.py",
     "verify-record-ready.py",
