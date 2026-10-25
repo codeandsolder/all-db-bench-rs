@@ -76,8 +76,8 @@ INFLUXDB3_PYTHON_LIB=$(find "$DEPS/influxdb3-3.12.1/python/lib" -maxdepth 1 -typ
 INFLUXDB3_PYTHON_SHA=$(sha256sum "$INFLUXDB3_PYTHON_LIB" | awk '{print $1}')
 RUNNER_SHA=$(sha256sum "$ROOT/scripts/run-tsdb-matrix.sh" | awk '{print $1}')
 INSTALLER_SHA=$(sha256sum "$ROOT/scripts/ensure-tsdb-binaries.sh" | awk '{print $1}')
-PROCESS_CAPTURE_SHA=$(sha256sum "$ROOT/scripts/capture-process-tree.py" | awk '{print $1}')
-MERGE_RESULT_SHA=$(sha256sum "$ROOT/scripts/merge-tsdb-result.py" | awk '{print $1}')
+PROCESS_CAPTURE_SHA=$BENCHCTL_SHA
+MERGE_RESULT_SHA=$BENCHCTL_SHA
 SUMMARIZER_SHA=$BENCHCTL_SHA
 NOISE_GUARD_SHA=$(sha256sum "$ROOT/scripts/check-external-noise.py" | awk '{print $1}')
 free_bytes=$(df -B1 --output=avail "$DATA_DIR" | tail -n1 | tr -d ' ')
@@ -339,7 +339,7 @@ for job in "${ORDERED[@]}"; do
   fi
   sleep 1
   check_external_noise "before-client:$case_id" "$SERVER_PID" "$noise_before" || { rc=$?; stop_server; exit "$rc"; }
-  uv run --script "$ROOT/scripts/capture-process-tree.py" --pid "$SERVER_PID" --output "$before_out"
+  "$BENCHCTL" capture-process-tree --pid "$SERVER_PID" --output "$before_out"
 
   set +e
   "$BIN" --engine "$engine" --engine-version "$VERSION" --endpoint "$ENDPOINT" \
@@ -350,7 +350,7 @@ for job in "${ORDERED[@]}"; do
   rc=$?
   set -e
   if (( rc == 0 )); then
-    uv run --script "$ROOT/scripts/capture-process-tree.py" --pid "$SERVER_PID" --output "$after_out" || rc=$?
+    "$BENCHCTL" capture-process-tree --pid "$SERVER_PID" --output "$after_out" || rc=$?
   fi
   noise_rc=0
   if (( rc == 0 )); then
@@ -367,7 +367,7 @@ for job in "${ORDERED[@]}"; do
   stop_server
   if (( rc == 0 )); then
     set +e
-    uv run --script "$ROOT/scripts/merge-tsdb-result.py" \
+    "$BENCHCTL" merge-tsdb-result \
       --client "$client_out" --server-before "$before_out" --server-after "$after_out" \
       --data-dir "$case_data" --startup-s "$STARTUP_S" --server-log "$log" --output "$out"
     rc=$?

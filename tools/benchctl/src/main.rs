@@ -2,11 +2,13 @@ mod compression;
 mod idle;
 mod import_concurrency;
 mod planning;
+mod process_tree;
 mod scaling;
 mod storage;
 mod summary;
 mod support;
 mod tsdb;
+mod tsdb_merge;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -40,6 +42,28 @@ enum Command {
         json_out: PathBuf,
         #[arg(long)]
         markdown_out: PathBuf,
+    },
+    CaptureProcessTree {
+        #[arg(long)]
+        pid: u32,
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
+    MergeTsdbResult {
+        #[arg(long)]
+        client: PathBuf,
+        #[arg(long = "server-before")]
+        server_before: PathBuf,
+        #[arg(long = "server-after")]
+        server_after: PathBuf,
+        #[arg(long = "data-dir")]
+        data_dir: PathBuf,
+        #[arg(long = "startup-s")]
+        startup_s: f64,
+        #[arg(long = "server-log")]
+        server_log: Option<PathBuf>,
+        #[arg(long)]
+        output: PathBuf,
     },
     SummarizeTsdb {
         run_dir: PathBuf,
@@ -184,6 +208,33 @@ fn main() -> Result<()> {
             json_out,
             markdown_out,
         } => compression::summarize_file(&input, &json_out, &markdown_out),
+        Command::CaptureProcessTree { pid, output } => {
+            let code = process_tree::run(process_tree::ProcessTreeArgs {
+                pid,
+                output: output.as_deref(),
+            })?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+            Ok(())
+        }
+        Command::MergeTsdbResult {
+            client,
+            server_before,
+            server_after,
+            data_dir,
+            startup_s,
+            server_log,
+            output,
+        } => tsdb_merge::run(tsdb_merge::TsdbMergeArgs {
+            client: &client,
+            server_before: &server_before,
+            server_after: &server_after,
+            data_dir: &data_dir,
+            startup_s,
+            server_log: server_log.as_deref(),
+            output: &output,
+        }),
         Command::SummarizeTsdb {
             run_dir,
             expect_trials,
