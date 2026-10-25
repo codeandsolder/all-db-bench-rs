@@ -58,7 +58,7 @@ HARNESS_COMMIT=$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)
 BENCH_SOURCE_COMMIT=${BENCH_SOURCE_COMMIT:-$HARNESS_COMMIT}
 
 PLAN_TSV="$RUN_DIR/plan.tsv.new"
-uv run --script "$ROOT/scripts/validate-concurrency-plan.py" "$PLAN" "$PLAN_TSV" "$RUN_DIR/plan-meta.json.new" || exit $?
+"$ROOT/scripts/benchctl.sh" kv-concurrency-plan-materialize "$PLAN" "$PLAN_TSV" "$RUN_DIR/plan-meta.json.new" || exit $?
 
 if [[ -s "$RUN_DIR/plan.tsv" ]]; then
   if ! cmp -s "$RUN_DIR/plan.tsv" "$PLAN_TSV"; then

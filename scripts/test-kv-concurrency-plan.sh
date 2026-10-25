@@ -5,7 +5,7 @@ bash -n "$ROOT/scripts/run-kv-concurrency-plan.sh"
 PLAN=/srv/scratch/db-bench-work/concurrency-sizing-audit/20261007-kv-concurrency-missing-client-groups-v1.json
 if [[ -s "$PLAN" ]]; then
   tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
-  uv run --script "$ROOT/scripts/validate-concurrency-plan.py" "$PLAN" "$tmp/plan.tsv" "$tmp/meta.json"
+  "$ROOT/scripts/benchctl.sh" kv-concurrency-plan-materialize "$PLAN" "$tmp/plan.tsv" "$tmp/meta.json"
   [[ $(wc -l < "$tmp/plan.tsv") -eq 297 ]]
   jq -e '.plan_version == 1 and .expect_trials == 1 and .case_count == 297' "$tmp/meta.json" >/dev/null
 fi

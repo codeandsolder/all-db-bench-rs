@@ -59,6 +59,11 @@ enum Command {
         #[arg(long)]
         out: PathBuf,
     },
+    KvConcurrencyPlanMaterialize {
+        plan: PathBuf,
+        tsv_out: PathBuf,
+        meta_out: PathBuf,
+    },
     KvConcurrencyPlanFinal {
         #[arg(long)]
         repo: PathBuf,
@@ -183,6 +188,15 @@ fn main() -> Result<()> {
                 out: &out,
             })
         }
+        Command::KvConcurrencyPlanMaterialize {
+            plan,
+            tsv_out,
+            meta_out,
+        } => planning::run_kv_materialize(planning::KvMaterializeArgs {
+            plan: &plan,
+            tsv_out: &tsv_out,
+            meta_out: &meta_out,
+        }),
         Command::KvConcurrencyPlanFinal {
             repo,
             sizing_audit,
