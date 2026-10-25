@@ -1,3 +1,4 @@
+#![recursion_limit = "256"]
 mod compression;
 mod idle;
 mod import_concurrency;
@@ -8,6 +9,7 @@ mod scaling;
 mod storage;
 mod summary;
 mod support;
+mod sustained;
 mod tsdb;
 mod tsdb_merge;
 
@@ -98,6 +100,15 @@ enum Command {
     },
     SummarizeTsdb {
         run_dir: PathBuf,
+        #[arg(long)]
+        expect_trials: Option<usize>,
+        #[arg(long)]
+        json_out: Option<PathBuf>,
+        #[arg(long)]
+        markdown_out: Option<PathBuf>,
+    },
+    SummarizeSustained {
+        input: PathBuf,
         #[arg(long)]
         expect_trials: Option<usize>,
         #[arg(long)]
@@ -318,6 +329,23 @@ fn main() -> Result<()> {
         } => {
             let code = tsdb::run(tsdb::TsdbSummaryArgs {
                 run_dir: &run_dir,
+                expect_trials,
+                json_out: json_out.as_deref(),
+                markdown_out: markdown_out.as_deref(),
+            })?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+            Ok(())
+        }
+        Command::SummarizeSustained {
+            input,
+            expect_trials,
+            json_out,
+            markdown_out,
+        } => {
+            let code = sustained::run(sustained::SustainedArgs {
+                input: &input,
                 expect_trials,
                 json_out: json_out.as_deref(),
                 markdown_out: markdown_out.as_deref(),

@@ -266,7 +266,7 @@ Foreground timing fields:
 
 Recursive on-disk-size measurement is deliberately absent from window boundaries so the harness does not create artificial compaction catch-up pauses. Aggregate `db_bytes_before`, `db_bytes_after_foreground` and `db_bytes_final` bracket the run instead. `post_workload_settle`, when requested, uses the existing sampled deferred-work object while the engine remains open.
 
-`scripts/summarize-sustained.py` preserves per-trial derived metrics and aggregates exact-compatible trials. Baseline-relative 75/50/25% throughput thresholds, p99 multipliers and recovery positions are diagnostics only; no threshold makes a benchmark case pass or fail. Process `write_bytes / logical_mutated_bytes` is a useful host-visible write-amplification proxy but is not a physical-device write-amplification measurement.
+`scripts/benchctl.sh summarize-sustained` preserves per-trial derived metrics and aggregates exact-compatible trials. Baseline-relative 75/50/25% throughput thresholds, p99 multipliers and recovery positions are diagnostics only; no threshold makes a benchmark case pass or fail. Process `write_bytes / logical_mutated_bytes` is a useful host-visible write-amplification proxy but is not a physical-device write-amplification measurement.
 
 ## Record sustained-write lane — schema v7
 

@@ -217,11 +217,20 @@ mod tests {
     use super::{TsdbMergeArgs, merge};
     use anyhow::Result;
     use serde_json::json;
-    use std::{fs, path::PathBuf};
+    use std::{
+        fs,
+        path::PathBuf,
+        sync::atomic::{AtomicU64, Ordering},
+    };
+
+    static NEXT_ROOT: AtomicU64 = AtomicU64::new(0);
 
     fn root() -> Result<PathBuf> {
-        let root =
-            std::env::temp_dir().join(format!("all-db-bench-tsdb-merge-{}", std::process::id()));
+        let suffix = NEXT_ROOT.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "all-db-bench-tsdb-merge-{}-{suffix}",
+            std::process::id()
+        ));
         if root.exists() {
             fs::remove_dir_all(&root)?;
         }
