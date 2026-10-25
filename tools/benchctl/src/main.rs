@@ -1,5 +1,6 @@
 #![recursion_limit = "256"]
 mod compression;
+mod cpu_pressure;
 mod idle;
 mod import_concurrency;
 mod io_baseline;
@@ -30,6 +31,9 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    CpuPressureWorker {
+        duty_percent: f64,
+    },
     CheckExternalNoise {
         #[arg(long, default_value_t = 15)]
         ignore_nice_at_least: i32,
@@ -252,6 +256,7 @@ enum Command {
 
 fn main() -> Result<()> {
     match Cli::parse().command {
+        Command::CpuPressureWorker { duty_percent } => cpu_pressure::run(duty_percent),
         Command::CheckExternalNoise {
             ignore_nice_at_least,
             json_out,

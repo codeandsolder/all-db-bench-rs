@@ -21,7 +21,7 @@ case "$PROFILE" in
   *) echo "usage: $0 [smoke|quick|full]" >&2; exit 2 ;;
 esac
 
-ROOT=${ROOT:-/srv/scratch/db-bench-2026-09-27}
+ROOT=${ROOT:-"$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"}
 
 expand_cpu_list() {
   local spec part start end cpu
@@ -66,6 +66,15 @@ cat > "$RUN_DIR/support.json" <<JSON
 JSON
 
 TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target}
+BENCHCTL_TARGET_DIR=${BENCHCTL_TARGET_DIR:-$TARGET_DIR}
+if [[ -n "${BENCHCTL_BIN:-}" ]]; then
+  BENCHCTL="$BENCHCTL_BIN"
+  [[ -x "$BENCHCTL" ]] || { echo "BENCHCTL_BIN is not executable: $BENCHCTL" >&2; exit 2; }
+else
+  BENCHCTL="$BENCHCTL_TARGET_DIR/debug/all-db-benchctl"
+  CARGO_TARGET_DIR="$BENCHCTL_TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" build --locked \
+    --manifest-path "$ROOT/tools/benchctl/Cargo.toml" --bin all-db-benchctl || exit $?
+fi
 if [[ -n "${BENCH_BIN:-}" ]]; then
   BIN="$BENCH_BIN"
   [[ -x "$BIN" ]] || { echo "BENCH_BIN is not executable: $BIN" >&2; exit 2; }
@@ -122,7 +131,7 @@ start_burners() {
   # contention points.
   local cpu
   for cpu in "${CPU_IDS[@]}"; do
-    taskset -c "$cpu" uv run --no-project python "$ROOT/scripts/cpu-pressure-worker.py" "$pct"       >/dev/null 2>&1 &
+    taskset -c "$cpu" "$BENCHCTL" cpu-pressure-worker "$pct" >/dev/null 2>&1 &
     BURN_PIDS+=("$!")
     BURN_WORKERS=$((BURN_WORKERS + 1))
   done
