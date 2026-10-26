@@ -1,4 +1,5 @@
 #![recursion_limit = "256"]
+mod baseline_selection;
 mod baseline_sizing;
 mod compression;
 mod cpu_pressure;
@@ -20,7 +21,7 @@ mod sustained;
 mod tsdb;
 mod tsdb_merge;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
@@ -67,6 +68,53 @@ enum Command {
         json_out: PathBuf,
         #[arg(long)]
         markdown_out: Option<PathBuf>,
+    },
+    SelectBaselineSizingResults {
+        stock_results: PathBuf,
+        audit: PathBuf,
+        resize_root: PathBuf,
+        #[arg(long)]
+        ndjson_out: PathBuf,
+        #[arg(long)]
+        manifest_out: PathBuf,
+        #[arg(long, default_value = "20261006-kv-resize-v4")]
+        resize_prefix: String,
+        #[arg(long)]
+        quality_repair_plan: Option<PathBuf>,
+        #[arg(long)]
+        allow_missing_resize: bool,
+    },
+    FinalizeBaselineSizing {
+        #[arg(long)]
+        repo: PathBuf,
+        #[arg(long, conflicts_with = "record_only")]
+        kv_only: bool,
+        #[arg(long, conflicts_with = "kv_only")]
+        record_only: bool,
+        #[arg(long)]
+        kv_stock_results: Option<PathBuf>,
+        #[arg(long)]
+        kv_audit: Option<PathBuf>,
+        #[arg(long, default_value = "kv-resize")]
+        kv_resize_prefix: String,
+        #[arg(long)]
+        kv_out_dir: Option<PathBuf>,
+        #[arg(long)]
+        kv_quality_repair_plan: Option<PathBuf>,
+        #[arg(long)]
+        kv_skip_quality_repairs: bool,
+        #[arg(long)]
+        record_stock_results: Option<PathBuf>,
+        #[arg(long)]
+        record_audit: Option<PathBuf>,
+        #[arg(long, default_value = "record-resize")]
+        record_resize_prefix: String,
+        #[arg(long)]
+        record_out_dir: Option<PathBuf>,
+        #[arg(long)]
+        record_quality_repair_plan: Option<PathBuf>,
+        #[arg(long)]
+        record_skip_quality_repairs: bool,
     },
     CpuPressureWorker {
         duty_percent: f64,
@@ -362,6 +410,96 @@ fn main() -> Result<()> {
             json_out: &json_out,
             markdown_out: markdown_out.as_deref(),
         }),
+        Command::SelectBaselineSizingResults {
+            stock_results,
+            audit,
+            resize_root,
+            ndjson_out,
+            manifest_out,
+            resize_prefix,
+            quality_repair_plan,
+            allow_missing_resize,
+        } => baseline_selection::run_select(baseline_selection::SelectArgs {
+            stock_results: &stock_results,
+            audit: &audit,
+            resize_root: &resize_root,
+            ndjson_out: &ndjson_out,
+            manifest_out: &manifest_out,
+            resize_prefix: &resize_prefix,
+            quality_repair_plan: quality_repair_plan.as_deref(),
+            allow_missing_resize,
+        }),
+        Command::FinalizeBaselineSizing {
+            repo,
+            kv_only,
+            record_only,
+            kv_stock_results,
+            kv_audit,
+            kv_resize_prefix,
+            kv_out_dir,
+            kv_quality_repair_plan,
+            kv_skip_quality_repairs,
+            record_stock_results,
+            record_audit,
+            record_resize_prefix,
+            record_out_dir,
+            record_quality_repair_plan,
+            record_skip_quality_repairs,
+        } => {
+            let run_kv = !record_only;
+            let run_record = !kv_only;
+            let mut lanes = Vec::new();
+            if run_kv {
+                baseline_selection::finalize_one(
+                    &repo,
+                    baseline_selection::FinalizeLane {
+                        stock_results: kv_stock_results
+                            .as_ref()
+                            .context("--kv-stock-results is required for the selected lane")?,
+                        audit: kv_audit
+                            .as_ref()
+                            .context("--kv-audit is required for the selected lane")?,
+                        resize_prefix: &kv_resize_prefix,
+                        out_dir: kv_out_dir
+                            .as_ref()
+                            .context("--kv-out-dir is required for the selected lane")?,
+                        quality_repair_plan: if kv_skip_quality_repairs {
+                            None
+                        } else {
+                            kv_quality_repair_plan.as_deref()
+                        },
+                        expected_groups: 180,
+                    },
+                )?;
+                lanes.push("kv=180 groups");
+            }
+            if run_record {
+                baseline_selection::finalize_one(
+                    &repo,
+                    baseline_selection::FinalizeLane {
+                        stock_results: record_stock_results
+                            .as_ref()
+                            .context("--record-stock-results is required for the selected lane")?,
+                        audit: record_audit
+                            .as_ref()
+                            .context("--record-audit is required for the selected lane")?,
+                        resize_prefix: &record_resize_prefix,
+                        out_dir: record_out_dir
+                            .as_ref()
+                            .context("--record-out-dir is required for the selected lane")?,
+                        quality_repair_plan: if record_skip_quality_repairs {
+                            None
+                        } else {
+                            record_quality_repair_plan.as_deref()
+                        },
+                        expected_groups: 40,
+                    },
+                )?;
+                lanes.push("record=40 groups");
+            }
+            println!("final baseline corpora validated: {}", lanes.join(" "));
+            Ok(())
+        }
         Command::CpuPressureWorker { duty_percent } => cpu_pressure::run(duty_percent),
         Command::SmokeRecordBinaries {
             bench_bin,

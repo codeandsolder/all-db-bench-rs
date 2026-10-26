@@ -268,7 +268,7 @@ def stages(
         (
             "finalize",
             [
-                script(repo, "finalize-baseline-sizing.py"), "--repo", str(repo),
+                script(repo, "benchctl.sh"), "finalize-baseline-sizing", "--repo", str(repo),
                 "--kv-stock-results", str(kv_stock / "results.ndjson"), "--kv-audit", str(paths.kv_audit),
                 "--kv-resize-prefix", paths.kv_resize_prefix, "--kv-out-dir", str(kv_selected),
                 "--kv-quality-repair-plan", str(paths.kv_quality_refined),

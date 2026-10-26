@@ -19,14 +19,16 @@ class RecordRunnerDefaultTests(unittest.TestCase):
         self.assertIn('20261009-record-full-v1-resize-v1', FOLLOWUP)
 
     def test_finalizer_uses_lane_specific_explicit_inputs(self) -> None:
-        finalizer = (ROOT / "scripts/finalize-baseline-sizing.py").read_text()
-        self.assertIn('parser.add_argument("--record-stock-results", type=Path)', finalizer)
-        self.assertIn('parser.add_argument("--record-audit", type=Path)', finalizer)
-        self.assertIn('record_stock_results = required_path(parser, args.record_stock_results, "--record-stock-results")', finalizer)
-        self.assertIn('record_audit = required_path(parser, args.record_audit, "--record-audit")', finalizer)
+        finalizer = (ROOT / "tools/benchctl/src/main.rs").read_text()
+        self.assertIn("FinalizeBaselineSizing", finalizer)
+        self.assertIn("record_stock_results: Option<PathBuf>", finalizer)
+        self.assertIn("record_audit: Option<PathBuf>", finalizer)
+        self.assertIn("--record-stock-results is required for the selected lane", finalizer)
+        self.assertIn("--record-audit is required for the selected lane", finalizer)
         self.assertNotIn("20261006-record-quick-stock-v4.json", finalizer)
         self.assertNotIn("20261006-record-stock-pressure-repairs-refined-v1.json", finalizer)
         self.assertNotIn("20261009-record-full-v1-resize-v1", finalizer)
+
 
 
 if __name__ == "__main__":
