@@ -188,7 +188,7 @@ def stages(
         (
             "kv-quality-plan",
             [
-                script(repo, "audit-stock-short-pressure.py"), str(kv_stock), str(paths.kv_audit),
+                script(repo, "benchctl.sh"), "audit-stock-short-pressure", str(kv_stock), str(paths.kv_audit),
                 "--lane", "kv", "--json-out", str(paths.kv_quality_initial),
                 "--markdown-out", str(paths.kv_quality_initial.with_suffix(".md")),
             ],
@@ -196,7 +196,7 @@ def stages(
         (
             "record-quality-plan",
             [
-                script(repo, "audit-stock-short-pressure.py"), str(record_stock), str(paths.record_audit),
+                script(repo, "benchctl.sh"), "audit-stock-short-pressure", str(record_stock), str(paths.record_audit),
                 "--lane", "record", "--json-out", str(paths.record_quality_initial),
                 "--markdown-out", str(paths.record_quality_initial.with_suffix(".md")),
             ],

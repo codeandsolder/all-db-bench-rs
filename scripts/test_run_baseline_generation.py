@@ -20,7 +20,6 @@ SPEC.loader.exec_module(MODULE)
 SCRIPT_NAMES = (
     "run-kv-quick-idle.py",
     "run-record-quick-idle.py",
-    "audit-stock-short-pressure.py",
     "run-kv-sizing-followups.py",
     "run-record-sizing-followups.py",
     "benchctl.sh",

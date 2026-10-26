@@ -14,6 +14,7 @@ mod process_tree;
 mod record_smoke;
 mod recovery;
 mod scaling;
+mod short_pressure;
 mod storage;
 mod summary;
 mod support;
@@ -64,6 +65,33 @@ enum Command {
         resize_root: PathBuf,
         #[arg(long)]
         resize_prefix: String,
+        #[arg(long)]
+        json_out: PathBuf,
+        #[arg(long)]
+        markdown_out: Option<PathBuf>,
+    },
+    ScrubShortTrialPressure {
+        run_dir: PathBuf,
+        #[arg(long, default_value_t = 0.5)]
+        max_elapsed_s: f64,
+        #[arg(long, default_value_t = 0.03)]
+        max_runqueue_fraction: f64,
+        #[arg(long, default_value_t = 0.05)]
+        max_cpu_psi_fraction: f64,
+        #[arg(long, default_value_t = 0.5)]
+        max_benchmark_cpu_share: f64,
+        #[arg(long = "case-id")]
+        case_id: Vec<String>,
+        #[arg(long = "interval", value_parser = ["measured", "open"])]
+        interval: Vec<String>,
+        #[arg(long)]
+        dry_run: bool,
+    },
+    AuditStockShortPressure {
+        run_dir: PathBuf,
+        sizing_audit: PathBuf,
+        #[arg(long, value_parser = ["kv", "record"])]
+        lane: String,
         #[arg(long)]
         json_out: PathBuf,
         #[arg(long)]
@@ -407,6 +435,45 @@ fn main() -> Result<()> {
             sizing_audit: &sizing_audit,
             resize_root: &resize_root,
             resize_prefix: &resize_prefix,
+            json_out: &json_out,
+            markdown_out: markdown_out.as_deref(),
+        }),
+        Command::ScrubShortTrialPressure {
+            run_dir,
+            max_elapsed_s,
+            max_runqueue_fraction,
+            max_cpu_psi_fraction,
+            max_benchmark_cpu_share,
+            case_id,
+            interval,
+            dry_run,
+        } => short_pressure::run_scrub(
+            &run_dir,
+            short_pressure::ScrubConfig {
+                max_elapsed_s,
+                max_runqueue_fraction,
+                max_cpu_psi_fraction,
+                max_benchmark_cpu_share,
+                dry_run,
+                cpu_count: None,
+                case_ids: case_id.into_iter().collect(),
+                intervals: if interval.is_empty() {
+                    vec!["measured".to_owned()]
+                } else {
+                    interval
+                },
+            },
+        ),
+        Command::AuditStockShortPressure {
+            run_dir,
+            sizing_audit,
+            lane,
+            json_out,
+            markdown_out,
+        } => short_pressure::run_audit_stock(short_pressure::AuditStockArgs {
+            run_dir: &run_dir,
+            sizing_audit: &sizing_audit,
+            lane: &lane,
             json_out: &json_out,
             markdown_out: markdown_out.as_deref(),
         }),
