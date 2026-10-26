@@ -7,7 +7,6 @@ RUSTC_REAL=$(rustup which rustc --toolchain 1.99.1)
 "$RUSTC_REAL" --version | rg '^rustc 1\.99\.1 '
 "$ROOT/scripts/cargo-local-1.99.sh" --version
 rg --version | head -1
-uv --version
 jq --version
 fio --version
 "$ROOT/scripts/ensure-sqlite-3.54.0.sh"
@@ -20,13 +19,9 @@ rustfmt +1.99.1 --edition 2024 \
   engines/surrealdb-rocksdb/src/bin/surrealdb-rocksdb-recordconcurrency.rs \
   engines/surrealdb-rocksdb/src/bin/surrealdb-rocksdb-recordsustained.rs --check
 bash -n scripts/*.sh
-"$ROOT/scripts/test-sccache-native-wrappers.sh"
-"$ROOT/scripts/test-record-result-cleanup.sh"
-"$ROOT/scripts/test-performance-runner-common.sh"
-"$ROOT/scripts/test-performance-admission.sh"
-"$ROOT/scripts/test-concurrency-runner-common.sh"
-uv run python -m py_compile scripts/*.py
-uv run python -m unittest discover -s scripts -p 'test_*.py'
+for test_script in "$ROOT"/scripts/test-*.sh; do
+  "$test_script"
+done
 
 BENCHCTL_TARGET_DIR=${BENCHCTL_TARGET_DIR:-${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target}}
 "$ROOT/scripts/cargo-local-1.99.sh" fmt \

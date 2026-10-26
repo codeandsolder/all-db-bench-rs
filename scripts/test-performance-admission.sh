@@ -65,12 +65,10 @@ for runner in "${runners[@]}"; do
   esac
 done
 
-for supervisor in run-record-quick-idle.py run-record-sizing-followups.py run-kv-sizing-followups.py; do
-  if rg -q 'scrub_short_pressure' "$ROOT/scripts/$supervisor"; then
-    echo "short-pressure acceptance selector returned in $supervisor" >&2
-    exit 1
-  fi
-done
+if rg -q 'scrub_short_pressure' "$ROOT/tools/benchctl/src/baseline_supervisor.rs"; then
+  echo "short-pressure acceptance selector returned in native baseline supervisor" >&2
+  exit 1
+fi
 
 for common in performance-runner-common.sh concurrency-runner-common.sh; do
   rg -Fq '${CASE_MIN_FREE_GIB:-${PERFORMANCE_MIN_FREE_GIB:-${MIN_FREE_GIB:-8}}}' "$ROOT/scripts/$common" || {
@@ -93,8 +91,8 @@ for runner in \
   run-record-concurrency-matrix.sh run-record-concurrency-plan.sh \
   run-kv-sustained-matrix.sh run-record-sustained-matrix.sh run-reopen-matrix.sh
 do
-  rg -q '"initial_min_free_gib"' "$ROOT/scripts/$runner" && \
-  rg -q '"case_min_free_gib"' "$ROOT/scripts/$runner" || {
+  rg -q 'initial_min_free_gib' "$ROOT/scripts/$runner" && \
+  rg -q 'case_min_free_gib' "$ROOT/scripts/$runner" || {
     echo "missing free-space provenance in $runner" >&2
     exit 1
   }

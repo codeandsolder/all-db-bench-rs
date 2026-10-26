@@ -9,7 +9,7 @@ case "$PROFILE" in
   *) echo "usage: $0 [smoke|quick|full]" >&2; exit 2 ;;
 esac
 
-ROOT=${ROOT:-/srv/scratch/db-bench-2026-09-27}
+ROOT=${ROOT:-"$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"}
 RUN_ID=${RUN_ID:-"$(date -u +%Y%m%dT%H%M%SZ)-crash-$PROFILE"}
 RUN_DIR="$ROOT/results/runs/$RUN_ID"
 DATA_DIR="${DBBENCH_STORAGE_ROOT:-$ROOT}/data/runs/$RUN_ID"

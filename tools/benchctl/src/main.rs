@@ -1,6 +1,8 @@
 #![recursion_limit = "256"]
+mod baseline_generation;
 mod baseline_selection;
 mod baseline_sizing;
+mod baseline_supervisor;
 mod compression;
 mod cpu_pressure;
 mod idle;
@@ -37,6 +39,98 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    BaselineGeneration {
+        #[arg(long)]
+        repo: PathBuf,
+        #[arg(long)]
+        generation_root: PathBuf,
+        #[arg(long)]
+        generation_id: String,
+        #[arg(long)]
+        kv_binary_manifest: PathBuf,
+        #[arg(long)]
+        record_binary_manifest: PathBuf,
+        #[arg(long, default_value = "/run/lock/all-db-bench-performance.lock")]
+        lock_file: PathBuf,
+        #[arg(long)]
+        watch: bool,
+        #[arg(long, default_value_t = 2.0)]
+        busy_sleep: f64,
+        #[arg(long)]
+        dry_run: bool,
+    },
+    BaselineQuickIdle {
+        #[arg(long)]
+        lane: String,
+        #[arg(long)]
+        repo: PathBuf,
+        #[arg(long)]
+        bench_bin: PathBuf,
+        #[arg(long)]
+        rocks_bench_bin: Option<PathBuf>,
+        #[arg(long)]
+        expected_bench_sha256: Option<String>,
+        #[arg(long)]
+        expected_rocks_bench_sha256: Option<String>,
+        #[arg(long)]
+        run_id: String,
+        #[arg(long, default_value = "/run/lock/all-db-bench-performance.lock")]
+        lock_file: PathBuf,
+        #[arg(long)]
+        status_file: PathBuf,
+        #[arg(long)]
+        audit_json: PathBuf,
+        #[arg(long)]
+        audit_markdown: PathBuf,
+        #[arg(long)]
+        watch: bool,
+        #[arg(long, default_value_t = 2.0)]
+        busy_sleep: f64,
+        #[arg(long, default_value_t = 5.0)]
+        max_io_full_avg10: f64,
+    },
+    BaselineSizingFollowups {
+        #[arg(long)]
+        lane: String,
+        #[arg(long)]
+        repo: PathBuf,
+        #[arg(long)]
+        plan: PathBuf,
+        #[arg(long)]
+        quality_plan: Option<PathBuf>,
+        #[arg(long)]
+        run_prefix: String,
+        #[arg(long)]
+        quality_only: bool,
+        #[arg(long)]
+        bench_bin: PathBuf,
+        #[arg(long)]
+        rocks_bench_bin: Option<PathBuf>,
+        #[arg(long)]
+        expected_bench_sha256: Option<String>,
+        #[arg(long)]
+        expected_rocks_bench_sha256: Option<String>,
+        #[arg(long, default_value = "/run/lock/all-db-bench-performance.lock")]
+        lock_file: PathBuf,
+        #[arg(long)]
+        status_file: PathBuf,
+        #[arg(long)]
+        limit: Option<usize>,
+        #[arg(long)]
+        watch: bool,
+        #[arg(long, default_value_t = 2.0)]
+        busy_sleep: f64,
+        #[arg(long, default_value_t = 5.0)]
+        max_io_full_avg10: f64,
+        #[arg(long, default_value_t = 5)]
+        calibration_count: usize,
+        #[arg(long, default_value_t = 1.5)]
+        calibration_min_seconds: f64,
+        #[arg(long)]
+        calibration_max_seconds: Option<f64>,
+        #[arg(long)]
+        dry_run: bool,
+    },
     AuditBaselineSizing {
         results: PathBuf,
         #[arg(long, default_value_t = 3)]
@@ -423,6 +517,121 @@ enum Command {
 
 fn main() -> Result<()> {
     match Cli::parse().command {
+        Command::BaselineGeneration {
+            repo,
+            generation_root,
+            generation_id,
+            kv_binary_manifest,
+            record_binary_manifest,
+            lock_file,
+            watch,
+            busy_sleep,
+            dry_run,
+        } => {
+            let code = baseline_generation::run(baseline_generation::GenerationArgs {
+                repo: &repo,
+                generation_root: &generation_root,
+                generation_id: &generation_id,
+                kv_binary_manifest: &kv_binary_manifest,
+                record_binary_manifest: &record_binary_manifest,
+                lock_file: &lock_file,
+                watch,
+                busy_sleep,
+                dry_run,
+            })?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+            Ok(())
+        }
+        Command::BaselineQuickIdle {
+            lane,
+            repo,
+            bench_bin,
+            rocks_bench_bin,
+            expected_bench_sha256,
+            expected_rocks_bench_sha256,
+            run_id,
+            lock_file,
+            status_file,
+            audit_json,
+            audit_markdown,
+            watch,
+            busy_sleep,
+            max_io_full_avg10,
+        } => {
+            let code = baseline_supervisor::run_quick(baseline_supervisor::QuickArgs {
+                lane: &lane,
+                repo: &repo,
+                bench_bin: &bench_bin,
+                rocks_bench_bin: rocks_bench_bin.as_deref(),
+                expected_bench_sha256: expected_bench_sha256.as_deref(),
+                expected_rocks_bench_sha256: expected_rocks_bench_sha256.as_deref(),
+                run_id: &run_id,
+                lock_file: &lock_file,
+                status_file: &status_file,
+                audit_json: &audit_json,
+                audit_markdown: &audit_markdown,
+                watch,
+                busy_sleep,
+                max_io_full_avg10,
+            })?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+            Ok(())
+        }
+        Command::BaselineSizingFollowups {
+            lane,
+            repo,
+            plan,
+            quality_plan,
+            run_prefix,
+            quality_only,
+            bench_bin,
+            rocks_bench_bin,
+            expected_bench_sha256,
+            expected_rocks_bench_sha256,
+            lock_file,
+            status_file,
+            limit,
+            watch,
+            busy_sleep,
+            max_io_full_avg10,
+            calibration_count,
+            calibration_min_seconds,
+            calibration_max_seconds,
+            dry_run,
+        } => {
+            let calibration_max_seconds =
+                calibration_max_seconds.unwrap_or(if lane == "record" { 15.0 } else { 6.0 });
+            let code = baseline_supervisor::run_followups(baseline_supervisor::FollowupArgs {
+                lane: &lane,
+                repo: &repo,
+                plan: &plan,
+                quality_plan: quality_plan.as_deref(),
+                run_prefix: &run_prefix,
+                quality_only,
+                bench_bin: &bench_bin,
+                rocks_bench_bin: rocks_bench_bin.as_deref(),
+                expected_bench_sha256: expected_bench_sha256.as_deref(),
+                expected_rocks_bench_sha256: expected_rocks_bench_sha256.as_deref(),
+                lock_file: &lock_file,
+                status_file: &status_file,
+                limit,
+                watch,
+                busy_sleep,
+                max_io_full_avg10,
+                calibration_count,
+                calibration_min_seconds,
+                calibration_max_seconds,
+                dry_run,
+            })?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+            Ok(())
+        }
         Command::AuditBaselineSizing {
             results,
             expect_trials,

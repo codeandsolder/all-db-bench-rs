@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 OUT=${1:?usage: capture-host-metadata.sh OUTPUT [BENCH_ROOT]}
-ROOT=${2:-/srv/scratch/db-bench-2026-09-27}
+ROOT=${2:-"$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"}
 mkdir -p "$(dirname "$OUT")"
 STORAGE_ROOT=${DBBENCH_STORAGE_ROOT:-$ROOT}
 PROFILE_SIDECAR="$(dirname "$OUT")/storage-profile.json"
@@ -54,7 +54,6 @@ fi
   echo "storage_profile_root=${DBBENCH_STORAGE_ROOT:-}"
   cc --version 2>/dev/null | head -n1 || true
   c++ --version 2>/dev/null | head -n1 || true
-  uv --version || true
   fio --version || true
   strace --version 2>/dev/null | head -n1 || true
   echo
@@ -135,7 +134,7 @@ fi
   cat /proc/diskstats
   echo
   echo "## provenance"
-  sha256sum Cargo.lock Cargo.toml rust-toolchain src/metrics.rs src/bin/*.rs scripts/*.sh scripts/*.py docs/*.md engines/surrealdb-rocksdb/Cargo.toml engines/surrealdb-rocksdb/Cargo.lock engines/surrealdb-rocksdb/src/*.rs 2>/dev/null | sort
+  sha256sum Cargo.lock Cargo.toml rust-toolchain src/metrics.rs src/bin/*.rs scripts/*.sh docs/*.md engines/surrealdb-rocksdb/Cargo.toml engines/surrealdb-rocksdb/Cargo.lock engines/surrealdb-rocksdb/src/*.rs 2>/dev/null | sort
   if [[ -x "$ROOT/.deps/sqlite-3.54.0/bin/sqlite3" ]]; then
     echo "sqlite_runtime=$("$ROOT/.deps/sqlite-3.54.0/bin/sqlite3" --version)"
   fi

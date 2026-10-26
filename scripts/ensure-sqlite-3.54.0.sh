@@ -36,19 +36,7 @@ if [[ ! -f "$TARBALL" ]]; then
   trap - EXIT
 fi
 
-actual_sha3=$(uv run python - "$TARBALL" <<'PY'
-import hashlib
-import pathlib
-import sys
-
-p = pathlib.Path(sys.argv[1])
-h = hashlib.sha3_256()
-with p.open("rb") as f:
-    for chunk in iter(lambda: f.read(1024 * 1024), b""):
-        h.update(chunk)
-print(h.hexdigest())
-PY
-)
+actual_sha3=$(openssl dgst -sha3-256 "$TARBALL" | awk '{print $2}')
 if [[ "$actual_sha3" != "$EXPECTED_SHA3" ]]; then
   echo "SQLite source SHA3-256 mismatch" >&2
   echo "expected: $EXPECTED_SHA3" >&2

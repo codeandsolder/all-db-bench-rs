@@ -9,7 +9,7 @@ case "$PROFILE" in
   *) echo "usage: $0 [smoke|quick|full]" >&2; exit 2 ;;
 esac
 
-ROOT=${ROOT:-/srv/scratch/db-bench-2026-09-27}
+ROOT=${ROOT:-"$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"}
 VALUE_BYTES=4096
 KEY_BYTES=16
 MEM_KIB=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)

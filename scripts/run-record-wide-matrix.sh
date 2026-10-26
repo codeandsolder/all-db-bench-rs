@@ -22,7 +22,7 @@ case "$PROFILE" in
     ;;
   *) echo "usage: $0 [smoke|quick|full]" >&2; exit 2 ;;
 esac
-ROOT=${ROOT:-/srv/scratch/db-bench-2026-09-27}
+ROOT=${ROOT:-"$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"}
 CPUS=$(getconf _NPROCESSORS_ONLN); LOAD1=$(awk '{print $1}' /proc/loadavg)
 if [[ "${ALLOW_BUSY:-0}" != 1 ]] && ! awk -v l="$LOAD1" -v c="$CPUS" 'BEGIN { exit !(l <= c * 1.5) }'; then
   echo "refusing wide record benchmark on busy host: load1=$LOAD1 visible_cpus=$CPUS" >&2

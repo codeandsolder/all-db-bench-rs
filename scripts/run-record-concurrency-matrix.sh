@@ -40,7 +40,7 @@ mkdir -p "$RUN_DIR"/{cases,stderr,noise} "$DATA_DIR"
 free_bytes=$(df -B1 --output=avail "$DATA_DIR" | tail -n1 | tr -d ' ')
 min_free_bytes=$((MIN_FREE_GIB * 1024 * 1024 * 1024))
 (( free_bytes >= min_free_bytes )) || { echo "refusing record concurrency run: free=$free_bytes required=$min_free_bytes" >&2; exit 75; }
-"$ROOT/scripts/ensure-sqlite-3.54.0.sh"
+[[ "${MATRIX_PLAN_ONLY:-0}" == 1 ]] || "$ROOT/scripts/ensure-sqlite-3.54.0.sh"
 [[ -s "$RUN_DIR/host-start.txt" ]] || "$ROOT/scripts/capture-host-metadata.sh" "$RUN_DIR/host-start.txt" "$ROOT"
 
 TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target}
@@ -121,29 +121,24 @@ done
 RESUME_ORDER_POLICY=fixed-initial; [[ "${MATRIX_RESUME_SHUFFLE_REMAINING:-0}" == 1 ]] && RESUME_ORDER_POLICY=reshuffle-remaining
 TOTAL=${#JOBS[@]}
 SUPPORT_NEW="$RUN_DIR/support.json.new"
-uv run --no-project python - "$SUPPORT_NEW" <<PY_SUPPORT
-import json,sys
-json.dump({
- "lane":"record-concurrency","profile":"$PROFILE","trials":$TRIALS,"records":$RECORDS,"default_ops":$OPS,"payload_bytes":$PAYLOAD,"txn_size":$TXN,
- "case_count":$TOTAL,"engines":"${ENGINES[*]}","clients":"${CLIENTS[*]}","workloads":"${WORKLOADS[*]}",
- "relaxed_clients":"${RELAXED_CLIENTS[*]}","stress_clients":"${STRESS_CLIENTS[*]}","tx_clients":"${TX_CLIENTS[*]}",
- "stress_payload":$STRESS_PAYLOAD,"hot_records":$HOT_RECORDS,"resume_order_policy":"$RESUME_ORDER_POLICY",
- "build_profile":"$BUILD_PROFILE","benchmark_binary_sha256":"$BIN_SHA","rocks_build_profile":"$ROCKS_BUILD_PROFILE","surrealdb_rocksdb_binary_sha256":"$ROCKS_BIN_SHA",
- "runner_sha256":"$RUNNER_SHA","concurrency_runner_common_sha256":"$CONCURRENCY_RUNNER_COMMON_SHA","continuous_noise_common_sha256":"$CONTINUOUS_NOISE_COMMON_SHA","concurrency_policy_sha256":"$CONCURRENCY_POLICY_SHA","noise_guard_sha256":"$NOISE_SHA","continuous_noise_guard_sha256":"$CONTINUOUS_NOISE_SHA","admission_policy":"$CONCURRENCY_ADMISSION_POLICY","continuous_noise_sample_ms":$CONTINUOUS_NOISE_SAMPLE_MS,"continuous_noise_max_cpu_percent":$CONTINUOUS_NOISE_MAX_CPU_PERCENT,"continuous_noise_max_io_average_mib_s":$CONTINUOUS_NOISE_MAX_IO_AVERAGE_MIB_S,"continuous_noise_max_io_rate_mib_s":$CONTINUOUS_NOISE_MAX_IO_RATE_MIB_S,"initial_min_free_gib":$MIN_FREE_GIB,"case_min_free_gib":"$CASE_MIN_FREE_GIB","case_timeout_s":$CASE_TIMEOUT_S,
- "hostname":"$HOST_NAME","machine_id_sha256":"$MACHINE_ID_SHA256","filesystem":"$FILESYSTEM","source":"$SOURCE",
- "total_work_semantics":"ops is total logical work across all clients; it is not multiplied by client count",
- "writer_semantics":"write-burst partitions whole transactions only; clients never receive a benchmark-manufactured partial transaction",
- "surreal_conflict_policy":"retry only typed transaction conflicts, bounded at 10000; retry time stays inside measured latency"
-},open(sys.argv[1],"w"),sort_keys=True,separators=(",",":"))
-PY_SUPPORT
+printf '%s' "$(jq -cnS \
+  --arg lane record-concurrency --arg profile "$PROFILE" --argjson trials "$TRIALS" --argjson records "$RECORDS" --argjson default_ops "$OPS" --argjson payload "$PAYLOAD" --argjson txn "$TXN" --argjson case_count "$TOTAL" \
+  --arg engines "${ENGINES[*]}" --arg clients "${CLIENTS[*]}" --arg workloads "${WORKLOADS[*]}" --arg relaxed_clients "${RELAXED_CLIENTS[*]}" --arg stress_clients "${STRESS_CLIENTS[*]}" --arg tx_clients "${TX_CLIENTS[*]}" --argjson stress_payload "$STRESS_PAYLOAD" --argjson hot_records "$HOT_RECORDS" \
+  --arg resume "$RESUME_ORDER_POLICY" --arg build "$BUILD_PROFILE" --arg bin_sha "$BIN_SHA" --arg rocks_build "$ROCKS_BUILD_PROFILE" --arg rocks_sha "$ROCKS_BIN_SHA" --arg runner_sha "$RUNNER_SHA" --arg common_sha "$CONCURRENCY_RUNNER_COMMON_SHA" --arg noise_common_sha "$CONTINUOUS_NOISE_COMMON_SHA" --arg policy_sha "$CONCURRENCY_POLICY_SHA" --arg noise_sha "$NOISE_SHA" --arg continuous_sha "$CONTINUOUS_NOISE_SHA" --arg admission "$CONCURRENCY_ADMISSION_POLICY" \
+  --argjson sample_ms "$CONTINUOUS_NOISE_SAMPLE_MS" --argjson max_cpu "$CONTINUOUS_NOISE_MAX_CPU_PERCENT" --argjson max_io_avg "$CONTINUOUS_NOISE_MAX_IO_AVERAGE_MIB_S" --argjson max_io_rate "$CONTINUOUS_NOISE_MAX_IO_RATE_MIB_S" --argjson min_free "$MIN_FREE_GIB" --arg case_min_free "$CASE_MIN_FREE_GIB" --argjson timeout "$CASE_TIMEOUT_S" --arg hostname "$HOST_NAME" --arg machine "$MACHINE_ID_SHA256" --arg filesystem "$FILESYSTEM" --arg source "$SOURCE" \
+  '{lane:$lane,profile:$profile,trials:$trials,records:$records,default_ops:$default_ops,payload_bytes:$payload,txn_size:$txn,case_count:$case_count,engines:$engines,clients:$clients,workloads:$workloads,relaxed_clients:$relaxed_clients,stress_clients:$stress_clients,tx_clients:$tx_clients,stress_payload:$stress_payload,hot_records:$hot_records,resume_order_policy:$resume,build_profile:$build,benchmark_binary_sha256:$bin_sha,rocks_build_profile:$rocks_build,surrealdb_rocksdb_binary_sha256:$rocks_sha,runner_sha256:$runner_sha,concurrency_runner_common_sha256:$common_sha,continuous_noise_common_sha256:$noise_common_sha,concurrency_policy_sha256:$policy_sha,noise_guard_sha256:$noise_sha,continuous_noise_guard_sha256:$continuous_sha,admission_policy:$admission,continuous_noise_sample_ms:$sample_ms,continuous_noise_max_cpu_percent:$max_cpu,continuous_noise_max_io_average_mib_s:$max_io_avg,continuous_noise_max_io_rate_mib_s:$max_io_rate,initial_min_free_gib:$min_free,case_min_free_gib:$case_min_free,case_timeout_s:$timeout,hostname:$hostname,machine_id_sha256:$machine,filesystem:$filesystem,source:$source,total_work_semantics:"ops is total logical work across all clients; it is not multiplied by client count",writer_semantics:"write-burst partitions whole transactions only; clients never receive a benchmark-manufactured partial transaction",surreal_conflict_policy:"retry only typed transaction conflicts, bounded at 10000; retry time stays inside measured latency"}')" > "$SUPPORT_NEW"
 EXISTING_CASES=$(find "$RUN_DIR/cases" -type f -name '*.json' | wc -l)
 if [[ -s "$RUN_DIR/support.json" ]]; then
-  if ! cmp -s "$RUN_DIR/support.json" "$SUPPORT_NEW"; then
+  if ! jq -e -s '.[0] == .[1]' "$RUN_DIR/support.json" "$SUPPORT_NEW" >/dev/null; then
     if (( EXISTING_CASES > 0 )); then rm -f "$SUPPORT_NEW"; echo "refusing record concurrency resume: support identity changed" >&2; exit 2; fi
     mv "$SUPPORT_NEW" "$RUN_DIR/support.json"
   else rm -f "$SUPPORT_NEW"; fi
 else mv "$SUPPORT_NEW" "$RUN_DIR/support.json"; fi
 concurrency_prepare_order "$RUN_DIR" "$RESUME_ORDER_POLICY" "${JOBS[@]}" || exit $?
+if [[ "${MATRIX_PLAN_ONLY:-0}" == 1 ]]; then
+  printf 'run=%s total=%s plan_only=1 support=%s\n' "$RUN_ID" "$TOTAL" "$RUN_DIR/support.json"
+  exit 0
+fi
 
 INDEX=0
 for job in "${ORDERED[@]}"; do

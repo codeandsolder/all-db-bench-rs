@@ -27,7 +27,7 @@ case "$PROFILE" in
   *) echo "usage: $0 [smoke|quick|full]" >&2; exit 2 ;;
 esac
 
-ROOT=${ROOT:-/srv/scratch/db-bench-2026-09-27}
+ROOT=${ROOT:-"$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"}
 # shellcheck source=kv-matrix-policy.sh
 source "$ROOT/scripts/kv-matrix-policy.sh"
 CPUS=$(getconf _NPROCESSORS_ONLN)

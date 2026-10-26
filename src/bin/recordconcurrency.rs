@@ -6,7 +6,7 @@
 mod base;
 
 use anyhow::{Context, Result, bail};
-use base::{Durability, Engine, EngineKind, RecordData, Workload};
+use base::{Durability, Engine, EngineKind, PayloadPattern, RecordData, Workload, payload_for};
 use clap::{Parser, ValueEnum};
 use hdrhistogram::Histogram;
 use rand::{RngExt, SeedableRng, rngs::SmallRng};
@@ -156,7 +156,7 @@ async fn prefill(engine: &Engine, args: &Args) -> Result<()> {
             id,
             RecordData {
                 bucket: (id % 100) as u32,
-                payload: base::payload(id, args.payload_bytes, args.seed),
+                payload: payload_for(PayloadPattern::HexRandom, id, args.payload_bytes, args.seed),
             },
         ));
         if rows.len() == batch {
@@ -324,7 +324,8 @@ async fn run_client(
                     let id = rng.random_range(0..args.records);
                     let data = RecordData {
                         bucket: (id % 100) as u32,
-                        payload: base::payload(
+                        payload: payload_for(
+                            PayloadPattern::HexRandom,
                             id,
                             args.payload_bytes,
                             args.seed ^ global_offset ^ done,
@@ -356,7 +357,12 @@ async fn run_client(
                 };
                 let data = RecordData {
                     bucket: (id % 100) as u32,
-                    payload: base::payload(id, args.payload_bytes, payload_seed),
+                    payload: payload_for(
+                        PayloadPattern::HexRandom,
+                        id,
+                        args.payload_bytes,
+                        payload_seed,
+                    ),
                 };
                 let t = Instant::now();
                 write_conflict_retries += upsert_one_with_retry(engine, id, &data).await?;
@@ -388,7 +394,12 @@ async fn run_client(
                         id,
                         RecordData {
                             bucket: (id % 100) as u32,
-                            payload: base::payload(id, args.payload_bytes, payload_seed),
+                            payload: payload_for(
+                                PayloadPattern::HexRandom,
+                                id,
+                                args.payload_bytes,
+                                payload_seed,
+                            ),
                         },
                     ));
                 }

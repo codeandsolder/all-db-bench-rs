@@ -2,7 +2,7 @@
 
 Canonical repository: https://github.com/codeandsolder/all-db-bench-rs
 
-The current primary validation/benchmark host is the 8-logical-CPU laptop checkout at /srv/scratch/db-bench-2026-09-27. Results remain host-scoped; do not combine laptop and older cold-storage measurements.
+The current primary validation/benchmark host is the Acer laptop checkout at /home/jan/projects/all-db-bench-rs. Results remain host-scoped; do not combine laptop and older cold-storage measurements.
 
 A replacement for the earlier redb/Turso/Fjall growth-loop benchmark, designed around fixed workloads, fresh databases, explicit durability and repeated randomized trials.
 
@@ -51,7 +51,7 @@ The summarizer aggregates independent trials using the median and IQR. It does n
 
     ./scripts/validate.sh
 
-The static validation gate checks the pinned Rust 1.99.1 toolchain, formatting, shell syntax, all Python analysis scripts through `uv`, all in-tree benchmark binaries, and the isolated SurrealDB/RocksDB package. Run the smoke matrices after that to exercise every configured adapter against real database files.
+The static validation gate checks the pinned Rust 1.99.1 toolchain, formatting, shell syntax, the shell policy gates, all in-tree benchmark binaries, and the isolated SurrealDB/RocksDB package. Run the smoke matrices after that to exercise every configured adapter against real database files.
 
 ## Wide/comprehensive campaigns
 
@@ -166,4 +166,4 @@ The record lane includes SurrealDB 3.3.4 on its internal SurrealKV 0.21.4 backen
 
 Final benchmark binaries use rustc 1.99.1 with `target-cpu=native` through `scripts/cargo-local-1.99.sh`. The wrapper requires the dedicated sccache daemon on port 4237 and refuses uncached fallback. Our sccache fork resolves the requesting host native CPU/features, hashes that profile into the cache key, and rewrites distributed Rust native codegen to a proven-equivalent explicit CPU/feature set; unresolved native requests are not guessed. The native lane therefore shares the ordinary scheduler and Garage cache safely.
 
-Fresh baseline publication is orchestrated by `scripts/run-baseline-generation.py`: one generation ID/root names the KV and record stock runs, sizing and short-pressure repair plans, follow-up prefixes, selected corpora and readiness certificates. All measurement stages use the same pinned source commit/binary manifests and continuous-v3 admission; historical publication generations remain immutable rather than being resumed under new binaries.
+Fresh baseline publication is orchestrated by `scripts/benchctl.sh baseline-generation`: one generation ID/root names the KV and record stock runs, sizing and short-pressure repair plans, follow-up prefixes, selected corpora and readiness certificates. All measurement stages use the same pinned source commit/binary manifests and continuous-v3 admission; historical publication generations remain immutable rather than being resumed under new binaries.

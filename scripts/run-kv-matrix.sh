@@ -93,27 +93,18 @@ for trial in $(seq 1 "$TRIALS"); do
 done
 
 SUPPORT_NEW="$RUN_DIR/support.json.new"
-uv run --no-project python - "$SUPPORT_NEW" <<PY_SUPPORT
-import json, sys
-json.dump({
-  "lane":"kv", "profile":"$PROFILE", "trials":$TRIALS,
-  "records":$RECORDS, "ops":$OPS, "value_bytes":256, "txn_size":100, "scan_len":100,
-  "lsmdb_range_scan_ops":$LSMDB_RANGE_OPS,
-  "lsmdb_range_target_traversed_entries":$KV_LSMDB_RANGE_TARGET_TRAVERSED_ENTRIES,
-  "lsmdb_range_min_ops":$KV_LSMDB_RANGE_MIN_OPS,
-  "tiny_txn_ops":$TINY_TXN_OPS,
-  "tiny_txn_divisor":10,
-  "imported_from_run":"$KV_IMPORTED_FROM_RUN",
-  "imported_cases_manifest_sha256":"$IMPORTED_CASES_MANIFEST_SHA",
-  "engines":"${ENGINES[*]}", "workloads":"${WORKLOADS[*]}", "durabilities":"${DURABILITIES[*]}",
-  "resume_order_policy":"$RESUME_ORDER_POLICY", "build_profile":"$BUILD_PROFILE",
-  "benchmark_binary_sha256":"$BIN_SHA", "runner_sha256":"$RUNNER_SHA", "kv_matrix_policy_sha256":"$POLICY_SHA", "performance_common_sha256":"$COMMON_SHA", "continuous_noise_common_sha256":"$CONTINUOUS_NOISE_COMMON_SHA", "noise_guard_sha256":"$NOISE_SHA", "continuous_noise_guard_sha256":"$CONTINUOUS_NOISE_SHA", "admission_policy":"$PERFORMANCE_ADMISSION_POLICY","continuous_noise_sample_ms":$CONTINUOUS_NOISE_SAMPLE_MS,"continuous_noise_max_cpu_percent":$CONTINUOUS_NOISE_MAX_CPU_PERCENT,"continuous_noise_max_io_average_mib_s":$CONTINUOUS_NOISE_MAX_IO_AVERAGE_MIB_S,"continuous_noise_max_io_rate_mib_s":$CONTINUOUS_NOISE_MAX_IO_RATE_MIB_S,"initial_min_free_gib":$MIN_FREE_GIB,"case_min_free_gib":"$CASE_MIN_FREE_GIB",
-  "hostname":"$HOST_NAME", "machine_id_sha256":"$MACHINE_ID_SHA256", "filesystem":"$FILESYSTEM", "source":"$SOURCE"
-}, open(sys.argv[1], "w"), sort_keys=True, separators=(",",":"))
-PY_SUPPORT
+printf '%s' "$(jq -cnS \
+  --arg lane kv --arg profile "$PROFILE" --argjson trials "$TRIALS" --argjson records "$RECORDS" --argjson ops "$OPS" \
+  --argjson lsmdb_ops "$LSMDB_RANGE_OPS" --argjson lsmdb_target "$KV_LSMDB_RANGE_TARGET_TRAVERSED_ENTRIES" --argjson lsmdb_min "$KV_LSMDB_RANGE_MIN_OPS" --argjson tiny_ops "$TINY_TXN_OPS" \
+  --arg imported_from_run "$KV_IMPORTED_FROM_RUN" --arg imported_manifest "$IMPORTED_CASES_MANIFEST_SHA" \
+  --arg engines "${ENGINES[*]}" --arg workloads "${WORKLOADS[*]}" --arg durabilities "${DURABILITIES[*]}" \
+  --arg resume "$RESUME_ORDER_POLICY" --arg build "$BUILD_PROFILE" --arg bin_sha "$BIN_SHA" --arg runner_sha "$RUNNER_SHA" --arg policy_sha "$POLICY_SHA" --arg common_sha "$COMMON_SHA" --arg noise_common_sha "$CONTINUOUS_NOISE_COMMON_SHA" --arg noise_sha "$NOISE_SHA" --arg continuous_sha "$CONTINUOUS_NOISE_SHA" --arg admission "$PERFORMANCE_ADMISSION_POLICY" \
+  --argjson sample_ms "$CONTINUOUS_NOISE_SAMPLE_MS" --argjson max_cpu "$CONTINUOUS_NOISE_MAX_CPU_PERCENT" --argjson max_io_avg "$CONTINUOUS_NOISE_MAX_IO_AVERAGE_MIB_S" --argjson max_io_rate "$CONTINUOUS_NOISE_MAX_IO_RATE_MIB_S" --argjson min_free "$MIN_FREE_GIB" --arg case_min_free "$CASE_MIN_FREE_GIB" \
+  --arg hostname "$HOST_NAME" --arg machine "$MACHINE_ID_SHA256" --arg filesystem "$FILESYSTEM" --arg source "$SOURCE" \
+  '{lane:$lane,profile:$profile,trials:$trials,records:$records,ops:$ops,value_bytes:256,txn_size:100,scan_len:100,lsmdb_range_scan_ops:$lsmdb_ops,lsmdb_range_target_traversed_entries:$lsmdb_target,lsmdb_range_min_ops:$lsmdb_min,tiny_txn_ops:$tiny_ops,tiny_txn_divisor:10,imported_from_run:$imported_from_run,imported_cases_manifest_sha256:$imported_manifest,engines:$engines,workloads:$workloads,durabilities:$durabilities,resume_order_policy:$resume,build_profile:$build,benchmark_binary_sha256:$bin_sha,runner_sha256:$runner_sha,kv_matrix_policy_sha256:$policy_sha,performance_common_sha256:$common_sha,continuous_noise_common_sha256:$noise_common_sha,noise_guard_sha256:$noise_sha,continuous_noise_guard_sha256:$continuous_sha,admission_policy:$admission,continuous_noise_sample_ms:$sample_ms,continuous_noise_max_cpu_percent:$max_cpu,continuous_noise_max_io_average_mib_s:$max_io_avg,continuous_noise_max_io_rate_mib_s:$max_io_rate,initial_min_free_gib:$min_free,case_min_free_gib:$case_min_free,hostname:$hostname,machine_id_sha256:$machine,filesystem:$filesystem,source:$source}')" > "$SUPPORT_NEW"
 EXISTING_CASES=$(find "$RUN_DIR/cases" -type f -name '*.json' | wc -l)
 if [[ -s "$RUN_DIR/support.json" ]]; then
-  if ! cmp -s "$RUN_DIR/support.json" "$SUPPORT_NEW"; then
+  if ! jq -e -s '.[0] == .[1]' "$RUN_DIR/support.json" "$SUPPORT_NEW" >/dev/null; then
     if (( EXISTING_CASES > 0 )); then rm -f "$SUPPORT_NEW"; echo "refusing KV resume: support identity changed" >&2; exit 2; fi
     mv "$SUPPORT_NEW" "$RUN_DIR/support.json"
   else rm -f "$SUPPORT_NEW"; fi

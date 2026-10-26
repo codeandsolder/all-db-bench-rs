@@ -64,7 +64,7 @@ pub(crate) struct IdleArgs<'a> {
     pub(crate) busy_sleep_s: f64,
 }
 
-fn verify_binary(path: &Path, expected_sha256: &str) -> Result<()> {
+pub(crate) fn verify_binary(path: &Path, expected_sha256: &str) -> Result<()> {
     let metadata = fs::metadata(path)
         .with_context(|| format!("pinned binary is not accessible: {}", path.display()))?;
     if !metadata.is_file() || metadata.permissions().mode() & 0o111 == 0 {
@@ -77,7 +77,7 @@ fn verify_binary(path: &Path, expected_sha256: &str) -> Result<()> {
     Ok(())
 }
 
-fn acquire_lock(path: &Path) -> Result<Option<File>> {
+pub(crate) fn acquire_lock(path: &Path) -> Result<Option<File>> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create lock directory {}", parent.display()))?;
@@ -131,7 +131,7 @@ fn status_tmp_path(path: &Path) -> Result<PathBuf> {
     Ok(path.with_file_name(format!("{name}.tmp")))
 }
 
-fn write_status(path: &Path, mut fields: Map<String, Value>) -> Result<bool> {
+pub(crate) fn write_status(path: &Path, mut fields: Map<String, Value>) -> Result<bool> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create status directory {}", parent.display()))?;
@@ -193,7 +193,7 @@ fn status_failure(
     Ok(())
 }
 
-fn minimum_free_bytes(raw: &str) -> Result<u64> {
+pub(crate) fn minimum_free_bytes(raw: &str) -> Result<u64> {
     let gib = raw
         .parse::<f64>()
         .with_context(|| format!("invalid PERFORMANCE_MIN_FREE_GIB={raw:?}"))?;
@@ -207,7 +207,7 @@ fn minimum_free_bytes(raw: &str) -> Result<u64> {
     Ok(bytes as u64)
 }
 
-fn available_bytes(path: &Path) -> Result<u64> {
+pub(crate) fn available_bytes(path: &Path) -> Result<u64> {
     let output = Command::new("df")
         .args(["-B1", "--output=avail", "--"])
         .arg(path)
@@ -231,7 +231,7 @@ fn available_bytes(path: &Path) -> Result<u64> {
         .with_context(|| format!("invalid df available-byte value {raw:?}"))
 }
 
-fn storage_preflight(repo: &Path) -> i32 {
+pub(crate) fn storage_preflight(repo: &Path) -> i32 {
     let root = env::var_os("DBBENCH_STORAGE_ROOT")
         .map(PathBuf::from)
         .unwrap_or_else(|| repo.to_owned());
@@ -246,7 +246,7 @@ fn storage_preflight(repo: &Path) -> i32 {
     if free < required { 75 } else { 0 }
 }
 
-fn parse_io_full_avg10(raw: &str) -> Result<f64> {
+pub(crate) fn parse_io_full_avg10(raw: &str) -> Result<f64> {
     for line in raw.lines() {
         let mut fields = line.split_whitespace();
         if fields.next() != Some("full") {
@@ -263,7 +263,7 @@ fn parse_io_full_avg10(raw: &str) -> Result<f64> {
     bail!("/proc/pressure/io did not contain full avg10")
 }
 
-fn io_pressure_preflight(max_io_full_avg10: f64, pressure_path: &Path) -> i32 {
+pub(crate) fn io_pressure_preflight(max_io_full_avg10: f64, pressure_path: &Path) -> i32 {
     if env::var("DBBENCH_STORAGE_PROFILE_MODE").as_deref() == Ok("bounded") {
         return 0;
     }

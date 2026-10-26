@@ -25,7 +25,7 @@ mkdir -p "$RUN_DIR"/{cases,stderr,noise} "$DATA_DIR"
 free_bytes=$(df -B1 --output=avail "$DATA_DIR" | tail -n1 | tr -d ' ')
 min_free_bytes=$((MIN_FREE_GIB * 1024 * 1024 * 1024))
 (( free_bytes >= min_free_bytes )) || { echo "refusing record concurrency plan: free=$free_bytes required=$min_free_bytes" >&2; exit 75; }
-"$ROOT/scripts/ensure-sqlite-3.54.0.sh" >/dev/null
+[[ "${MATRIX_PLAN_ONLY:-0}" == 1 ]] || "$ROOT/scripts/ensure-sqlite-3.54.0.sh" >/dev/null
 [[ -s "$RUN_DIR/host-start.txt" ]] || "$ROOT/scripts/capture-host-metadata.sh" "$RUN_DIR/host-start.txt" "$ROOT"
 
 TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target}
@@ -99,27 +99,14 @@ TOTAL=${#JOBS[@]}
 (( TOTAL % EXPECT_TRIALS == 0 )) || { echo "plan case count not divisible by trials" >&2; exit 2; }
 
 SUPPORT_NEW="$RUN_DIR/support.json.new"
-uv run --no-project python - "$SUPPORT_NEW" <<PY_SUPPORT
-import json
-json.dump({
- "lane":"record-concurrency","profile":"quick","case_count":$TOTAL,"trials":$EXPECT_TRIALS,"expect_trials":$EXPECT_TRIALS,
- "plan_version":$PLAN_VERSION,"plan_kind":"$PLAN_KIND","read_materialization":"$READ_MATERIALIZATION","write_materialization":"$WRITE_MATERIALIZATION","plan_path":"$PLAN","plan_sha256":"$PLAN_SHA",
- "engines":"surrealdb turso sqlite surrealdb-rocksdb",
- "clients":"1 2 4 8","relaxed_clients":"1 4 8","stress_clients":"1 4 8","tx_clients":"1 4 8",
- "build_profile":"$BUILD_PROFILE","benchmark_binary_sha256":"$BIN_SHA","benchmark_source_commit":"$BENCH_SOURCE_COMMIT",
- "rocks_build_profile":"$ROCKS_BUILD_PROFILE","surrealdb_rocksdb_binary_sha256":"$ROCKS_BIN_SHA",
- "surrealdb_rocksdb_source_commit":"$ROCKS_BENCH_SOURCE_COMMIT","harness_commit":"$HARNESS_COMMIT",
- "runner_sha256":"$RUNNER_SHA","concurrency_runner_common_sha256":"$CONCURRENCY_RUNNER_COMMON_SHA","continuous_noise_common_sha256":"$CONTINUOUS_NOISE_COMMON_SHA","concurrency_policy_sha256":"$POLICY_SHA","noise_guard_sha256":"$NOISE_SHA","continuous_noise_guard_sha256":"$CONTINUOUS_NOISE_SHA",
- "admission_policy":"$CONCURRENCY_ADMISSION_POLICY","continuous_noise_sample_ms":$CONTINUOUS_NOISE_SAMPLE_MS,"continuous_noise_max_cpu_percent":$CONTINUOUS_NOISE_MAX_CPU_PERCENT,"continuous_noise_max_io_average_mib_s":$CONTINUOUS_NOISE_MAX_IO_AVERAGE_MIB_S,"continuous_noise_max_io_rate_mib_s":$CONTINUOUS_NOISE_MAX_IO_RATE_MIB_S,"initial_min_free_gib":$MIN_FREE_GIB,"case_min_free_gib":"$CASE_MIN_FREE_GIB","case_timeout_s":$CASE_TIMEOUT_S,
- "hostname":"$HOST_NAME","machine_id_sha256":"$MACHINE_ID_SHA256","filesystem":"$FILESYSTEM","source":"$SOURCE",
- "total_work_semantics":"each plan family keeps identical records and total ops across client counts",
- "state_evolution_semantics":"bounded tiny/write updates the prefilled record universe; growth preserves append diagnostics",
- "surreal_conflict_policy":"retry typed transaction conflicts only; retry time stays inside measured latency"
-},open("$SUPPORT_NEW","w"),sort_keys=True,separators=(",",":"))
-PY_SUPPORT
+printf '%s' "$(jq -cnS \
+  --argjson case_count "$TOTAL" --argjson trials "$EXPECT_TRIALS" --argjson plan_version "$PLAN_VERSION" --arg plan_kind "$PLAN_KIND" --arg read_materialization "$READ_MATERIALIZATION" --arg write_materialization "$WRITE_MATERIALIZATION" --arg plan_path "$PLAN" --arg plan_sha "$PLAN_SHA" \
+  --arg build "$BUILD_PROFILE" --arg bin_sha "$BIN_SHA" --arg bench_commit "$BENCH_SOURCE_COMMIT" --arg rocks_build "$ROCKS_BUILD_PROFILE" --arg rocks_sha "$ROCKS_BIN_SHA" --arg rocks_commit "$ROCKS_BENCH_SOURCE_COMMIT" --arg harness_commit "$HARNESS_COMMIT" --arg runner_sha "$RUNNER_SHA" --arg common_sha "$CONCURRENCY_RUNNER_COMMON_SHA" --arg noise_common_sha "$CONTINUOUS_NOISE_COMMON_SHA" --arg policy_sha "$POLICY_SHA" --arg noise_sha "$NOISE_SHA" --arg continuous_sha "$CONTINUOUS_NOISE_SHA" --arg admission "$CONCURRENCY_ADMISSION_POLICY" \
+  --argjson sample_ms "$CONTINUOUS_NOISE_SAMPLE_MS" --argjson max_cpu "$CONTINUOUS_NOISE_MAX_CPU_PERCENT" --argjson max_io_avg "$CONTINUOUS_NOISE_MAX_IO_AVERAGE_MIB_S" --argjson max_io_rate "$CONTINUOUS_NOISE_MAX_IO_RATE_MIB_S" --argjson min_free "$MIN_FREE_GIB" --arg case_min_free "$CASE_MIN_FREE_GIB" --argjson timeout "$CASE_TIMEOUT_S" --arg hostname "$HOST_NAME" --arg machine "$MACHINE_ID_SHA256" --arg filesystem "$FILESYSTEM" --arg source "$SOURCE" \
+  '{lane:"record-concurrency",profile:"quick",case_count:$case_count,trials:$trials,expect_trials:$trials,plan_version:$plan_version,plan_kind:$plan_kind,read_materialization:$read_materialization,write_materialization:$write_materialization,plan_path:$plan_path,plan_sha256:$plan_sha,engines:"surrealdb turso sqlite surrealdb-rocksdb",clients:"1 2 4 8",relaxed_clients:"1 4 8",stress_clients:"1 4 8",tx_clients:"1 4 8",build_profile:$build,benchmark_binary_sha256:$bin_sha,benchmark_source_commit:$bench_commit,rocks_build_profile:$rocks_build,surrealdb_rocksdb_binary_sha256:$rocks_sha,surrealdb_rocksdb_source_commit:$rocks_commit,harness_commit:$harness_commit,runner_sha256:$runner_sha,concurrency_runner_common_sha256:$common_sha,continuous_noise_common_sha256:$noise_common_sha,concurrency_policy_sha256:$policy_sha,noise_guard_sha256:$noise_sha,continuous_noise_guard_sha256:$continuous_sha,admission_policy:$admission,continuous_noise_sample_ms:$sample_ms,continuous_noise_max_cpu_percent:$max_cpu,continuous_noise_max_io_average_mib_s:$max_io_avg,continuous_noise_max_io_rate_mib_s:$max_io_rate,initial_min_free_gib:$min_free,case_min_free_gib:$case_min_free,case_timeout_s:$timeout,hostname:$hostname,machine_id_sha256:$machine,filesystem:$filesystem,source:$source,total_work_semantics:"each plan family keeps identical records and total ops across client counts",state_evolution_semantics:"bounded tiny/write updates the prefilled record universe; growth preserves append diagnostics",surreal_conflict_policy:"retry typed transaction conflicts only; retry time stays inside measured latency"}')" > "$SUPPORT_NEW"
 EXISTING_CASES=$(find "$RUN_DIR/cases" -type f -name '*.json' | wc -l)
 if [[ -s "$RUN_DIR/support.json" ]]; then
-  if ! cmp -s "$RUN_DIR/support.json" "$SUPPORT_NEW"; then
+  if ! jq -e -s '.[0] == .[1]' "$RUN_DIR/support.json" "$SUPPORT_NEW" >/dev/null; then
     if (( EXISTING_CASES > 0 )); then rm -f "$SUPPORT_NEW"; echo "refusing plan resume: support identity changed" >&2; exit 2; fi
     mv "$SUPPORT_NEW" "$RUN_DIR/support.json"
   else rm -f "$SUPPORT_NEW"; fi

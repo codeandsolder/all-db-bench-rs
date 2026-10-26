@@ -23,7 +23,7 @@ BATCH_SERIES=${TSDB_BATCH_SERIES_OVERRIDE:-$BATCH_SERIES}
 QUERY_ITERATIONS=${TSDB_QUERY_ITERATIONS_OVERRIDE:-$QUERY_ITERATIONS}
 BATCH_SAMPLES=${TSDB_BATCH_SAMPLES_OVERRIDE:-0}
 
-for tool in curl sha256sum uv awk shuf du cmp sort find findmnt hostname; do
+for tool in curl sha256sum awk shuf du cmp sort find findmnt hostname; do
   command -v "$tool" >/dev/null 2>&1 || { echo "missing required tool: $tool" >&2; exit 2; }
 done
 
@@ -320,7 +320,7 @@ for job in "${ORDERED[@]}"; do
   noise_before="$RUN_DIR/noise/$case_id.before.json"
   noise_after="$RUN_DIR/noise/$case_id.after.json"
 
-  if [[ -s "$out" ]] && uv run --no-project python -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["lane"]=="tsdb-server" and d["trial"]==int(sys.argv[2]) and d["engine"]==sys.argv[3]' "$out" "$trial" "$engine" >/dev/null 2>&1; then
+  if [[ -s "$out" ]] && jq -e --argjson trial "$trial" --arg engine "$engine" '.lane == "tsdb-server" and .trial == $trial and .engine == $engine' "$out" >/dev/null 2>&1; then
     clear_failure "$case_id"
     continue
   fi

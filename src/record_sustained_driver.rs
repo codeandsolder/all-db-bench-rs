@@ -1,7 +1,7 @@
 use crate::base::metrics::{ProcDelta, ProcSnapshot, SystemDelta, SystemSnapshot};
 use crate::base::{
-    Durability, Engine, EngineKind, Quantiles, READ_MATERIALIZATION, RecordData,
-    WRITE_MATERIALIZATION, dir_size, hist, payload, peak_rss_kib, quantiles, record,
+    Durability, Engine, EngineKind, PayloadPattern, Quantiles, READ_MATERIALIZATION, RecordData,
+    WRITE_MATERIALIZATION, dir_size, hist, payload_for, peak_rss_kib, quantiles, record,
 };
 use anyhow::{Context, Result, bail};
 use clap::{Parser, ValueEnum};
@@ -150,7 +150,7 @@ struct Measurement {
 fn row(id: u64, payload_bytes: usize, salt: u64) -> RecordData {
     RecordData {
         bucket: (id % 100) as u32,
-        payload: payload(id, payload_bytes, salt),
+        payload: payload_for(PayloadPattern::HexRandom, id, payload_bytes, salt),
     }
 }
 

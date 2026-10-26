@@ -92,22 +92,14 @@ TOTAL=${#JOBS[@]}
 (( TOTAL % EXPECT_TRIALS == 0 )) || { echo "plan case count is not divisible by expect_trials" >&2; exit 2; }
 
 SUPPORT_NEW="$RUN_DIR/support.json.new"
-uv run --no-project python - "$SUPPORT_NEW" <<PY_SUPPORT
-import json
-json.dump({
- "lane":"$SUPPORT_LANE","profile":"quick","case_count":$TOTAL,"trials":$EXPECT_TRIALS,"expect_trials":$EXPECT_TRIALS,"plan_version":$PLAN_VERSION,"plan_kind":"$PLAN_KIND",
- "clients":"1 2 4 8","range_clients":"1 4 8","delete_clients":"1 4 8","relaxed_clients":"1 4 8",
- "plan_path":"$PLAN","plan_sha256":"$PLAN_SHA","build_profile":"$BUILD_PROFILE","benchmark_binary_sha256":"$BIN_SHA","benchmark_source_commit":"$BENCH_SOURCE_COMMIT","harness_commit":"$HARNESS_COMMIT",
- "runner_sha256":"$RUNNER_SHA","concurrency_runner_common_sha256":"$CONCURRENCY_RUNNER_COMMON_SHA","continuous_noise_common_sha256":"$CONTINUOUS_NOISE_COMMON_SHA","concurrency_policy_sha256":"$CONCURRENCY_POLICY_SHA","noise_guard_sha256":"$NOISE_SHA","continuous_noise_guard_sha256":"$CONTINUOUS_NOISE_SHA","admission_policy":"$CONCURRENCY_ADMISSION_POLICY","continuous_noise_sample_ms":$CONTINUOUS_NOISE_SAMPLE_MS,"continuous_noise_max_cpu_percent":$CONTINUOUS_NOISE_MAX_CPU_PERCENT,"continuous_noise_max_io_average_mib_s":$CONTINUOUS_NOISE_MAX_IO_AVERAGE_MIB_S,"continuous_noise_max_io_rate_mib_s":$CONTINUOUS_NOISE_MAX_IO_RATE_MIB_S,"initial_min_free_gib":$MIN_FREE_GIB,"case_min_free_gib":"$CASE_MIN_FREE_GIB",
- "case_timeout_s":$CASE_TIMEOUT_S,"persy_lock_timeout_ms":$PERSY_LOCK_TIMEOUT_MS,
- "prepared_db_protocol":"$PREPARED_DB_PROTOCOL",
- "hostname":"$HOST_NAME","machine_id_sha256":"$MACHINE_ID_SHA256","filesystem":"$FILESYSTEM","source":"$SOURCE",
- "total_work_semantics":"each planned family keeps identical records and total ops across client counts"
-},open("$SUPPORT_NEW","w"),sort_keys=True,separators=(",",":"))
-PY_SUPPORT
+printf '%s' "$(jq -cnS \
+  --arg lane "$SUPPORT_LANE" --argjson case_count "$TOTAL" --argjson trials "$EXPECT_TRIALS" --argjson plan_version "$PLAN_VERSION" --arg plan_kind "$PLAN_KIND" --arg plan_path "$PLAN" --arg plan_sha "$PLAN_SHA" \
+  --arg build "$BUILD_PROFILE" --arg bin_sha "$BIN_SHA" --arg bench_commit "$BENCH_SOURCE_COMMIT" --arg harness_commit "$HARNESS_COMMIT" --arg runner_sha "$RUNNER_SHA" --arg common_sha "$CONCURRENCY_RUNNER_COMMON_SHA" --arg noise_common_sha "$CONTINUOUS_NOISE_COMMON_SHA" --arg policy_sha "$CONCURRENCY_POLICY_SHA" --arg noise_sha "$NOISE_SHA" --arg continuous_sha "$CONTINUOUS_NOISE_SHA" --arg admission "$CONCURRENCY_ADMISSION_POLICY" \
+  --argjson sample_ms "$CONTINUOUS_NOISE_SAMPLE_MS" --argjson max_cpu "$CONTINUOUS_NOISE_MAX_CPU_PERCENT" --argjson max_io_avg "$CONTINUOUS_NOISE_MAX_IO_AVERAGE_MIB_S" --argjson max_io_rate "$CONTINUOUS_NOISE_MAX_IO_RATE_MIB_S" --argjson min_free "$MIN_FREE_GIB" --arg case_min_free "$CASE_MIN_FREE_GIB" --argjson timeout "$CASE_TIMEOUT_S" --argjson persy_timeout "$PERSY_LOCK_TIMEOUT_MS" --arg prepared "$PREPARED_DB_PROTOCOL" --arg hostname "$HOST_NAME" --arg machine "$MACHINE_ID_SHA256" --arg filesystem "$FILESYSTEM" --arg source "$SOURCE" \
+  '{lane:$lane,profile:"quick",case_count:$case_count,trials:$trials,expect_trials:$trials,plan_version:$plan_version,plan_kind:$plan_kind,clients:"1 2 4 8",range_clients:"1 4 8",delete_clients:"1 4 8",relaxed_clients:"1 4 8",plan_path:$plan_path,plan_sha256:$plan_sha,build_profile:$build,benchmark_binary_sha256:$bin_sha,benchmark_source_commit:$bench_commit,harness_commit:$harness_commit,runner_sha256:$runner_sha,concurrency_runner_common_sha256:$common_sha,continuous_noise_common_sha256:$noise_common_sha,concurrency_policy_sha256:$policy_sha,noise_guard_sha256:$noise_sha,continuous_noise_guard_sha256:$continuous_sha,admission_policy:$admission,continuous_noise_sample_ms:$sample_ms,continuous_noise_max_cpu_percent:$max_cpu,continuous_noise_max_io_average_mib_s:$max_io_avg,continuous_noise_max_io_rate_mib_s:$max_io_rate,initial_min_free_gib:$min_free,case_min_free_gib:$case_min_free,case_timeout_s:$timeout,persy_lock_timeout_ms:$persy_timeout,prepared_db_protocol:$prepared,hostname:$hostname,machine_id_sha256:$machine,filesystem:$filesystem,source:$source,total_work_semantics:"each planned family keeps identical records and total ops across client counts"}')" > "$SUPPORT_NEW"
 EXISTING_CASES=$(find "$RUN_DIR/cases" -type f -name '*.json' | wc -l)
 if [[ -s "$RUN_DIR/support.json" ]]; then
-  if ! cmp -s "$RUN_DIR/support.json" "$SUPPORT_NEW"; then
+  if ! jq -e -s '.[0] == .[1]' "$RUN_DIR/support.json" "$SUPPORT_NEW" >/dev/null; then
     if (( EXISTING_CASES > 0 )); then rm -f "$SUPPORT_NEW"; echo "refusing plan resume: support identity changed" >&2; exit 2; fi
     mv "$SUPPORT_NEW" "$RUN_DIR/support.json"
   else rm -f "$SUPPORT_NEW"; fi

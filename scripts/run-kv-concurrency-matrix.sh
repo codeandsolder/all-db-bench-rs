@@ -105,35 +105,26 @@ done
 RESUME_ORDER_POLICY=fixed-initial; [[ "${MATRIX_RESUME_SHUFFLE_REMAINING:-0}" == 1 ]] && RESUME_ORDER_POLICY=reshuffle-remaining
 TOTAL=${#JOBS[@]}
 SUPPORT_NEW="$RUN_DIR/support.json.new"
-uv run --no-project python - "$SUPPORT_NEW" <<PY_SUPPORT
-import json,sys
-json.dump({
- "lane":"kv-concurrency","profile":"$PROFILE","trials":$TRIALS,"records":$RECORDS,"default_ops":$OPS,
- "case_count":$TOTAL,"shared_database":True,"total_ops_fixed_across_client_counts":True,
- "engines":"${ENGINES[*]}","clients":"${CLIENTS[*]}","core_workloads":"${CORE_WORKLOADS[*]}",
- "range_clients":"${RANGE_CLIENTS[*]}","delete_clients":"${DELETE_CLIENTS[*]}","relaxed_clients":"${RELAXED_CLIENTS[*]}",
- "resume_order_policy":"$RESUME_ORDER_POLICY","build_profile":"$BUILD_PROFILE","benchmark_binary_sha256":"$BIN_SHA",
- "runner_sha256":"$RUNNER_SHA","concurrency_runner_common_sha256":"$CONCURRENCY_RUNNER_COMMON_SHA","continuous_noise_common_sha256":"$CONTINUOUS_NOISE_COMMON_SHA","kv_matrix_policy_sha256":"$KV_POLICY_SHA","concurrency_policy_sha256":"$CONCURRENCY_POLICY_SHA",
- "noise_guard_sha256":"$NOISE_SHA","continuous_noise_guard_sha256":"$CONTINUOUS_NOISE_SHA","admission_policy":"$CONCURRENCY_ADMISSION_POLICY","continuous_noise_sample_ms":$CONTINUOUS_NOISE_SAMPLE_MS,"continuous_noise_max_cpu_percent":$CONTINUOUS_NOISE_MAX_CPU_PERCENT,"continuous_noise_max_io_average_mib_s":$CONTINUOUS_NOISE_MAX_IO_AVERAGE_MIB_S,"continuous_noise_max_io_rate_mib_s":$CONTINUOUS_NOISE_MAX_IO_RATE_MIB_S,"initial_min_free_gib":$MIN_FREE_GIB,"case_min_free_gib":"$CASE_MIN_FREE_GIB",
- "case_timeout_s":$DEFAULT_CASE_TIMEOUT_S,"engine_case_timeouts_s":{"sled":$(concurrency_case_timeout_s "$PROFILE" sled)},"persy_lock_timeout_ms":$PERSY_LOCK_TIMEOUT_MS,
- "state_evolution":"growth","write_pattern":"append",
- "persy_timeout_retry_policy":"typed PrepareError::TransactionTimeout only; max 100 retries; deterministic micro-backoff; retry cost is timed",
- "import_manifest_sha256":("$IMPORT_MANIFEST_SHA" or None),
- "hostname":"$HOST_NAME","machine_id_sha256":"$MACHINE_ID_SHA256","filesystem":"$FILESYSTEM","source":"$SOURCE",
- "unsupported":[
-   {"engine":"lkv","scope":"all concurrency workloads","reason":"no native clone/shared writer handle"},
-   {"engine":"paritydb-hash","scope":"range-scan","reason":"hash-column mode is unordered"}
- ]
-},open(sys.argv[1],"w"),sort_keys=True,separators=(",",":"))
-PY_SUPPORT
+SLED_CASE_TIMEOUT_S=$(concurrency_case_timeout_s "$PROFILE" sled) || exit 2
+printf '%s' "$(jq -cnS \
+  --arg lane kv-concurrency --arg profile "$PROFILE" --argjson trials "$TRIALS" --argjson records "$RECORDS" --argjson default_ops "$OPS" --argjson case_count "$TOTAL" \
+  --arg engines "${ENGINES[*]}" --arg clients "${CLIENTS[*]}" --arg core_workloads "${CORE_WORKLOADS[*]}" --arg range_clients "${RANGE_CLIENTS[*]}" --arg delete_clients "${DELETE_CLIENTS[*]}" --arg relaxed_clients "${RELAXED_CLIENTS[*]}" \
+  --arg resume "$RESUME_ORDER_POLICY" --arg build "$BUILD_PROFILE" --arg bin_sha "$BIN_SHA" --arg runner_sha "$RUNNER_SHA" --arg common_sha "$CONCURRENCY_RUNNER_COMMON_SHA" --arg noise_common_sha "$CONTINUOUS_NOISE_COMMON_SHA" --arg kv_policy_sha "$KV_POLICY_SHA" --arg policy_sha "$CONCURRENCY_POLICY_SHA" --arg noise_sha "$NOISE_SHA" --arg continuous_sha "$CONTINUOUS_NOISE_SHA" --arg admission "$CONCURRENCY_ADMISSION_POLICY" \
+  --argjson sample_ms "$CONTINUOUS_NOISE_SAMPLE_MS" --argjson max_cpu "$CONTINUOUS_NOISE_MAX_CPU_PERCENT" --argjson max_io_avg "$CONTINUOUS_NOISE_MAX_IO_AVERAGE_MIB_S" --argjson max_io_rate "$CONTINUOUS_NOISE_MAX_IO_RATE_MIB_S" --argjson min_free "$MIN_FREE_GIB" --arg case_min_free "$CASE_MIN_FREE_GIB" --argjson timeout "$DEFAULT_CASE_TIMEOUT_S" --argjson sled_timeout "$SLED_CASE_TIMEOUT_S" --argjson persy_timeout "$PERSY_LOCK_TIMEOUT_MS" \
+  --arg import_manifest "$IMPORT_MANIFEST_SHA" --arg hostname "$HOST_NAME" --arg machine "$MACHINE_ID_SHA256" --arg filesystem "$FILESYSTEM" --arg source "$SOURCE" \
+  '{lane:$lane,profile:$profile,trials:$trials,records:$records,default_ops:$default_ops,case_count:$case_count,shared_database:true,total_ops_fixed_across_client_counts:true,engines:$engines,clients:$clients,core_workloads:$core_workloads,range_clients:$range_clients,delete_clients:$delete_clients,relaxed_clients:$relaxed_clients,resume_order_policy:$resume,build_profile:$build,benchmark_binary_sha256:$bin_sha,runner_sha256:$runner_sha,concurrency_runner_common_sha256:$common_sha,continuous_noise_common_sha256:$noise_common_sha,kv_matrix_policy_sha256:$kv_policy_sha,concurrency_policy_sha256:$policy_sha,noise_guard_sha256:$noise_sha,continuous_noise_guard_sha256:$continuous_sha,admission_policy:$admission,continuous_noise_sample_ms:$sample_ms,continuous_noise_max_cpu_percent:$max_cpu,continuous_noise_max_io_average_mib_s:$max_io_avg,continuous_noise_max_io_rate_mib_s:$max_io_rate,initial_min_free_gib:$min_free,case_min_free_gib:$case_min_free,case_timeout_s:$timeout,engine_case_timeouts_s:{sled:$sled_timeout},persy_lock_timeout_ms:$persy_timeout,state_evolution:"growth",write_pattern:"append",persy_timeout_retry_policy:"typed PrepareError::TransactionTimeout only; max 100 retries; deterministic micro-backoff; retry cost is timed",import_manifest_sha256:($import_manifest|if length==0 then null else . end),hostname:$hostname,machine_id_sha256:$machine,filesystem:$filesystem,source:$source,unsupported:[{engine:"lkv",scope:"all concurrency workloads",reason:"no native clone/shared writer handle"},{engine:"paritydb-hash",scope:"range-scan",reason:"hash-column mode is unordered"}]}')" > "$SUPPORT_NEW"
 EXISTING_CASES=$(find "$RUN_DIR/cases" -type f -name '*.json' | wc -l)
 if [[ -s "$RUN_DIR/support.json" ]]; then
-  if ! cmp -s "$RUN_DIR/support.json" "$SUPPORT_NEW"; then
+  if ! jq -e -s '.[0] == .[1]' "$RUN_DIR/support.json" "$SUPPORT_NEW" >/dev/null; then
     if (( EXISTING_CASES > 0 )); then rm -f "$SUPPORT_NEW"; echo "refusing KV concurrency resume: support identity changed" >&2; exit 2; fi
     mv "$SUPPORT_NEW" "$RUN_DIR/support.json"
   else rm -f "$SUPPORT_NEW"; fi
 else mv "$SUPPORT_NEW" "$RUN_DIR/support.json"; fi
 concurrency_prepare_order "$RUN_DIR" "$RESUME_ORDER_POLICY" "${JOBS[@]}" || exit $?
+if [[ "${MATRIX_PLAN_ONLY:-0}" == 1 ]]; then
+  printf 'run=%s total=%s plan_only=1 support=%s\n' "$RUN_ID" "$TOTAL" "$RUN_DIR/support.json"
+  exit 0
+fi
 
 INDEX=0
 for job in "${ORDERED[@]}"; do

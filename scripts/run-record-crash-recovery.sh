@@ -18,7 +18,7 @@ case "$PROFILE" in
     ;;
 esac
 
-ROOT=${ROOT:-/srv/scratch/db-bench-2026-09-27}
+ROOT=${ROOT:-"$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"}
 RUN_ID=${RUN_ID:-"$(date -u +%Y%m%dT%H%M%SZ)-record-crash-$PROFILE"}
 RUN_DIR="$ROOT/results/runs/$RUN_ID"
 DATA_DIR="${DBBENCH_STORAGE_ROOT:-$ROOT}/data/runs/$RUN_ID"

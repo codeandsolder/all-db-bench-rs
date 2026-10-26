@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-ROOT=${1:-/srv/scratch/db-bench-2026-09-27}
+ROOT=${1:-"$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"}
 for tool in findmnt jq awk readlink lsblk; do
   command -v "$tool" >/dev/null 2>&1 || { echo "required tool not found: $tool" >&2; exit 127; }
 done

@@ -10,7 +10,7 @@ pub(crate) mod metrics;
 use metrics::{ProcDelta, ProcSnapshot, SystemDelta, SystemSnapshot};
 #[path = "../record_payload.rs"]
 mod record_payload;
-use record_payload::{PayloadPattern, payload_for};
+pub(crate) use record_payload::{PayloadPattern, payload_for};
 use std::{
     fs,
     path::{Path, PathBuf},

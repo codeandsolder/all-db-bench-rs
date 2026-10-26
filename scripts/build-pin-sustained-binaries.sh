@@ -19,14 +19,10 @@ install -m 0755 "$ROCKS_TARGET_DIR/release/surrealdb-rocksdb-recordsustained" "$
 kv_sha=$(sha256sum "$kv" | awk '{print $1}')
 record_sha=$(sha256sum "$record" | awk '{print $1}')
 record_rocksdb_sha=$(sha256sum "$record_rocksdb" | awk '{print $1}')
-uv run --no-project python - "$OUT/manifest.json" <<PY
-import json,sys
-json.dump({
-  "repo_commit":"$commit",
-  "kv":{"path":"$kv","sha256":"$kv_sha"},
-  "record":{"path":"$record","sha256":"$record_sha"},
-  "record_rocksdb":{"path":"$record_rocksdb","sha256":"$record_rocksdb_sha"},
-},open(sys.argv[1],"w"),indent=2,sort_keys=True)
-open(sys.argv[1],"a").write("\n")
-PY
+jq -nS \
+  --arg repo_commit "$commit" \
+  --arg kv_path "$kv" --arg kv_sha "$kv_sha" \
+  --arg record_path "$record" --arg record_sha "$record_sha" \
+  --arg rocks_path "$record_rocksdb" --arg rocks_sha "$record_rocksdb_sha" \
+  '{repo_commit:$repo_commit,kv:{path:$kv_path,sha256:$kv_sha},record:{path:$record_path,sha256:$record_sha},record_rocksdb:{path:$rocks_path,sha256:$rocks_sha}}' > "$OUT/manifest.json"
 cat "$OUT/manifest.json"
