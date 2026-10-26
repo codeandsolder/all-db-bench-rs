@@ -280,7 +280,7 @@ def stages(
         (
             "verify-kv",
             [
-                script(repo, "verify-kv-ready.py"), "--selected", str(kv_selected),
+                script(repo, "benchctl.sh"), "verify-kv-ready", "--selected", str(kv_selected),
                 "--binary-manifest", str(kv_manifest), "--expected-commit", pins.commit,
                 "--repo", str(repo), "--stock-run-id", paths.kv_stock_id,
                 "--expected-admission-policy", ADMISSION_POLICY, "--out", str(paths.ready / "kv.json"),
@@ -289,7 +289,7 @@ def stages(
         (
             "verify-record",
             [
-                script(repo, "verify-record-ready.py"), "--selected", str(record_selected),
+                script(repo, "benchctl.sh"), "verify-record-ready", "--selected", str(record_selected),
                 "--binary-manifest", str(record_manifest), "--expected-commit", pins.commit,
                 "--repo", str(repo), "--stock-run-id", paths.record_stock_id,
                 "--expected-admission-policy", ADMISSION_POLICY, "--out", str(paths.ready / "record.json"),

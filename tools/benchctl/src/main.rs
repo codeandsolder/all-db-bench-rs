@@ -11,6 +11,7 @@ mod io_pressure;
 mod noise;
 mod planning;
 mod process_tree;
+mod ready;
 mod record_smoke;
 mod recovery;
 mod scaling;
@@ -143,6 +144,38 @@ enum Command {
         record_quality_repair_plan: Option<PathBuf>,
         #[arg(long)]
         record_skip_quality_repairs: bool,
+    },
+    VerifyKvReady {
+        #[arg(long)]
+        selected: PathBuf,
+        #[arg(long)]
+        binary_manifest: PathBuf,
+        #[arg(long)]
+        expected_commit: String,
+        #[arg(long)]
+        repo: PathBuf,
+        #[arg(long)]
+        stock_run_id: String,
+        #[arg(long, default_value = ready::CONTINUOUS_ADMISSION_POLICY)]
+        expected_admission_policy: String,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    VerifyRecordReady {
+        #[arg(long)]
+        selected: PathBuf,
+        #[arg(long)]
+        binary_manifest: PathBuf,
+        #[arg(long)]
+        expected_commit: String,
+        #[arg(long)]
+        repo: PathBuf,
+        #[arg(long)]
+        stock_run_id: String,
+        #[arg(long)]
+        expected_admission_policy: String,
+        #[arg(long)]
+        out: PathBuf,
     },
     CpuPressureWorker {
         duty_percent: f64,
@@ -567,6 +600,40 @@ fn main() -> Result<()> {
             println!("final baseline corpora validated: {}", lanes.join(" "));
             Ok(())
         }
+        Command::VerifyKvReady {
+            selected,
+            binary_manifest,
+            expected_commit,
+            repo,
+            stock_run_id,
+            expected_admission_policy,
+            out,
+        } => ready::run_kv(ready::ReadyArgs {
+            selected: &selected,
+            binary_manifest: &binary_manifest,
+            expected_commit: &expected_commit,
+            repo: &repo,
+            stock_run_id: &stock_run_id,
+            expected_admission_policy: &expected_admission_policy,
+            out: &out,
+        }),
+        Command::VerifyRecordReady {
+            selected,
+            binary_manifest,
+            expected_commit,
+            repo,
+            stock_run_id,
+            expected_admission_policy,
+            out,
+        } => ready::run_record(ready::ReadyArgs {
+            selected: &selected,
+            binary_manifest: &binary_manifest,
+            expected_commit: &expected_commit,
+            repo: &repo,
+            stock_run_id: &stock_run_id,
+            expected_admission_policy: &expected_admission_policy,
+            out: &out,
+        }),
         Command::CpuPressureWorker { duty_percent } => cpu_pressure::run(duty_percent),
         Command::SmokeRecordBinaries {
             bench_bin,

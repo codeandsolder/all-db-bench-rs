@@ -23,8 +23,6 @@ SCRIPT_NAMES = (
     "run-kv-sizing-followups.py",
     "run-record-sizing-followups.py",
     "benchctl.sh",
-    "verify-kv-ready.py",
-    "verify-record-ready.py",
 )
 
 
