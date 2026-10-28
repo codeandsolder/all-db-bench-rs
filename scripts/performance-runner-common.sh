@@ -64,7 +64,9 @@ performance_check_external_noise() {
   local root=$1 profile=$2 phase=$3 evidence=$4 rc
   [[ "$profile" == smoke || "${ALLOW_EXTERNAL_NOISE:-0}" == 1 ]] && return 0
   continuous_noise_prepare_benchctl "$root" || return $?
-  if "$CONTINUOUS_NOISE_BENCHCTL" check-external-noise --json-out "$evidence"; then rc=0; else rc=$?; fi
+  local max_cpu=${PERFORMANCE_EXTERNAL_MAX_CPU_PERCENT:-50}
+  if "$CONTINUOUS_NOISE_BENCHCTL" check-external-noise \
+    --max-aggregate-cpu-percent "$max_cpu" --json-out "$evidence"; then rc=0; else rc=$?; fi
   if (( rc != 0 )); then
     echo "refusing performance case due to external host work ($phase)" >&2
   fi
