@@ -141,7 +141,22 @@ name = "all-db-bench-common"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "hdrhistogram",
  "serde",
+]
+
+[[package]]
+name = "all-db-bench-record-harness"
+version = "0.1.0"
+dependencies = [
+ "all-db-bench-common",
+ "anyhow",
+ "clap",
+ "hdrhistogram",
+ "rand 0.10.3",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -5167,6 +5182,7 @@ name = "rust-db-realistic-bench"
 version = "0.1.0"
 dependencies = [
  "all-db-bench-common",
+ "all-db-bench-record-harness",
  "anyhow",
  "clap",
  "fjall",

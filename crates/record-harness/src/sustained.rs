@@ -1,10 +1,9 @@
-use crate::base::metrics::{ProcDelta, ProcSnapshot, SystemDelta, SystemSnapshot};
-use crate::base::{
-    Durability, Engine, EngineKind, PayloadPattern, Quantiles, READ_MATERIALIZATION, RecordData,
-    WRITE_MATERIALIZATION, dir_size, hist, payload_for, peak_rss_kib, quantiles, record,
+use all_db_bench_common::{
+    metrics::{ProcDelta, ProcSnapshot, SystemDelta, SystemSnapshot},
+    record_payload::{PayloadPattern, payload_for},
 };
 use anyhow::{Context, Result, bail};
-use clap::{Parser, ValueEnum};
+use clap::{Args as ClapArgs, ValueEnum};
 use rand::{RngExt, SeedableRng, rngs::SmallRng, seq::SliceRandom};
 use serde::Serialize;
 use std::{
@@ -13,20 +12,22 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::{
+    Durability, Quantiles, READ_MATERIALIZATION, RecordData, WRITE_MATERIALIZATION,
+    backend::RecordBackend, dir_size, hist, peak_rss_kib, quantiles, record,
+};
+
 #[derive(Clone, Copy, Debug, Serialize, ValueEnum)]
 #[serde(rename_all = "kebab-case")]
-enum SustainedPattern {
+pub enum SustainedPattern {
     Append,
     UpdateUniform,
     UpdateHot95,
     Churn,
 }
 
-#[derive(Debug, Parser)]
-#[command(about = "Windowed sustained-write/compaction benchmark for record databases")]
-struct Args {
-    #[arg(long, value_enum)]
-    engine: EngineKind,
+#[derive(Clone, Debug, ClapArgs)]
+pub struct SustainedArgs {
     #[arg(long, value_enum)]
     durability: Durability,
     #[arg(long, value_enum)]
@@ -100,10 +101,10 @@ struct SettleMeasurement {
 }
 
 #[derive(Debug, Serialize)]
-struct Measurement {
+struct Measurement<K> {
     format_version: u32,
     lane: &'static str,
-    engine: EngineKind,
+    engine: K,
     engine_version: &'static str,
     durability: Durability,
     durability_mapping: &'static str,
@@ -167,7 +168,7 @@ fn hot95_id(rng: &mut SmallRng, records: u64) -> u64 {
     }
 }
 
-async fn prefill(engine: &Engine, args: &Args) -> Result<()> {
+async fn prefill<B: RecordBackend>(engine: &B, args: &SustainedArgs) -> Result<()> {
     const BATCH: usize = 1_000;
     let mut rows = Vec::with_capacity(BATCH);
     for id in 0..args.records {
@@ -183,7 +184,7 @@ async fn prefill(engine: &Engine, args: &Args) -> Result<()> {
     Ok(())
 }
 
-async fn warm_reads(engine: &Engine, args: &Args) -> Result<()> {
+async fn warm_reads<B: RecordBackend>(engine: &B, args: &SustainedArgs) -> Result<()> {
     let mut rng = SmallRng::seed_from_u64(args.seed ^ args.trial as u64 ^ 0x7777);
     for _ in 0..args.records.min(args.warmup_reads) {
         let id = rng.random_range(0..args.records);
@@ -192,7 +193,7 @@ async fn warm_reads(engine: &Engine, args: &Args) -> Result<()> {
     Ok(())
 }
 
-async fn measure_settle(path: &Path, args: &Args) -> Option<SettleMeasurement> {
+async fn measure_settle(path: &Path, args: &SustainedArgs) -> Option<SettleMeasurement> {
     if args.settle_ms == 0 {
         return None;
     }
@@ -244,22 +245,23 @@ async fn measure_settle(path: &Path, args: &Args) -> Option<SettleMeasurement> {
     })
 }
 
-pub(crate) async fn run() -> Result<()> {
-    let args = Args::parse();
+pub async fn run<B: RecordBackend>(engine_kind: B::Kind, args: SustainedArgs) -> Result<()> {
     if args.records == 0 || args.ops == 0 || args.window_ops == 0 || args.txn_size == 0 {
         bail!("records, ops, window-ops and txn-size must all be greater than zero");
     }
-    if args.window_ops < args.txn_size as u64 || args.window_ops % args.txn_size as u64 != 0 {
+    if args.window_ops < args.txn_size as u64
+        || !args.window_ops.is_multiple_of(args.txn_size as u64)
+    {
         bail!("--window-ops must be a multiple of --txn-size");
     }
-    if args.ops % args.txn_size as u64 != 0 {
+    if !args.ops.is_multiple_of(args.txn_size as u64) {
         bail!("--ops must be a multiple of --txn-size");
     }
 
     let path = args.root.join(
         format!(
             "record-sustained-{:?}-{:?}-{:?}-n{}-o{}-w{}-p{}-tx{}-t{}",
-            args.engine,
+            engine_kind,
             args.durability,
             args.pattern,
             args.records,
@@ -278,7 +280,7 @@ pub(crate) async fn run() -> Result<()> {
     fs::create_dir_all(&path)?;
 
     let open_started = Instant::now();
-    let engine = Engine::open(args.engine, args.durability, &path).await?;
+    let engine = B::open(engine_kind, args.durability, &path).await?;
     let open_s = open_started.elapsed().as_secs_f64();
     let prefill_started = Instant::now();
     prefill(&engine, &args).await?;
@@ -439,10 +441,10 @@ pub(crate) async fn run() -> Result<()> {
     let result = Measurement {
         format_version: 7,
         lane: "record-sustained",
-        engine: args.engine,
-        engine_version: args.engine.version(),
+        engine: engine_kind,
+        engine_version: B::version(engine_kind),
         durability: args.durability,
-        durability_mapping: args.engine.mapping(args.durability),
+        durability_mapping: B::mapping(engine_kind, args.durability),
         pattern: args.pattern,
         records: args.records,
         ops_requested: args.ops,

@@ -1,11 +1,11 @@
-use super::bench as base;
-
-use anyhow::{Context, Result, bail};
-use base::metrics::{ProcDelta, ProcSnapshot, SystemDelta, SystemSnapshot};
-use base::{
-    AccessPattern, Durability, Engine, EngineKind, KeyShape, Quantiles, ValuePattern, Workload,
-    dir_size, hist, key, peak_rss_kib, quantiles, record, sample_existing_id, value,
+use super::metrics::metrics::{ProcDelta, ProcSnapshot, SystemDelta, SystemSnapshot};
+use super::{
+    data::{key, sample_existing_id, value},
+    engine::Engine,
+    metrics::{Quantiles, dir_size, hist, peak_rss_kib, quantiles, record},
+    types::{AccessPattern, Durability, EngineKind, KeyShape, ValuePattern, Workload},
 };
+use anyhow::{Context, Result, bail};
 use clap::{Parser, ValueEnum};
 use rand::{RngExt, SeedableRng, rngs::SmallRng, seq::SliceRandom};
 use serde::Serialize;

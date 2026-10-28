@@ -3,9 +3,11 @@ name = "surrealdb-rocksdb-recordbench"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.99.1"
+publish = false
 
 [dependencies]
 all-db-bench-common = { path = "../../crates/bench-common" }
+all-db-bench-record-harness = { path = "../../crates/record-harness" }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 hdrhistogram = "7"

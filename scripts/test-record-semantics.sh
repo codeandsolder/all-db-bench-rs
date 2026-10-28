@@ -2,8 +2,8 @@
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-RECORD="$ROOT/src/record/bench.rs"
-ROCKS="$ROOT/engines/surrealdb-rocksdb/src/main.rs"
+RECORD="$ROOT/src/record/engine.rs"
+ROCKS="$ROOT/engines/surrealdb-rocksdb/src/lib.rs"
 RUNNER="$ROOT/scripts/run-record-matrix.sh"
 WIDE="$ROOT/scripts/run-record-wide-matrix.sh"
 MAIN="$ROOT/tools/benchctl/src/main.rs"

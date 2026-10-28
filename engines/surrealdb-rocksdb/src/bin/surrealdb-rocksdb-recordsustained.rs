@@ -1,12 +1,19 @@
-#![allow(clippy::too_many_lines)]
+use all_db_bench_record_harness::sustained::{SustainedArgs, run as run_harness};
+use anyhow::Result;
+use clap::Parser;
+use surrealdb_rocksdb_recordbench::{Engine, EngineKind};
 
-#[allow(dead_code)]
-#[path = "../main.rs"]
-mod base;
-#[path = "../../../../src/record_sustained_driver.rs"]
-mod driver;
+#[derive(Debug, Parser)]
+#[command(about = "Windowed sustained-write/compaction SurrealDB/RocksDB benchmark")]
+struct Args {
+    #[arg(long, value_enum)]
+    engine: EngineKind,
+    #[command(flatten)]
+    common: SustainedArgs,
+}
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 1)]
-async fn main() -> anyhow::Result<()> {
-    driver::run().await
+async fn main() -> Result<()> {
+    let args = Args::parse();
+    run_harness::<Engine>(args.engine, args.common).await
 }

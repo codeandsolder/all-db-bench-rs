@@ -2,6 +2,7 @@
 members = [
     ".",
     "crates/bench-common",
+    "crates/record-harness",
     "engines/tsdb-server",
     "tools/benchctl",
 ]
@@ -36,6 +37,7 @@ record = ["dep:surrealdb", "dep:turso", "dep:rusqlite", "surrealdb/kv-surrealkv"
 
 [dependencies]
 all-db-bench-common = { path = "crates/bench-common" }
+all-db-bench-record-harness = { path = "crates/record-harness" }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 hdrhistogram = "7"
