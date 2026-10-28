@@ -10,13 +10,14 @@ use std::{
 };
 
 #[cfg(test)]
-use super::engine::compression_override_supported;
+use super::engine_policy::compression_override_supported;
 use super::{
     data::{key, sample_existing_id, sample_read_id, value},
-    engine::{Engine, compression_mapping},
+    engine::Engine,
+    engine_policy::compression_mapping,
     metrics::{
-        self as bench_metrics, Quantiles, SettleMeasurement, dir_size, hist, measure_settle,
-        peak_rss_kib, quantiles, record,
+        ProcDelta, ProcSnapshot, Quantiles, SettleMeasurement, SystemDelta, SystemSnapshot,
+        dir_size, hist, measure_settle, peak_rss_kib, quantiles, record,
     },
     types::{
         AccessPattern, Durability, EngineCompression, EngineKind, KeyShape, ValuePattern, Workload,
@@ -24,7 +25,6 @@ use super::{
     },
     workload::mixed_epoch_targets,
 };
-use bench_metrics::metrics::{ProcDelta, ProcSnapshot, SystemDelta, SystemSnapshot};
 
 #[derive(Debug, Parser)]
 #[command(about = "One fresh database per invocation; output is one JSON record")]

@@ -18,7 +18,7 @@ jobs:
     with:
       rust-toolchain: "1.99.1"
       rust-components: "rustfmt clippy"
-      rustflags: "-C target-cpu=x86-64-v2"
+      rustflags: "-C target-cpu=x86-64-v2 -C target-feature=+aes,+sse2"
       timeout-minutes: 90
       sccache-cache-size-mib: 6144
       command: |

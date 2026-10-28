@@ -1,8 +1,10 @@
-use super::metrics::metrics::{ProcDelta, ProcSnapshot, SystemDelta, SystemSnapshot};
 use super::{
     data::{key, mix_u64, sample_existing_id, sample_read_id, value},
     engine::Engine,
-    metrics::{Quantiles, dir_size, hist, peak_rss_kib, quantiles, record},
+    metrics::{
+        ProcDelta, ProcSnapshot, Quantiles, SystemDelta, SystemSnapshot, dir_size, hist,
+        peak_rss_kib, quantiles, record,
+    },
     types::{
         AccessPattern, Durability, EngineKind, KeyShape, ValuePattern, Workload, WritePattern,
     },
