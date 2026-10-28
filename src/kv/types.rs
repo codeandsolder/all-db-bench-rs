@@ -29,6 +29,13 @@ pub(crate) enum EngineKind {
     Lsmdb,
 }
 
+impl EngineKind {
+    #[must_use]
+    pub(crate) fn supports_range_scan(self) -> bool {
+        !matches!(self, Self::Lkv | Self::ParitydbHash)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Serialize, ValueEnum, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum Durability {

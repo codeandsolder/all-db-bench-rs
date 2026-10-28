@@ -120,10 +120,12 @@ mod tests {
         let zeros = payload_for(PayloadPattern::Zeros, 1, 512, 2);
         assert!(structured.contains("\"schema\":\"telemetry-v1\""));
         let repeated_bytes = repeated.as_bytes();
+        let (chunks, remainder) = repeated_bytes.as_chunks::<8>();
+        assert!(remainder.is_empty());
         assert!(
-            repeated_bytes
-                .chunks_exact(8)
-                .all(|chunk| chunk == &repeated_bytes[..8])
+            chunks
+                .iter()
+                .all(|chunk| chunk.as_slice() == &repeated_bytes[..8])
         );
         assert_ne!(repeated, zeros);
         assert!(zeros.bytes().all(|byte| byte == b'0'));

@@ -11,7 +11,10 @@ grep -Fx 'Environment=SCCACHE_IDLE_TIMEOUT=0' "$ROOT/scripts/sccache-native-root
 grep -Fx 'Restart=on-failure' "$ROOT/scripts/sccache-native-root.service"
 grep -Fx 'Environment=SCCACHE_CONF=/etc/sccache/client-native-dist.conf' "$ROOT/scripts/sccache-native-root.service.d/60-distributed-native.conf"
 grep -Fx 'basedirs = ["/srv/scratch", "/home/jan"]' "$ROOT/scripts/sccache-native-local.conf"
-! grep -q '^\[dist\]' "$ROOT/scripts/sccache-native-local.conf"
+if grep -q '^\[dist\]' "$ROOT/scripts/sccache-native-local.conf"; then
+  echo "repo-local native client config must not contain a dist section" >&2
+  exit 1
+fi
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
@@ -19,6 +22,7 @@ cat > "$TMP/fake-sccache" <<'FAKE'
 #!/usr/bin/env bash
 set -euo pipefail
 printf 'port=%s\n' "${SCCACHE_SERVER_PORT:-}"
+printf 'uds=%s\n' "${SCCACHE_SERVER_UDS:-}"
 printf 'start=%s\n' "${SCCACHE_START_SERVER-unset}"
 printf 'conf=%s\n' "${SCCACHE_CONF:-}"
 printf 'canonical=%s\n' "${SCCACHE_EXPERIMENTAL_CANONICAL_RUST-unset}"
@@ -34,6 +38,7 @@ out=$(
   "$ROOT/scripts/sccache-native-rustc.sh" /toolchains/rustc --crate-name demo
 )
 grep -Fx 'port=4999' <<<"$out"
+grep -Fx 'uds=' <<<"$out"
 grep -Fx 'start=0' <<<"$out"
 grep -Fx "conf=$ROOT/scripts/sccache-native-local.conf" <<<"$out"
 grep -Fx 'canonical=unset' <<<"$out"
@@ -43,6 +48,8 @@ out=$(
   SCCACHE_BIN="$TMP/fake-sccache" \
   "$ROOT/scripts/sccache-native-cc.sh" -c demo.c
 )
+grep -Fx 'port=' <<<"$out"
+grep -Fx "uds=/run/sccache-$(id -un)/sccache.sock" <<<"$out"
 grep -Fx 'canonical=unset' <<<"$out"
 grep -Fx 'argv=</usr/bin/cc><-c><demo.c>' <<<"$out"
 
@@ -67,5 +74,7 @@ timeout 120 "$ROOT/scripts/sccache-native-cc.sh" -c "$TMP/demo.c" -o "$TMP/demo.
 timeout 120 "$ROOT/scripts/sccache-native-cxx.sh" -c "$TMP/demo.cc" -o "$TMP/demo++.o"
 test -s "$TMP/demo.o"
 test -s "$TMP/demo++.o"
+[[ $(stat -c %U "$TMP/demo.o") == $(id -un) ]]
+[[ $(stat -c %U "$TMP/demo++.o") == $(id -un) ]]
 
 echo 'native sccache wrapper tests passed'

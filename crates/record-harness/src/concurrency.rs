@@ -551,41 +551,6 @@ fn run_clients<B: RecordBackend>(
     })
 }
 
-#[cfg(test)]
-mod bounded_tests {
-    use super::bounded_record_id;
-
-    fn partition(total: u64, clients: usize) -> Vec<(u64, u64)> {
-        let base = total / clients as u64;
-        let extra = total % clients as u64;
-        let mut offset = 0;
-        (0..clients)
-            .map(|client| {
-                let count = base + u64::from((client as u64) < extra);
-                let out = (count, offset);
-                offset += count;
-                out
-            })
-            .collect()
-    }
-
-    #[test]
-    fn bounded_stream_is_identical_across_client_counts() {
-        let records = 64;
-        let total = 513;
-        let serial: Vec<_> = (0..total)
-            .map(|op| bounded_record_id(records, op))
-            .collect();
-        for clients in [1, 2, 4, 8] {
-            let mut parallel = Vec::new();
-            for (count, offset) in partition(total, clients) {
-                parallel.extend((0..count).map(|local| bounded_record_id(records, offset + local)));
-            }
-            assert_eq!(parallel, serial);
-        }
-    }
-}
-
 fn median(mut values: Vec<f64>) -> f64 {
     values.sort_by(f64::total_cmp);
     let n = values.len();
@@ -764,4 +729,39 @@ pub async fn run<B: RecordBackend>(engine_kind: B::Kind, args: ConcurrencyArgs) 
         fs::remove_dir_all(&path).context("remove completed record concurrency database")?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod bounded_tests {
+    use super::bounded_record_id;
+
+    fn partition(total: u64, clients: usize) -> Vec<(u64, u64)> {
+        let base = total / clients as u64;
+        let extra = total % clients as u64;
+        let mut offset = 0;
+        (0..clients)
+            .map(|client| {
+                let count = base + u64::from((client as u64) < extra);
+                let out = (count, offset);
+                offset += count;
+                out
+            })
+            .collect()
+    }
+
+    #[test]
+    fn bounded_stream_is_identical_across_client_counts() {
+        let records = 64;
+        let total = 513;
+        let serial: Vec<_> = (0..total)
+            .map(|op| bounded_record_id(records, op))
+            .collect();
+        for clients in [1, 2, 4, 8] {
+            let mut parallel = Vec::new();
+            for (count, offset) in partition(total, clients) {
+                parallel.extend((0..count).map(|local| bounded_record_id(records, offset + local)));
+            }
+            assert_eq!(parallel, serial);
+        }
+    }
 }

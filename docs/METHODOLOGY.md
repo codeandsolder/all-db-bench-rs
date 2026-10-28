@@ -33,7 +33,7 @@ SurrealDB 3.3.4, Turso 0.8.3, and SQLite 3.54.0 via rusqlite 0.40.2 are tested s
 
 ## Benchmark build identity
 
-Performance binaries are built with rustc 1.99.1 and `target-cpu=native`. Benchmark compilation must pass through the dedicated sccache service on port 4237. Our fork fingerprints the requesting host native CPU/features into the cache identity and converts distributed native Rust requests into an explicit proven-equivalent CPU/feature set before dispatch; unresolved or unsafe native requests stay local or bypass cache. Missing sccache or compiler wrappers are hard errors.
+Performance binaries are built with rustc 1.99.1 and `target-cpu=native`. Benchmark compilation must pass through a managed same-owner sccache service: non-root builds use `/run/sccache-<user>/sccache.sock`, while root builds use the dedicated port-4237 daemon. Our fork fingerprints the requesting host native CPU/features into the cache identity and converts distributed native Rust requests into an explicit proven-equivalent CPU/feature set before dispatch; unresolved or unsafe native requests stay local or are treated as non-cacheable within sccache. Missing sccache or compiler wrappers are hard errors.
 
 ## Durability
 
@@ -138,7 +138,7 @@ The relaxed lane is deliberately secondary. It answers "what does this engine co
 
 ## Build isolation on cold-storage
 
-Cargo build artifacts are kept outside the measured database root, and the benchmark-local Cargo registry/source cache defaults to `/tmp/db-bench-cargo-home`. `scripts/cargo-local-1.99.sh` pins rustc 1.99.1 and requires repo-local Rust/C/C++ sccache wrappers connected to the managed port-4237 native service. That service uses canonical Rust paths, the shared scheduler, and Garage; the fork makes `target-cpu=native` safe by resolving and hashing the requester native profile and using explicit proven-equivalent codegen remotely. Missing sccache is a hard failure rather than a direct-compiler fallback. Measured database data lives on the selected storage-profile root.
+Cargo build artifacts are kept outside the measured database root. The build wrapper uses `DB_BENCH_CARGO_HOME` when explicitly set, otherwise the existing `CARGO_HOME`, otherwise the user’s stable `~/.cargo`; it does not use a shared temporary registry/source tree that can disappear underneath concurrent builds. `scripts/cargo-local-1.99.sh` pins rustc 1.99.1 and requires repo-local Rust/C/C++ sccache wrappers connected to a managed same-owner native-safe service (user UDS for non-root builds; port 4237 for root). That service uses canonical Rust paths, the shared scheduler, and Garage; the fork makes `target-cpu=native` safe by resolving and hashing the requester native profile and using explicit proven-equivalent codegen remotely. Missing sccache is a hard failure rather than a direct-compiler fallback. Measured database data lives on the selected storage-profile root.
 
 ## Durability syscall sanity check
 

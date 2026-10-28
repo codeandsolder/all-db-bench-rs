@@ -6,6 +6,7 @@ use super::{
     types::{
         AccessPattern, Durability, EngineKind, KeyShape, ValuePattern, Workload, WritePattern,
     },
+    workload::{bounded_churn_swap, mixed_epoch_targets},
 };
 use anyhow::{Context, Result, bail};
 use clap::{Parser, ValueEnum};
@@ -180,38 +181,6 @@ struct Measurement {
     concurrency_handle: &'static str,
 }
 
-fn bounded_churn_ids(records: u64, total_slots: u64, slot: u64, active_a: bool) -> (u64, u64) {
-    let a_id = records.saturating_add(slot);
-    let b_id = records.saturating_add(total_slots).saturating_add(slot);
-    if active_a { (a_id, b_id) } else { (b_id, a_id) }
-}
-
-fn mixed_epoch_targets(workload: Workload, epoch: u64, bounded: bool) -> (u64, u64, u64, u64) {
-    match workload {
-        Workload::ReadHeavy => {
-            let u = epoch * 5 / 100;
-            (epoch - u, u, 0, 0)
-        }
-        Workload::Balanced => {
-            let u = epoch * 30 / 100;
-            let i = epoch * 10 / 100;
-            let d = i;
-            (epoch - u - i - d, u, i, d)
-        }
-        Workload::Churn if bounded => {
-            let i = epoch * 30 / 100;
-            let d = i;
-            (0, epoch - i - d, i, d)
-        }
-        Workload::Churn => {
-            let u = epoch * 40 / 100;
-            let i = epoch * 30 / 100;
-            (0, u, i, epoch - u - i)
-        }
-        _ => unreachable!("mixed_epoch_targets called for non-mixed workload"),
-    }
-}
-
 async fn prefill(engine: &mut Engine, args: &Args) -> Result<()> {
     const BATCH: usize = 10_000;
     let mut puts = Vec::with_capacity(BATCH);
@@ -305,7 +274,7 @@ async fn run_client<C: ClientOps>(
             }
         }
         Workload::RangeScan => {
-            if matches!(args.engine, EngineKind::Lkv | EngineKind::ParitydbHash) {
+            if !args.engine.supports_range_scan() {
                 bail!("selected engine has no ordered keyed range-scan API");
             }
             if args.key_shape == KeyShape::Hashed {
@@ -416,14 +385,15 @@ async fn run_client<C: ClientOps>(
 
             while done < ops {
                 let epoch = (ops - done).min(1_000);
-                let (r_target, u_target, i_target, d_target) = mixed_epoch_targets(
+                let targets = mixed_epoch_targets(
                     args.workload,
                     epoch,
                     args.state_evolution == StateEvolution::Bounded,
                 );
+                debug_assert_eq!(targets.total(), epoch);
 
-                let mut units = Vec::with_capacity((r_target as usize) + 16);
-                for _ in 0..r_target {
+                let mut units = Vec::with_capacity((targets.reads as usize) + 16);
+                for _ in 0..targets.reads {
                     let (id, _expect_hit) = sample_read_id(
                         &mut rng,
                         args.records,
@@ -435,8 +405,10 @@ async fn run_client<C: ClientOps>(
                     units.push(Unit::Read(make_key(id)));
                 }
 
-                let mut specs = Vec::with_capacity((u_target + i_target + d_target) as usize);
-                for _ in 0..u_target {
+                let mut specs = Vec::with_capacity(
+                    (targets.updates + targets.inserts + targets.deletes) as usize,
+                );
+                for _ in 0..targets.updates {
                     let id = sample_existing_id(
                         &mut rng,
                         args.records,
@@ -451,19 +423,21 @@ async fn run_client<C: ClientOps>(
                 if args.state_evolution == StateEvolution::Bounded
                     && matches!(args.workload, Workload::Balanced | Workload::Churn)
                 {
-                    if i_target != d_target {
+                    if targets.inserts != targets.deletes {
                         bail!("bounded churn requires paired insert/delete targets");
                     }
-                    for _ in 0..i_target {
+                    for _ in 0..targets.inserts {
                         let local_slot = (churn_cursor % churn_slot_count) as usize;
                         churn_cursor = churn_cursor.saturating_add(1);
                         let slot = churn_slot_start.saturating_add(local_slot as u64);
-                        let (delete_id, put_id) = bounded_churn_ids(
+                        let swap = bounded_churn_swap(
                             args.records,
                             args.bounded_churn_slots,
                             slot,
                             churn_active_a[local_slot],
                         );
+                        let delete_id = swap.delete_id;
+                        let put_id = swap.put_id;
                         churn_active_a[local_slot] = !churn_active_a[local_slot];
                         specs.push(WriteSpec::Toggle {
                             put: (
@@ -474,7 +448,7 @@ async fn run_client<C: ClientOps>(
                         });
                     }
                 } else {
-                    for _ in 0..i_target {
+                    for _ in 0..targets.inserts {
                         let id = next_id;
                         next_id += 1;
                         specs.push(WriteSpec::Put(
@@ -482,7 +456,7 @@ async fn run_client<C: ClientOps>(
                             make_value(id, args.seed ^ offset ^ done),
                         ));
                     }
-                    for _ in 0..d_target {
+                    for _ in 0..targets.deletes {
                         let id = sample_existing_id(
                             &mut rng,
                             args.records,
@@ -875,42 +849,6 @@ fn median(mut values: Vec<f64>) -> f64 {
         (values[n / 2 - 1] + values[n / 2]) / 2.0
     } else {
         values[n / 2]
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn bounded_churn_pairs_are_disjoint_and_reversible() {
-        let records = 100_000;
-        let slots = 8_192;
-        for slot in [0, 1, slots / 2, slots - 1] {
-            let (delete_a, put_b) = bounded_churn_ids(records, slots, slot, true);
-            let (delete_b, put_a) = bounded_churn_ids(records, slots, slot, false);
-            assert_eq!(delete_a, put_a);
-            assert_eq!(put_b, delete_b);
-            assert_ne!(delete_a, put_b);
-            assert!((records..records + slots).contains(&delete_a));
-            assert!((records + slots..records + 2 * slots).contains(&put_b));
-        }
-    }
-
-    #[test]
-    fn mixed_epoch_targets_preserve_exact_logical_op_count() {
-        for epoch in 1..=1_000 {
-            for workload in [Workload::ReadHeavy, Workload::Balanced, Workload::Churn] {
-                for bounded in [false, true] {
-                    let (reads, updates, inserts, deletes) =
-                        mixed_epoch_targets(workload, epoch, bounded);
-                    assert_eq!(reads + updates + inserts + deletes, epoch);
-                    if bounded && matches!(workload, Workload::Balanced | Workload::Churn) {
-                        assert_eq!(inserts, deletes);
-                    }
-                }
-            }
-        }
     }
 }
 

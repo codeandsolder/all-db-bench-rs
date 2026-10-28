@@ -59,6 +59,7 @@ name = "all-db-bench-common"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "hdrhistogram",
  "serde",
 ]
 

@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Rust validation (shared sccache)
+    permissions:
+      contents: read
+    uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@1232321acb7d4d8ceefabe1950e3ebc9227f8f36 # main
+    with:
+      rust-toolchain: "1.99.1"
+      rust-components: "rustfmt clippy"
+      rustflags: "-C target-cpu=x86-64-v2"
+      timeout-minutes: 90
+      sccache-cache-size-mib: 6144
+      command: |
+        cargo +1.99.1 fmt --all -- --check
+        bash -n scripts/*.sh
+        ./scripts/test-record-semantics.sh
+        ./scripts/test-no-python-tooling.sh
+
+        cargo +1.99.1 test --locked -p all-db-bench-common -p all-db-bench-record-harness
+        cargo +1.99.1 clippy --locked -p all-db-bench-common -p all-db-bench-record-harness -- -D warnings
+
+        cargo +1.99.1 check --locked --all-targets
+        cargo +1.99.1 check --locked --features record --bin recordbench --bin recordconcurrency --bin recordsustained
+        cargo +1.99.1 check --locked --features kv-all --bin kvbench --bin kvconcurrency --bin kvsustained
+        cargo +1.99.1 check --locked -p tsdb-server-bench
+
+        cargo +1.99.1 check --locked --manifest-path engines/surrealdb-rocksdb/Cargo.toml --all-targets

@@ -6,3 +6,4 @@ pub(crate) mod engine;
 pub(crate) mod metrics;
 pub mod sustained;
 pub(crate) mod types;
+mod workload;

@@ -27,9 +27,22 @@ version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 
+[[bin]]
+name = "recordbench"
+path = "src/bin/recordbench.rs"
+required-features = ["record"]
+
+[[bin]]
+name = "recordconcurrency"
+path = "src/bin/recordconcurrency.rs"
+required-features = ["record"]
+
+[[bin]]
+name = "recordsustained"
+path = "src/bin/recordsustained.rs"
+required-features = ["record"]
+
 [features]
-default = ["kv"]
-kv = []
 kv-external = ["dep:rocksdb", "dep:libmdbx", "dep:persy"]
 kv-experimental = ["dep:roughdb", "dep:jammdb", "dep:lsm-db"]
 kv-all = ["kv-external", "kv-experimental"]

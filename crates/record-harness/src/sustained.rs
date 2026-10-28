@@ -1,4 +1,5 @@
 use all_db_bench_common::{
+    measurement::{SettleMeasurement, measure_settle},
     metrics::{ProcDelta, ProcSnapshot, SystemDelta, SystemSnapshot},
     record_payload::{PayloadPattern, payload_for},
 };
@@ -77,27 +78,6 @@ struct WindowMeasurement {
     transaction_latency: Quantiles,
     process: ProcDelta,
     system: SystemDelta,
-}
-
-#[derive(Debug, Serialize)]
-struct SettleSample {
-    elapsed_ms: u64,
-    interval_ms: u64,
-    db_bytes: u64,
-    process: ProcDelta,
-    system: SystemDelta,
-}
-
-#[derive(Debug, Serialize)]
-struct SettleMeasurement {
-    requested_ms: u64,
-    sample_ms: u64,
-    elapsed_s: f64,
-    db_bytes_before: u64,
-    db_bytes_after: u64,
-    process: ProcDelta,
-    system: SystemDelta,
-    samples: Vec<SettleSample>,
 }
 
 #[derive(Debug, Serialize)]
@@ -191,58 +171,6 @@ async fn warm_reads<B: RecordBackend>(engine: &B, args: &SustainedArgs) -> Resul
         let _ = engine.get(id).await?;
     }
     Ok(())
-}
-
-async fn measure_settle(path: &Path, args: &SustainedArgs) -> Option<SettleMeasurement> {
-    if args.settle_ms == 0 {
-        return None;
-    }
-    let sample_ms = args.settle_sample_ms.max(1);
-    let started = Instant::now();
-    let total_proc_before = ProcSnapshot::capture();
-    let total_sys_before = SystemSnapshot::capture();
-    let db_bytes_before = dir_size(path);
-    let mut prev_proc = total_proc_before.clone();
-    let mut prev_sys = total_sys_before.clone();
-    let mut prev_elapsed = Duration::ZERO;
-    let mut samples = Vec::new();
-
-    while (started.elapsed().as_millis() as u64) < args.settle_ms {
-        let elapsed = started.elapsed();
-        let remaining = args
-            .settle_ms
-            .saturating_sub(elapsed.as_millis() as u64)
-            .max(1);
-        tokio::time::sleep(Duration::from_millis(remaining.min(sample_ms))).await;
-        let now_elapsed = started.elapsed();
-        let now_proc = ProcSnapshot::capture();
-        let now_sys = SystemSnapshot::capture();
-        let interval = now_elapsed.saturating_sub(prev_elapsed);
-        samples.push(SettleSample {
-            elapsed_ms: now_elapsed.as_millis() as u64,
-            interval_ms: interval.as_millis() as u64,
-            db_bytes: dir_size(path),
-            process: prev_proc.delta(&now_proc, interval),
-            system: prev_sys.delta(&now_sys),
-        });
-        prev_proc = now_proc;
-        prev_sys = now_sys;
-        prev_elapsed = now_elapsed;
-    }
-
-    let total_elapsed = started.elapsed();
-    let total_proc_after = ProcSnapshot::capture();
-    let total_sys_after = SystemSnapshot::capture();
-    Some(SettleMeasurement {
-        requested_ms: args.settle_ms,
-        sample_ms,
-        elapsed_s: total_elapsed.as_secs_f64(),
-        db_bytes_before,
-        db_bytes_after: dir_size(path),
-        process: total_proc_before.delta(&total_proc_after, total_elapsed),
-        system: total_sys_before.delta(&total_sys_after),
-        samples,
-    })
 }
 
 pub async fn run<B: RecordBackend>(engine_kind: B::Kind, args: SustainedArgs) -> Result<()> {
@@ -434,7 +362,13 @@ pub async fn run<B: RecordBackend>(engine_kind: B::Kind, args: SustainedArgs) ->
     let process_after = ProcSnapshot::capture();
     let system_after = SystemSnapshot::capture();
     let db_bytes_after_foreground = dir_size(&path);
-    let post_workload_settle = measure_settle(&path, &args).await;
+    let post_workload_settle = measure_settle(
+        &path,
+        args.settle_ms,
+        args.settle_sample_ms,
+        tokio::time::sleep,
+    )
+    .await;
     drop(engine);
     let db_bytes_final = dir_size(&path);
 

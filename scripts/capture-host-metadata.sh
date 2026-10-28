@@ -46,7 +46,7 @@ fi
   RUSTC_REAL=$(rustup which rustc --toolchain 1.99.1 2>/dev/null || true)
   [[ -x "$RUSTC_REAL" ]] && "$RUSTC_REAL" --version --verbose || true
   "$ROOT/scripts/cargo-local-1.99.sh" --version || true
-  echo "benchmark_cargo_home=${DB_BENCH_CARGO_HOME:-/tmp/db-bench-cargo-home}"
+  echo "benchmark_cargo_home=${DB_BENCH_CARGO_HOME:-${CARGO_HOME:-$HOME/.cargo}}"
   echo "storage_profile_id=${DBBENCH_STORAGE_PROFILE_ID:-}"
   echo "storage_profile_mode=${DBBENCH_STORAGE_PROFILE_MODE:-}"
   echo "storage_profile_sha256=${DBBENCH_STORAGE_PROFILE_SHA256:-}"

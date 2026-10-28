@@ -6,17 +6,23 @@ use serde::Serialize;
 use std::{
     fs,
     path::{Path, PathBuf},
-    time::{Duration, Instant},
+    time::Instant,
 };
 
+#[cfg(test)]
+use super::engine::compression_override_supported;
 use super::{
     data::{key, sample_existing_id, sample_read_id, value},
-    engine::{Engine, compression_mapping, compression_override_supported},
-    metrics::{self as bench_metrics, Quantiles, dir_size, hist, peak_rss_kib, quantiles, record},
+    engine::{Engine, compression_mapping},
+    metrics::{
+        self as bench_metrics, Quantiles, SettleMeasurement, dir_size, hist, measure_settle,
+        peak_rss_kib, quantiles, record,
+    },
     types::{
         AccessPattern, Durability, EngineCompression, EngineKind, KeyShape, ValuePattern, Workload,
         WritePattern,
     },
+    workload::mixed_epoch_targets,
 };
 use bench_metrics::metrics::{ProcDelta, ProcSnapshot, SystemDelta, SystemSnapshot};
 
@@ -102,27 +108,6 @@ struct Verification {
 }
 
 #[derive(Debug, Serialize)]
-struct SettleSample {
-    elapsed_ms: u64,
-    interval_ms: u64,
-    db_bytes: u64,
-    process: ProcDelta,
-    system: SystemDelta,
-}
-
-#[derive(Debug, Serialize)]
-struct SettleMeasurement {
-    requested_ms: u64,
-    sample_ms: u64,
-    elapsed_s: f64,
-    db_bytes_before: u64,
-    db_bytes_after: u64,
-    process: ProcDelta,
-    system: SystemDelta,
-    samples: Vec<SettleSample>,
-}
-
-#[derive(Debug, Serialize)]
 struct Measurement {
     format_version: u32,
     engine: EngineKind,
@@ -172,12 +157,6 @@ struct Measurement {
     prefill_skipped: bool,
     warmup_reads: u64,
     verification: Option<Verification>,
-}
-
-impl Args {
-    fn range_scan_supported(&self) -> bool {
-        !matches!(self.engine, EngineKind::Lkv | EngineKind::ParitydbHash)
-    }
 }
 
 async fn prefill(engine: &mut Engine, args: &Args) -> Result<()> {
@@ -249,7 +228,7 @@ async fn run_workload(
             }
         }
         Workload::RangeScan => {
-            if !args.range_scan_supported() {
+            if !args.engine.supports_range_scan() {
                 bail!("selected engine/configuration has no ordered keyed range-scan API");
             }
             if args.key_shape == KeyShape::Hashed {
@@ -353,27 +332,11 @@ async fn run_workload(
 
             while done < args.ops {
                 let epoch = (args.ops - done).min(1_000);
-                let (r_target, u_target, i_target, d_target) = match args.workload {
-                    Workload::ReadHeavy => {
-                        let u = epoch * 5 / 100;
-                        (epoch - u, u, 0, 0)
-                    }
-                    Workload::Balanced => {
-                        let u = epoch * 30 / 100;
-                        let i = epoch * 10 / 100;
-                        let d = epoch * 10 / 100;
-                        (epoch - u - i - d, u, i, d)
-                    }
-                    Workload::Churn => {
-                        let u = epoch * 40 / 100;
-                        let i = epoch * 30 / 100;
-                        (0, u, i, epoch - u - i)
-                    }
-                    _ => unreachable!(),
-                };
+                let targets = mixed_epoch_targets(args.workload, epoch, false);
+                debug_assert_eq!(targets.total(), epoch);
 
-                let mut units = Vec::with_capacity((r_target as usize) + 16);
-                for _ in 0..r_target {
+                let mut units = Vec::with_capacity((targets.reads as usize) + 16);
+                for _ in 0..targets.reads {
                     let (id, _expect_hit) = sample_read_id(
                         &mut rng,
                         args.records,
@@ -385,8 +348,10 @@ async fn run_workload(
                     units.push(Unit::Read(make_key(id)));
                 }
 
-                let mut write_specs = Vec::with_capacity((u_target + i_target + d_target) as usize);
-                for _ in 0..u_target {
+                let mut write_specs = Vec::with_capacity(
+                    (targets.updates + targets.inserts + targets.deletes) as usize,
+                );
+                for _ in 0..targets.updates {
                     let id = sample_existing_id(
                         &mut rng,
                         args.records,
@@ -398,7 +363,7 @@ async fn run_workload(
                         make_value(id, args.seed ^ done),
                     ));
                 }
-                for _ in 0..i_target {
+                for _ in 0..targets.inserts {
                     let id = next_id;
                     next_id += 1;
                     write_specs.push(WriteSpec::Put(
@@ -406,7 +371,7 @@ async fn run_workload(
                         make_value(id, args.seed ^ done),
                     ));
                 }
-                for _ in 0..d_target {
+                for _ in 0..targets.deletes {
                     let id = sample_existing_id(
                         &mut rng,
                         args.records,
@@ -469,63 +434,6 @@ async fn run_workload(
         }
     }
     Ok((done, reads, writes, deletes))
-}
-
-async fn measure_settle(path: &Path, args: &Args) -> Option<SettleMeasurement> {
-    if args.settle_ms == 0 {
-        return None;
-    }
-    let sample_ms = args.settle_sample_ms.max(1);
-    let total_started = Instant::now();
-    let total_proc_before = ProcSnapshot::capture();
-    let total_sys_before = SystemSnapshot::capture();
-    let db_bytes_before = dir_size(path);
-    let mut samples = Vec::new();
-    let mut prev_proc = total_proc_before.clone();
-    let mut prev_sys = total_sys_before.clone();
-    let mut prev_elapsed = Duration::ZERO;
-
-    loop {
-        let elapsed = total_started.elapsed();
-        if elapsed.as_millis() as u64 >= args.settle_ms {
-            break;
-        }
-        let remaining_ms = args
-            .settle_ms
-            .saturating_sub(elapsed.as_millis() as u64)
-            .max(1);
-        let sleep_ms = remaining_ms.min(sample_ms);
-        tokio::time::sleep(Duration::from_millis(sleep_ms)).await;
-
-        let now_elapsed = total_started.elapsed();
-        let now_proc = ProcSnapshot::capture();
-        let now_sys = SystemSnapshot::capture();
-        let interval = now_elapsed.saturating_sub(prev_elapsed);
-        samples.push(SettleSample {
-            elapsed_ms: now_elapsed.as_millis() as u64,
-            interval_ms: interval.as_millis() as u64,
-            db_bytes: dir_size(path),
-            process: prev_proc.delta(&now_proc, interval),
-            system: prev_sys.delta(&now_sys),
-        });
-        prev_proc = now_proc;
-        prev_sys = now_sys;
-        prev_elapsed = now_elapsed;
-    }
-
-    let total_elapsed = total_started.elapsed();
-    let total_proc_after = ProcSnapshot::capture();
-    let total_sys_after = SystemSnapshot::capture();
-    Some(SettleMeasurement {
-        requested_ms: args.settle_ms,
-        sample_ms,
-        elapsed_s: total_elapsed.as_secs_f64(),
-        db_bytes_before,
-        db_bytes_after: dir_size(path),
-        process: total_proc_before.delta(&total_proc_after, total_elapsed),
-        system: total_sys_before.delta(&total_sys_after),
-        samples,
-    })
 }
 
 async fn verify_recovery(
@@ -710,7 +618,13 @@ pub async fn run() -> Result<()> {
     let system_after = SystemSnapshot::capture();
     let measured_process = process_before.delta(&process_after, elapsed);
     let measured_system_delta = system_before.delta(&system_after);
-    let post_workload_settle = measure_settle(&path, &args).await;
+    let post_workload_settle = measure_settle(
+        &path,
+        args.settle_ms,
+        args.settle_sample_ms,
+        tokio::time::sleep,
+    )
+    .await;
     engine.close().await?;
     drop(engine);
     let db_bytes = dir_size(&path);

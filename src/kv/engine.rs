@@ -57,6 +57,22 @@ pub(crate) const REDB_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::ne
 pub(crate) const MANIFOLD_TABLE: ManifoldTableDefinition<&[u8], &[u8]> =
     ManifoldTableDefinition::new("kv");
 
+#[allow(unsafe_code)]
+fn open_heed_environment(dir: &Path, durability: Durability) -> Result<HeedEnv> {
+    let mut options = EnvOpenOptions::new();
+    options.map_size(16usize * 1024 * 1024 * 1024).max_dbs(1);
+    if durability == Durability::Relaxed {
+        // SAFETY: NO_SYNC only changes LMDB's durability policy. This benchmark owns
+        // the environment directory exclusively for the lifetime of the handle.
+        unsafe {
+            options.flags(EnvFlags::NO_SYNC);
+        }
+    }
+    // SAFETY: each invocation owns `dir`, creates it before opening, and keeps the
+    // resulting environment alive until all database handles using it are dropped.
+    unsafe { Ok(options.open(dir)?) }
+}
+
 pub(crate) enum Engine {
     Redb(RedbDb),
     Fjall {
@@ -350,14 +366,7 @@ impl Engine {
             EngineKind::Heed => {
                 let dir = path.join("heed");
                 fs::create_dir_all(&dir)?;
-                let mut opts = EnvOpenOptions::new();
-                opts.map_size(16usize * 1024 * 1024 * 1024).max_dbs(1);
-                if durability == Durability::Relaxed {
-                    unsafe {
-                        opts.flags(EnvFlags::NO_SYNC);
-                    }
-                }
-                let env = unsafe { opts.open(&dir)? };
+                let env = open_heed_environment(&dir, durability)?;
                 let mut wtxn = env.write_txn()?;
                 let db: HeedDb<Bytes, Bytes> = env.create_database(&mut wtxn, None)?;
                 wtxn.commit()?;
