@@ -362,7 +362,7 @@ fn run_complete(lane: Lane, repo: &Path, run_id: &str, plan_path: Option<&Path>)
             .or_else(|| value_as_i64(support.get("trials"))),
     }
     .unwrap_or(0);
-    let expected_groups = if trials > 0 && expected > 0 && expected.is_multiple_of(trials) {
+    let expected_groups = if trials > 0 && expected > 0 && expected % trials == 0 {
         expected / trials
     } else {
         -1

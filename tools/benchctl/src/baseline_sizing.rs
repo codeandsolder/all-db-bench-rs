@@ -138,7 +138,7 @@ fn round_up_ops(value: f64) -> i64 {
 
 fn round_up_odd_trials(value: f64) -> i64 {
     let mut requested = (value.ceil() as i64).max(3);
-    if requested.is_multiple_of(2) {
+    if requested % 2 == 0 {
         requested += 1;
     }
     requested

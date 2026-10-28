@@ -228,7 +228,7 @@ fn choose_ops(
         .max()
         .context("empty calibration family")?;
     let minimum = if workload == "write-burst" {
-        if !current_ops.is_multiple_of(txn) {
+        if current_ops % txn != 0 {
             bail!("calibration write-burst ops are not transaction aligned");
         }
         desired = ((desired + txn - 1) / txn) * txn;

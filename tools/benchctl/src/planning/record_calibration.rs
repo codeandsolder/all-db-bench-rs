@@ -428,7 +428,7 @@ fn materialize(plan: &Value) -> Result<(Vec<Vec<String>>, Value)> {
             bail!("bounded state unsupported for {workload} in case {index}");
         }
         if workload == "write-burst" {
-            if !ops.is_multiple_of(txn) {
+            if ops % txn != 0 {
                 bail!("write-burst ops must be divisible by txn_size in case {index}");
             }
             if ops < clients * txn {
@@ -483,9 +483,7 @@ fn materialize(plan: &Value) -> Result<(Vec<Vec<String>>, Value)> {
         }
     }
     if !rows.is_empty()
-        && !i64::try_from(rows.len())
-            .context("row count overflow")?
-            .is_multiple_of(expect_trials)
+        && i64::try_from(rows.len()).context("row count overflow")? % expect_trials != 0
     {
         bail!("case count is not divisible by expect_trials");
     }
