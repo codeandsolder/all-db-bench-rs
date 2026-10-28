@@ -1,3 +1,6 @@
+use crate::json_io::read_json;
+use crate::json_value::json_truthy;
+use crate::json_value::py_string;
 use crate::summary;
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value, json};
@@ -65,17 +68,6 @@ pub(crate) struct FinalizeLane<'a> {
     pub(crate) expected_groups: i64,
 }
 
-fn py_string(value: &Value) -> String {
-    match value {
-        Value::Null => "None".to_owned(),
-        Value::Bool(true) => "True".to_owned(),
-        Value::Bool(false) => "False".to_owned(),
-        Value::String(value) => value.clone(),
-        Value::Number(value) => value.to_string(),
-        other => other.to_string(),
-    }
-}
-
 fn value_i64(value: Option<&Value>) -> Result<i64> {
     match value.context("missing integer value")? {
         Value::Number(value) => value.as_i64().context("integer is outside i64 range"),
@@ -93,17 +85,6 @@ fn value_f64(value: Option<&Value>) -> Result<f64> {
             .parse::<f64>()
             .with_context(|| format!("invalid number {raw:?}")),
         other => bail!("expected numeric-compatible value, got {other}"),
-    }
-}
-
-fn json_truthy(value: Option<&Value>) -> bool {
-    match value {
-        None | Some(Value::Null) => false,
-        Some(Value::Bool(value)) => *value,
-        Some(Value::Number(value)) => value.as_f64().is_some_and(|value| value != 0.0),
-        Some(Value::String(value)) => !value.is_empty(),
-        Some(Value::Array(value)) => !value.is_empty(),
-        Some(Value::Object(value)) => !value.is_empty(),
     }
 }
 
@@ -181,13 +162,6 @@ fn read_ndjson(path: &Path) -> Result<Vec<Value>> {
                 .with_context(|| format!("invalid JSON at {}:{}", path.display(), index + 1))
         })
         .collect()
-}
-
-fn read_json(path: &Path) -> Result<Value> {
-    serde_json::from_str(
-        &fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?,
-    )
-    .with_context(|| format!("invalid JSON in {}", path.display()))
 }
 
 fn semantic_manifest_fields(row: &Value) -> Map<String, Value> {

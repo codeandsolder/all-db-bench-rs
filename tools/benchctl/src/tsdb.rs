@@ -1,3 +1,4 @@
+use crate::json_value::py_string;
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Number, Value, json};
 use std::{
@@ -41,17 +42,6 @@ fn read_cases(run_dir: &Path) -> Result<Vec<Value>> {
         bail!("no TSDB case results");
     }
     Ok(cases)
-}
-
-fn py_string(value: &Value) -> String {
-    match value {
-        Value::Null => "None".to_owned(),
-        Value::Bool(true) => "True".to_owned(),
-        Value::Bool(false) => "False".to_owned(),
-        Value::String(value) => value.clone(),
-        Value::Number(value) => value.to_string(),
-        Value::Array(_) | Value::Object(_) => value.to_string(),
-    }
 }
 
 fn field<'a>(value: &'a Value, path: &[&str]) -> Result<&'a Value> {

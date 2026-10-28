@@ -139,20 +139,30 @@ fn policy_ops(repo: &Path, scenario: &str, workload: &str, default_ops: i64) -> 
     Ok(value)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn add_case(
-    cases: &mut Vec<Value>,
-    repo: &Path,
-    scenario: &str,
-    engine: &str,
-    durability: &str,
-    workload: &str,
+struct RecordCase<'a> {
+    scenario: &'a str,
+    engine: &'a str,
+    durability: &'a str,
+    workload: &'a str,
     clients: i64,
     records: i64,
     default_ops: i64,
     payload_bytes: i64,
     txn_size: i64,
-) -> Result<()> {
+}
+
+fn add_case(cases: &mut Vec<Value>, repo: &Path, case: RecordCase<'_>) -> Result<()> {
+    let RecordCase {
+        scenario,
+        engine,
+        durability,
+        workload,
+        clients,
+        records,
+        default_ops,
+        payload_bytes,
+        txn_size,
+    } = case;
     let ops = policy_ops(repo, scenario, workload, default_ops)?;
     let state = if BOUNDED_WORKLOADS.contains(&workload) {
         "bounded"
@@ -191,15 +201,17 @@ fn build_plan(repo: &Path) -> Result<Value> {
                 add_case(
                     &mut cases,
                     repo,
-                    "record-concurrency-core",
-                    engine,
-                    "sync",
-                    workload,
-                    clients,
-                    RECORDS,
-                    DEFAULT_OPS,
-                    PAYLOAD,
-                    TXN,
+                    RecordCase {
+                        scenario: "record-concurrency-core",
+                        engine,
+                        durability: "sync",
+                        workload,
+                        clients,
+                        records: RECORDS,
+                        default_ops: DEFAULT_OPS,
+                        payload_bytes: PAYLOAD,
+                        txn_size: TXN,
+                    },
                 )?;
             }
         }
@@ -208,15 +220,17 @@ fn build_plan(repo: &Path) -> Result<Value> {
                 add_case(
                     &mut cases,
                     repo,
-                    "record-concurrency-relaxed",
-                    engine,
-                    "relaxed",
-                    workload,
-                    clients,
-                    RECORDS,
-                    DEFAULT_OPS,
-                    PAYLOAD,
-                    TXN,
+                    RecordCase {
+                        scenario: "record-concurrency-relaxed",
+                        engine,
+                        durability: "relaxed",
+                        workload,
+                        clients,
+                        records: RECORDS,
+                        default_ops: DEFAULT_OPS,
+                        payload_bytes: PAYLOAD,
+                        txn_size: TXN,
+                    },
                 )?;
             }
         }
@@ -225,15 +239,17 @@ fn build_plan(repo: &Path) -> Result<Value> {
                 add_case(
                     &mut cases,
                     repo,
-                    "record-concurrency-large-payload",
-                    engine,
-                    "sync",
-                    workload,
-                    clients,
-                    RECORDS,
-                    DEFAULT_OPS,
-                    STRESS_PAYLOAD,
-                    TXN,
+                    RecordCase {
+                        scenario: "record-concurrency-large-payload",
+                        engine,
+                        durability: "sync",
+                        workload,
+                        clients,
+                        records: RECORDS,
+                        default_ops: DEFAULT_OPS,
+                        payload_bytes: STRESS_PAYLOAD,
+                        txn_size: TXN,
+                    },
                 )?;
             }
         }
@@ -241,43 +257,49 @@ fn build_plan(repo: &Path) -> Result<Value> {
             add_case(
                 &mut cases,
                 repo,
-                "record-concurrency-hotset",
-                engine,
-                "sync",
-                "read-heavy",
-                clients,
-                HOT_RECORDS,
-                HOT_DEFAULT_OPS,
-                PAYLOAD,
-                TXN,
+                RecordCase {
+                    scenario: "record-concurrency-hotset",
+                    engine,
+                    durability: "sync",
+                    workload: "read-heavy",
+                    clients,
+                    records: HOT_RECORDS,
+                    default_ops: HOT_DEFAULT_OPS,
+                    payload_bytes: PAYLOAD,
+                    txn_size: TXN,
+                },
             )?;
         }
         for clients in SIDE_CLIENTS {
             add_case(
                 &mut cases,
                 repo,
-                "record-concurrency-txn-1",
-                engine,
-                "sync",
-                "write-burst",
-                clients,
-                RECORDS,
-                TX1_DEFAULT_OPS,
-                PAYLOAD,
-                1,
+                RecordCase {
+                    scenario: "record-concurrency-txn-1",
+                    engine,
+                    durability: "sync",
+                    workload: "write-burst",
+                    clients,
+                    records: RECORDS,
+                    default_ops: TX1_DEFAULT_OPS,
+                    payload_bytes: PAYLOAD,
+                    txn_size: 1,
+                },
             )?;
             add_case(
                 &mut cases,
                 repo,
-                "record-concurrency-txn-1000",
-                engine,
-                "sync",
-                "write-burst",
-                clients,
-                RECORDS,
-                TX1000_DEFAULT_OPS,
-                PAYLOAD,
-                1000,
+                RecordCase {
+                    scenario: "record-concurrency-txn-1000",
+                    engine,
+                    durability: "sync",
+                    workload: "write-burst",
+                    clients,
+                    records: RECORDS,
+                    default_ops: TX1000_DEFAULT_OPS,
+                    payload_bytes: PAYLOAD,
+                    txn_size: 1000,
+                },
             )?;
         }
     }

@@ -1,4 +1,6 @@
-use crate::{baseline_sizing, idle, noise, support};
+use crate::json_io::read_json;
+use crate::json_value::json_truthy;
+use crate::{baseline_sizing, file_hash, idle, noise};
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value, json};
 use std::{fs, os::unix::fs::PermissionsExt, path::Path, process::Command, thread, time::Duration};
@@ -82,16 +84,6 @@ pub(crate) struct FollowupArgs<'a> {
     pub(crate) dry_run: bool,
 }
 
-fn json_truthy(value: Option<&Value>) -> bool {
-    match value {
-        None | Some(Value::Null) => false,
-        Some(Value::Bool(v)) => *v,
-        Some(Value::Number(v)) => v.as_f64().is_some_and(|n| n != 0.0),
-        Some(Value::String(v)) => !v.is_empty(),
-        Some(Value::Array(v)) => !v.is_empty(),
-        Some(Value::Object(v)) => !v.is_empty(),
-    }
-}
 fn i64v(value: Option<&Value>) -> Result<i64> {
     match value.context("missing integer")? {
         Value::Number(n) => n.as_i64().context("integer out of range"),
@@ -105,12 +97,6 @@ fn f64v(value: Option<&Value>) -> Result<f64> {
         Value::String(s) => Ok(s.parse()?),
         other => bail!("expected number, got {other}"),
     }
-}
-fn read_json(path: &Path) -> Result<Value> {
-    serde_json::from_str(
-        &fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?,
-    )
-    .with_context(|| format!("invalid JSON in {}", path.display()))
 }
 fn executable(path: &Path) -> bool {
     fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
@@ -151,7 +137,7 @@ fn preflight(repo: &Path, max_io: f64, storage: bool) -> i32 {
 
 fn verify_expected(path: &Path, expected: Option<&str>) -> Result<()> {
     if let Some(expected) = expected {
-        let actual = support::sha256(path)?;
+        let actual = file_hash::sha256(path)?;
         if actual != expected {
             bail!("benchmark binary SHA-256 mismatch: {}", path.display());
         }

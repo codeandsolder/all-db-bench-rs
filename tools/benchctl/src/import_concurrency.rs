@@ -1,3 +1,5 @@
+use crate::file_hash::sha256;
+use crate::json_io::read_json;
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
@@ -20,22 +22,8 @@ fn importer_sha256() -> String {
     format!("{:x}", digest.finalize())
 }
 
-fn sha256(path: &Path) -> Result<String> {
-    let bytes = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
-    let mut digest = Sha256::new();
-    digest.update(bytes);
-    Ok(format!("{:x}", digest.finalize()))
-}
-
-fn load_json(path: &Path) -> Result<Value> {
-    serde_json::from_str(
-        &fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?,
-    )
-    .with_context(|| format!("invalid JSON in {}", path.display()))
-}
-
 fn require_quiet(path: &Path) -> Result<()> {
-    let data = load_json(path)?;
+    let data = read_json(path)?;
     if data.get("quiet").and_then(Value::as_bool) != Some(true) {
         bail!("source noise evidence is not quiet: {}", path.display());
     }
@@ -89,7 +77,7 @@ fn import_results(source: &Path, dest: &Path, excluded: &BTreeSet<String>) -> Re
     if !support_path.is_file() || !jobs_path.is_file() {
         bail!("source run must contain support.json and jobs.txt");
     }
-    let support = load_json(&support_path)?;
+    let support = read_json(&support_path)?;
     if support.get("lane").and_then(Value::as_str) != Some("kv-concurrency")
         || support.get("profile").and_then(Value::as_str) != Some("quick")
     {
@@ -103,7 +91,7 @@ fn import_results(source: &Path, dest: &Path, excluded: &BTreeSet<String>) -> Re
 
     let mut entries = Vec::new();
     for case_path in case_paths(source)? {
-        let row = load_json(&case_path)?;
+        let row = read_json(&case_path)?;
         let engine = string_or_empty(row.get("engine"));
         if excluded.contains(&engine) {
             continue;
@@ -186,7 +174,7 @@ fn verify_import(run_dir: &Path) -> Result<Value> {
     if !manifest_path.is_file() {
         bail!("missing import manifest: {}", manifest_path.display());
     }
-    let manifest = load_json(&manifest_path)?;
+    let manifest = read_json(&manifest_path)?;
     let expected = manifest.get("importer_sha256").and_then(Value::as_str);
     let actual = importer_sha256();
     if expected != Some(actual.as_str()) {

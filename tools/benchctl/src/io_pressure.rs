@@ -1,4 +1,6 @@
 use crate::io_evidence::{FioExpectation, fio_p99_us, load_storage_delta, ratio, validate_fio_job};
+use crate::json_io::read_json;
+use crate::json_value::py_string;
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value, json};
 use std::{collections::BTreeMap, fs, path::Path};
@@ -59,13 +61,6 @@ const AGGREGATE_FIELDS: [&str; 47] = [
     "zfs_direct_read_bytes_per_pressure_read_byte",
     "zfs_direct_write_bytes_per_pressure_write_byte",
 ];
-
-fn read_json(path: &Path) -> Result<Value> {
-    serde_json::from_str(
-        &fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?,
-    )
-    .with_context(|| format!("invalid JSON in {}", path.display()))
-}
 
 fn as_f64(value: Option<&Value>, default: f64) -> f64 {
     value.and_then(Value::as_f64).unwrap_or(default)
@@ -300,17 +295,6 @@ fn identity(case: &Value) -> Vec<Value> {
 
 fn key_string(values: &[Value]) -> Result<String> {
     serde_json::to_string(values).context("failed to serialize grouping key")
-}
-
-fn py_string(value: &Value) -> String {
-    match value {
-        Value::Null => "None".to_owned(),
-        Value::Bool(true) => "True".to_owned(),
-        Value::Bool(false) => "False".to_owned(),
-        Value::String(value) => value.clone(),
-        Value::Number(value) => value.to_string(),
-        other => other.to_string(),
-    }
 }
 
 fn sort_key(values: &[Value]) -> Vec<String> {

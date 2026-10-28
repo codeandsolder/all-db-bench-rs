@@ -1,8 +1,9 @@
+use crate::file_hash::sha256;
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use std::{
-    fs::{self, File},
+    fs,
     io::{self, Read},
     path::Path,
     process::Command,
@@ -57,23 +58,6 @@ fn is_lower_hex(value: &str, length: usize) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-}
-
-pub(crate) fn sha256(path: &Path) -> Result<String> {
-    let mut file =
-        File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
-    let mut digest = Sha256::new();
-    let mut buffer = vec![0_u8; 1024 * 1024];
-    loop {
-        let read = file
-            .read(&mut buffer)
-            .with_context(|| format!("failed to read {}", path.display()))?;
-        if read == 0 {
-            break;
-        }
-        digest.update(&buffer[..read]);
-    }
-    Ok(format!("{:x}", digest.finalize()))
 }
 
 pub(crate) fn git_head(repo: &Path) -> Result<String> {
@@ -337,14 +321,12 @@ pub(crate) fn canonical_identity_sha256(identity: &Value) -> Result<String> {
 }
 
 fn read_json(path: &str) -> Result<Value> {
-    let text = if path == "-" {
-        let mut text = String::new();
-        io::stdin().read_to_string(&mut text)?;
-        text
-    } else {
-        fs::read_to_string(path).with_context(|| format!("failed to read {path}"))?
-    };
-    serde_json::from_str(&text).with_context(|| format!("invalid JSON in {path}"))
+    if path != "-" {
+        return crate::json_io::read_json(Path::new(path));
+    }
+    let mut text = String::new();
+    io::stdin().read_to_string(&mut text)?;
+    serde_json::from_str(&text).context("invalid JSON in -")
 }
 
 pub(crate) fn verify_plan_identity(

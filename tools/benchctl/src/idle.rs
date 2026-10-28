@@ -1,3 +1,5 @@
+use crate::json_io::read_json;
+use crate::json_value::json_truthy;
 use crate::support::{
     CONTINUOUS_ADMISSION, canonical_identity_sha256, support_identity, verify_plan_identity,
 };
@@ -70,7 +72,7 @@ pub(crate) fn verify_binary(path: &Path, expected_sha256: &str) -> Result<()> {
     if !metadata.is_file() || metadata.permissions().mode() & 0o111 == 0 {
         bail!("pinned binary is not executable: {}", path.display());
     }
-    let actual = crate::support::sha256(path)?;
+    let actual = crate::file_hash::sha256(path)?;
     if actual != expected_sha256 {
         bail!("pinned binary SHA-256 mismatch: expected {expected_sha256}, got {actual}");
     }
@@ -303,17 +305,6 @@ fn value_as_i64(value: Option<&Value>) -> Option<i64> {
     })
 }
 
-fn json_truthy(value: Option<&Value>) -> bool {
-    match value {
-        None | Some(Value::Null) => false,
-        Some(Value::Bool(value)) => *value,
-        Some(Value::Number(value)) => value.as_f64().is_some_and(|number| number != 0.0),
-        Some(Value::String(value)) => !value.is_empty(),
-        Some(Value::Array(value)) => !value.is_empty(),
-        Some(Value::Object(value)) => !value.is_empty(),
-    }
-}
-
 fn plan_version(path: &Path) -> Result<i64> {
     let plan: Value = serde_json::from_str(
         &fs::read_to_string(path)
@@ -327,17 +318,10 @@ fn plan_version(path: &Path) -> Result<i64> {
     Ok(version)
 }
 
-fn load_json(path: &Path) -> Result<Value> {
-    serde_json::from_str(
-        &fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?,
-    )
-    .with_context(|| format!("invalid JSON in {}", path.display()))
-}
-
 fn support_matches_plan(lane: Lane, repo: &Path, support_path: &Path, plan_path: &Path) -> bool {
     let result = (|| -> Result<()> {
-        let support = load_json(support_path)?;
-        let plan = load_json(plan_path)?;
+        let support = read_json(support_path)?;
+        let plan = read_json(plan_path)?;
         let identity = support_identity(
             &support,
             lane.support_lane(),
@@ -356,10 +340,10 @@ fn support_matches_plan(lane: Lane, repo: &Path, support_path: &Path, plan_path:
 fn run_complete(lane: Lane, repo: &Path, run_id: &str, plan_path: Option<&Path>) -> bool {
     let run = repo.join("results/runs").join(run_id);
     let support_path = run.join("support.json");
-    let Ok(support) = load_json(&support_path) else {
+    let Ok(support) = read_json(&support_path) else {
         return false;
     };
-    let Ok(summary) = load_json(&run.join("summary.json")) else {
+    let Ok(summary) = read_json(&run.join("summary.json")) else {
         return false;
     };
     if let Some(plan_path) = plan_path
@@ -663,7 +647,7 @@ mod tests {
         let path = dir.0.join("bin");
         fs::write(&path, b"abc")?;
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755))?;
-        let sha = crate::support::sha256(&path)?;
+        let sha = crate::file_hash::sha256(&path)?;
         verify_binary(&path, &sha)?;
         let error = verify_binary(&path, "bad")
             .err()

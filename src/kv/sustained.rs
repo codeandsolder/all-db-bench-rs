@@ -1,7 +1,12 @@
-use crate::base::metrics::{ProcDelta, ProcSnapshot, SystemDelta, SystemSnapshot};
-use crate::base::{
-    Durability, Engine, EngineKind, PayloadPattern, Quantiles, READ_MATERIALIZATION, RecordData,
-    WRITE_MATERIALIZATION, dir_size, hist, payload_for, peak_rss_kib, quantiles, record,
+use super::{
+    data::{key, sample_existing_id, value},
+    engine::Engine,
+    lifecycle::{DatasetSpec, prefill},
+    metrics::{
+        ProcDelta, ProcSnapshot, Quantiles, SettleMeasurement, SystemDelta, SystemSnapshot,
+        dir_size, hist, measure_settle, peak_rss_kib, quantiles, record,
+    },
+    types::{AccessPattern, Durability, EngineKind, KeyShape, ValuePattern, Workload},
 };
 use anyhow::{Context, Result, bail};
 use clap::{Parser, ValueEnum};
@@ -23,7 +28,7 @@ enum SustainedPattern {
 }
 
 #[derive(Debug, Parser)]
-#[command(about = "Windowed sustained-write/compaction benchmark for record databases")]
+#[command(about = "Fixed-work windowed sustained-write/compaction benchmark")]
 struct Args {
     #[arg(long, value_enum)]
     engine: EngineKind,
@@ -31,14 +36,20 @@ struct Args {
     durability: Durability,
     #[arg(long, value_enum)]
     pattern: SustainedPattern,
-    #[arg(long, default_value_t = 20_000)]
+    #[arg(long, default_value_t = 100_000)]
     records: u64,
-    #[arg(long, default_value_t = 50_000)]
+    #[arg(long, default_value_t = 125_000)]
     ops: u64,
-    #[arg(long, default_value_t = 2_000)]
+    #[arg(long, default_value_t = 5_000)]
     window_ops: u64,
-    #[arg(long, default_value_t = 512)]
-    payload_bytes: usize,
+    #[arg(long, default_value_t = 4096)]
+    value_bytes: usize,
+    #[arg(long, value_enum, default_value_t = ValuePattern::PseudoRandom)]
+    value_pattern: ValuePattern,
+    #[arg(long, default_value_t = 8)]
+    key_bytes: usize,
+    #[arg(long, value_enum, default_value_t = KeyShape::Sequential)]
+    key_shape: KeyShape,
     #[arg(long, default_value_t = 100)]
     txn_size: usize,
     #[arg(long, default_value_t = 1)]
@@ -51,7 +62,7 @@ struct Args {
     settle_ms: u64,
     #[arg(long, default_value_t = 250)]
     settle_sample_ms: u64,
-    #[arg(long, default_value = "record-sustained")]
+    #[arg(long, default_value = "sustained")]
     scenario: String,
     #[arg(long, default_value = "data")]
     root: PathBuf,
@@ -79,43 +90,23 @@ struct WindowMeasurement {
 }
 
 #[derive(Debug, Serialize)]
-struct SettleSample {
-    elapsed_ms: u64,
-    interval_ms: u64,
-    db_bytes: u64,
-    process: ProcDelta,
-    system: SystemDelta,
-}
-
-#[derive(Debug, Serialize)]
-struct SettleMeasurement {
-    requested_ms: u64,
-    sample_ms: u64,
-    elapsed_s: f64,
-    db_bytes_before: u64,
-    db_bytes_after: u64,
-    process: ProcDelta,
-    system: SystemDelta,
-    samples: Vec<SettleSample>,
-}
-
-#[derive(Debug, Serialize)]
 struct Measurement {
     format_version: u32,
-    lane: &'static str,
+    lane: String,
     engine: EngineKind,
-    engine_version: &'static str,
+    engine_version: String,
     durability: Durability,
-    durability_mapping: &'static str,
+    durability_mapping: String,
     pattern: SustainedPattern,
     records: u64,
     ops_requested: u64,
     ops_completed: u64,
     window_ops: u64,
-    payload_bytes: usize,
+    value_bytes: usize,
+    value_pattern: ValuePattern,
+    key_bytes: usize,
+    key_shape: KeyShape,
     txn_size: usize,
-    read_materialization: &'static str,
-    write_materialization: &'static str,
     trial: u32,
     seed: u64,
     scenario: String,
@@ -147,125 +138,54 @@ struct Measurement {
     db_kept: bool,
 }
 
-fn row(id: u64, payload_bytes: usize, salt: u64) -> RecordData {
-    RecordData {
-        bucket: (id % 100) as u32,
-        payload: payload_for(PayloadPattern::HexRandom, id, payload_bytes, salt),
-    }
-}
-
-fn logical_put_bytes(payload_bytes: usize) -> u64 {
-    12u64.saturating_add(payload_bytes as u64)
-}
-
-fn hot95_id(rng: &mut SmallRng, records: u64) -> u64 {
-    let hot = (records / 20).max(1).min(records);
-    if hot == records || rng.random_range(0..100u32) < 95 {
-        rng.random_range(0..hot)
-    } else {
-        rng.random_range(hot..records)
-    }
-}
-
-async fn prefill(engine: &Engine, args: &Args) -> Result<()> {
-    const BATCH: usize = 1_000;
-    let mut rows = Vec::with_capacity(BATCH);
-    for id in 0..args.records {
-        rows.push((id, row(id, args.payload_bytes, args.seed)));
-        if rows.len() == BATCH {
-            engine.upsert_batch(&rows).await?;
-            rows.clear();
-        }
-    }
-    if !rows.is_empty() {
-        engine.upsert_batch(&rows).await?;
-    }
-    Ok(())
-}
-
-async fn warm_reads(engine: &Engine, args: &Args) -> Result<()> {
+async fn warm_reads(engine: &mut Engine, args: &Args) -> Result<()> {
     let mut rng = SmallRng::seed_from_u64(args.seed ^ args.trial as u64 ^ 0x7777);
     for _ in 0..args.records.min(args.warmup_reads) {
         let id = rng.random_range(0..args.records);
-        let _ = engine.get(id).await?;
+        let _ = engine
+            .get(&key(id, args.key_bytes, args.key_shape, args.seed))
+            .await?;
     }
     Ok(())
 }
 
-async fn measure_settle(path: &Path, args: &Args) -> Option<SettleMeasurement> {
-    if args.settle_ms == 0 {
-        return None;
-    }
-    let sample_ms = args.settle_sample_ms.max(1);
-    let started = Instant::now();
-    let total_proc_before = ProcSnapshot::capture();
-    let total_sys_before = SystemSnapshot::capture();
-    let db_bytes_before = dir_size(path);
-    let mut prev_proc = total_proc_before.clone();
-    let mut prev_sys = total_sys_before.clone();
-    let mut prev_elapsed = Duration::ZERO;
-    let mut samples = Vec::new();
-
-    while (started.elapsed().as_millis() as u64) < args.settle_ms {
-        let elapsed = started.elapsed();
-        let remaining = args
-            .settle_ms
-            .saturating_sub(elapsed.as_millis() as u64)
-            .max(1);
-        tokio::time::sleep(Duration::from_millis(remaining.min(sample_ms))).await;
-        let now_elapsed = started.elapsed();
-        let now_proc = ProcSnapshot::capture();
-        let now_sys = SystemSnapshot::capture();
-        let interval = now_elapsed.saturating_sub(prev_elapsed);
-        samples.push(SettleSample {
-            elapsed_ms: now_elapsed.as_millis() as u64,
-            interval_ms: interval.as_millis() as u64,
-            db_bytes: dir_size(path),
-            process: prev_proc.delta(&now_proc, interval),
-            system: prev_sys.delta(&now_sys),
-        });
-        prev_proc = now_proc;
-        prev_sys = now_sys;
-        prev_elapsed = now_elapsed;
-    }
-
-    let total_elapsed = started.elapsed();
-    let total_proc_after = ProcSnapshot::capture();
-    let total_sys_after = SystemSnapshot::capture();
-    Some(SettleMeasurement {
-        requested_ms: args.settle_ms,
-        sample_ms,
-        elapsed_s: total_elapsed.as_secs_f64(),
-        db_bytes_before,
-        db_bytes_after: dir_size(path),
-        process: total_proc_before.delta(&total_proc_after, total_elapsed),
-        system: total_sys_before.delta(&total_sys_after),
-        samples,
-    })
-}
-
-pub(crate) async fn run() -> Result<()> {
+pub async fn run() -> Result<()> {
     let args = Args::parse();
     if args.records == 0 || args.ops == 0 || args.window_ops == 0 || args.txn_size == 0 {
         bail!("records, ops, window-ops and txn-size must all be greater than zero");
     }
-    if args.window_ops < args.txn_size as u64 || args.window_ops % args.txn_size as u64 != 0 {
-        bail!("--window-ops must be a multiple of --txn-size");
+    if args.key_bytes < 8 {
+        bail!("--key-bytes must be at least 8");
     }
-    if args.ops % args.txn_size as u64 != 0 {
-        bail!("--ops must be a multiple of --txn-size");
+    if args.window_ops < args.txn_size as u64
+        || !args.window_ops.is_multiple_of(args.txn_size as u64)
+    {
+        bail!(
+            "--window-ops must be a positive multiple of --txn-size so window boundaries do not manufacture partial transactions"
+        );
+    }
+    if !args.ops.is_multiple_of(args.txn_size as u64) {
+        bail!(
+            "--ops must be a multiple of --txn-size so the final transaction is not silently shortened"
+        );
+    }
+    if matches!(args.engine, EngineKind::ManifoldWal) {
+        bail!(
+            "manifold-wal is a known-broken recovery diagnostic and is excluded from sustained rankings"
+        );
     }
 
+    let mapping = args.engine.durability_mapping(args.durability)?;
     let path = args.root.join(
         format!(
-            "record-sustained-{:?}-{:?}-{:?}-n{}-o{}-w{}-p{}-tx{}-t{}",
+            "sustained-{:?}-{:?}-{:?}-n{}-o{}-w{}-v{}-tx{}-t{}",
             args.engine,
             args.durability,
             args.pattern,
             args.records,
             args.ops,
             args.window_ops,
-            args.payload_bytes,
+            args.value_bytes,
             args.txn_size,
             args.trial
         )
@@ -273,18 +193,27 @@ pub(crate) async fn run() -> Result<()> {
         .replace('_', "-"),
     );
     if path.exists() {
-        fs::remove_dir_all(&path).context("remove stale record sustained-run directory")?;
+        fs::remove_dir_all(&path).context("remove stale sustained-run directory")?;
     }
     fs::create_dir_all(&path)?;
 
     let open_started = Instant::now();
-    let engine = Engine::open(args.engine, args.durability, &path).await?;
+    let mut engine = Engine::open(args.engine, args.durability, &path).await?;
     let open_s = open_started.elapsed().as_secs_f64();
+    let dataset = DatasetSpec {
+        records: args.records,
+        key_bytes: args.key_bytes,
+        key_shape: args.key_shape,
+        seed: args.seed,
+        value_bytes: args.value_bytes,
+        value_pattern: args.value_pattern,
+        durability: args.durability,
+    };
     let prefill_started = Instant::now();
-    prefill(&engine, &args).await?;
+    prefill(&mut engine, dataset, 0).await?;
     let prefill_s = prefill_started.elapsed().as_secs_f64();
     let warmup_started = Instant::now();
-    warm_reads(&engine, &args).await?;
+    warm_reads(&mut engine, &args).await?;
     let warmup_s = warmup_started.elapsed().as_secs_f64();
 
     let db_bytes_before = dir_size(&path);
@@ -334,33 +263,40 @@ pub(crate) async fn run() -> Result<()> {
                 specs.shuffle(&mut rng);
 
                 for chunk in specs.chunks(args.txn_size) {
-                    let mut rows = Vec::with_capacity(chunk.len());
+                    let mut puts = Vec::with_capacity(chunk.len());
                     let mut deletes = Vec::with_capacity(chunk.len());
                     for (op_offset, spec) in chunk.iter().enumerate() {
                         let salt = args.seed ^ done ^ op_offset as u64;
                         match spec {
                             ChurnOp::Update => {
                                 let id = rng.random_range(0..args.records);
-                                rows.push((id, row(id, args.payload_bytes, salt)));
+                                puts.push((
+                                    key(id, args.key_bytes, args.key_shape, args.seed),
+                                    value(id, args.value_bytes, salt, args.value_pattern),
+                                ));
                             }
                             ChurnOp::Insert => {
                                 let id = next_id;
                                 next_id += 1;
-                                rows.push((id, row(id, args.payload_bytes, salt)));
+                                puts.push((
+                                    key(id, args.key_bytes, args.key_shape, args.seed),
+                                    value(id, args.value_bytes, salt, args.value_pattern),
+                                ));
                             }
                             ChurnOp::Delete => {
-                                deletes.push(rng.random_range(0..args.records));
+                                let id = rng.random_range(0..args.records);
+                                deletes.push(key(id, args.key_bytes, args.key_shape, args.seed));
                             }
                         }
                     }
-                    let put_count = rows.len() as u64;
+                    let put_count = puts.len() as u64;
                     let delete_count = deletes.len() as u64;
                     let logical_bytes = put_count
-                        .saturating_mul(logical_put_bytes(args.payload_bytes))
-                        + delete_count.saturating_mul(8);
-                    let started = Instant::now();
-                    engine.write_batch(&rows, &deletes).await?;
-                    let latency = started.elapsed();
+                        .saturating_mul((args.key_bytes + args.value_bytes) as u64)
+                        + delete_count.saturating_mul(args.key_bytes as u64);
+                    let t = Instant::now();
+                    engine.write_batch(args.durability, &puts, &deletes).await?;
+                    let latency = t.elapsed();
                     record(&mut window_hist, latency);
                     record(&mut total_hist, latency);
                     done += chunk.len() as u64;
@@ -373,7 +309,7 @@ pub(crate) async fn run() -> Result<()> {
         } else {
             while done < window_target {
                 let n = (window_target - done).min(args.txn_size as u64) as usize;
-                let mut rows = Vec::with_capacity(n);
+                let mut puts = Vec::with_capacity(n);
                 for op_offset in 0..n {
                     let salt = args.seed ^ done ^ op_offset as u64;
                     let id = match args.pattern {
@@ -383,16 +319,26 @@ pub(crate) async fn run() -> Result<()> {
                             id
                         }
                         SustainedPattern::UpdateUniform => rng.random_range(0..args.records),
-                        SustainedPattern::UpdateHot95 => hot95_id(&mut rng, args.records),
+                        SustainedPattern::UpdateHot95 => sample_existing_id(
+                            &mut rng,
+                            args.records,
+                            AccessPattern::Hot95,
+                            Workload::WriteBurst,
+                        ),
                         SustainedPattern::Churn => unreachable!(),
                     };
-                    rows.push((id, row(id, args.payload_bytes, salt)));
+                    puts.push((
+                        key(id, args.key_bytes, args.key_shape, args.seed),
+                        value(id, args.value_bytes, salt, args.value_pattern),
+                    ));
                 }
-                let put_count = rows.len() as u64;
-                let logical_bytes = put_count.saturating_mul(logical_put_bytes(args.payload_bytes));
-                let started = Instant::now();
-                engine.upsert_batch(&rows).await?;
-                let latency = started.elapsed();
+
+                let put_count = puts.len() as u64;
+                let logical_bytes =
+                    put_count.saturating_mul((args.key_bytes + args.value_bytes) as u64);
+                let t = Instant::now();
+                engine.write_batch(args.durability, &puts, &[]).await?;
+                let latency = t.elapsed();
                 record(&mut window_hist, latency);
                 record(&mut total_hist, latency);
                 done += n as u64;
@@ -432,26 +378,34 @@ pub(crate) async fn run() -> Result<()> {
     let process_after = ProcSnapshot::capture();
     let system_after = SystemSnapshot::capture();
     let db_bytes_after_foreground = dir_size(&path);
-    let post_workload_settle = measure_settle(&path, &args).await;
+    let post_workload_settle = measure_settle(
+        &path,
+        args.settle_ms,
+        args.settle_sample_ms,
+        tokio::time::sleep,
+    )
+    .await;
+    engine.close().await?;
     drop(engine);
     let db_bytes_final = dir_size(&path);
 
     let result = Measurement {
-        format_version: 7,
-        lane: "record-sustained",
+        format_version: 6,
+        lane: String::from("kv-sustained"),
         engine: args.engine,
-        engine_version: args.engine.version(),
+        engine_version: args.engine.version().to_string(),
         durability: args.durability,
-        durability_mapping: args.engine.mapping(args.durability),
+        durability_mapping: mapping.to_string(),
         pattern: args.pattern,
         records: args.records,
         ops_requested: args.ops,
         ops_completed: done,
         window_ops: args.window_ops,
-        payload_bytes: args.payload_bytes,
+        value_bytes: args.value_bytes,
+        value_pattern: args.value_pattern,
+        key_bytes: args.key_bytes,
+        key_shape: args.key_shape,
         txn_size: args.txn_size,
-        read_materialization: READ_MATERIALIZATION,
-        write_materialization: WRITE_MATERIALIZATION,
         trial: args.trial,
         seed: args.seed,
         scenario: args.scenario.clone(),
@@ -500,7 +454,7 @@ pub(crate) async fn run() -> Result<()> {
     }
 
     if !args.keep_db {
-        fs::remove_dir_all(&path).context("remove record sustained-run database")?;
+        fs::remove_dir_all(&path).context("remove sustained-run database")?;
     }
     Ok(())
 }

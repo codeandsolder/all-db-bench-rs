@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Rust validation (shared sccache)
+    permissions:
+      contents: read
+    uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@1232321acb7d4d8ceefabe1950e3ebc9227f8f36 # main
+    with:
+      rust-toolchain: "1.99.1"
+      rust-components: "rustfmt clippy"
+      rustflags: "-C target-cpu=x86-64-v2 -C target-feature=+aes,+sse2"
+      timeout-minutes: 90
+      sccache-cache-size-mib: 6144
+      command: |
+        cargo +1.99.1 fmt --all -- --check
+        cargo +1.99.1 fmt --manifest-path engines/surrealdb-rocksdb/Cargo.toml -- --check
+        bash -n scripts/*.sh
+        ./scripts/test-record-semantics.sh
+        ./scripts/test-no-python-tooling.sh
+
+        cargo +1.99.1 test --locked --workspace --all-targets
+        cargo +1.99.1 clippy --locked --workspace --all-targets -- -D warnings
+
+        cargo +1.99.1 test --locked -p rust-db-realistic-bench --all-targets --features record
+        cargo +1.99.1 clippy --locked -p rust-db-realistic-bench --all-targets --features record -- -D warnings
+        cargo +1.99.1 test --locked -p rust-db-realistic-bench --all-targets --features kv-all
+        cargo +1.99.1 clippy --locked -p rust-db-realistic-bench --all-targets --features kv-all -- -D warnings
+
+        cargo +1.99.1 test --locked --manifest-path engines/surrealdb-rocksdb/Cargo.toml --all-targets
+        cargo +1.99.1 clippy --locked --manifest-path engines/surrealdb-rocksdb/Cargo.toml --all-targets -- -D warnings

@@ -3,7 +3,7 @@ use serde::Serialize;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, ValueEnum)]
 #[serde(rename_all = "kebab-case")]
-pub(crate) enum PayloadPattern {
+pub enum PayloadPattern {
     HexRandom,
     RandomAscii,
     Zeros,
@@ -23,7 +23,7 @@ fn legacy_payload(id: u64, len: usize, salt: u64) -> String {
     payload_for(PayloadPattern::HexRandom, id, len, salt)
 }
 
-pub(crate) fn payload_for(pattern: PayloadPattern, id: u64, len: usize, salt: u64) -> String {
+pub fn payload_for(pattern: PayloadPattern, id: u64, len: usize, salt: u64) -> String {
     let mut x = id ^ salt ^ 0x9e37_79b9_7f4a_7c15;
     match pattern {
         PayloadPattern::HexRandom => {
@@ -120,10 +120,12 @@ mod tests {
         let zeros = payload_for(PayloadPattern::Zeros, 1, 512, 2);
         assert!(structured.contains("\"schema\":\"telemetry-v1\""));
         let repeated_bytes = repeated.as_bytes();
+        let (chunks, remainder) = repeated_bytes.as_chunks::<8>();
+        assert!(remainder.is_empty());
         assert!(
-            repeated_bytes
-                .chunks_exact(8)
-                .all(|chunk| chunk == &repeated_bytes[..8])
+            chunks
+                .iter()
+                .all(|chunk| chunk.as_slice() == &repeated_bytes[..8])
         );
         assert_ne!(repeated, zeros);
         assert!(zeros.bytes().all(|byte| byte == b'0'));

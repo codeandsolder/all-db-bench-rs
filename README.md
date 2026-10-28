@@ -2,7 +2,7 @@
 
 Canonical repository: https://github.com/codeandsolder/all-db-bench-rs
 
-The current primary validation/benchmark host is the Acer laptop checkout at /home/jan/projects/all-db-bench-rs. Results remain host-scoped; do not combine laptop and older cold-storage measurements.
+The current primary benchmark/development host is the Acer laptop checkout at `/home/jan/projects/all-db-bench-rs`. Compile/test validation runs in GitHub Actions through the shared public-repository sccache workflow. Performance results remain host-scoped; do not combine laptop and older cold-storage measurements.
 
 A replacement for the earlier redb/Turso/Fjall growth-loop benchmark, designed around fixed workloads, fresh databases, explicit durability and repeated randomized trials.
 
@@ -12,6 +12,14 @@ A replacement for the earlier redb/Turso/Fjall growth-loop benchmark, designed a
     CARGO_TARGET_DIR=/tmp/rust-db-realistic-bench-target ./scripts/cargo-local-1.99.sh build --release --locked --features record --bin recordbench
     ./scripts/cargo-local-1.99.sh build --release --locked --manifest-path engines/surrealdb-rocksdb/Cargo.toml --target-dir /tmp/rust-db-surreal-rocks-target
     ./scripts/cargo-local-1.99.sh build --release --locked --manifest-path engines/tsdb-server/Cargo.toml --target-dir /tmp/rust-db-tsdb-target
+
+## Source layout
+
+- `src/kv/` contains the raw embedded-KV engine adapters, engine policy, concurrent client adapters, deterministic data/lifecycle helpers, and the single/concurrency/sustained runners. The `src/bin/kv*` files are intentionally tiny entrypoints.
+- `crates/record-harness/` owns backend-agnostic record benchmark semantics and the single/concurrency/sustained orchestration behind the `RecordBackend` contract. Root and Rocks-backed record binaries provide only their backend adapters and CLI surface.
+- `crates/bench-common/` owns measurement/process/system primitives and other semantics shared across benchmark families.
+- `tools/benchctl/` is the native control plane. CLI declaration, command dispatch, and larger domains such as noise monitoring and result summarization are separate modules rather than one monolithic binary.
+- `engines/tsdb-server/` is a normal workspace member. `engines/surrealdb-rocksdb/` is deliberately a separate Cargo workspace while still consuming the shared crates: the root raw-KV RocksDB dependency (`librocksdb-sys`) and SurrealDB's RocksDB backend (`surrealdb-librocksdb-sys`) both declare `links = "rocksdb"`, so Cargo cannot resolve them in one dependency graph.
 
 ## Smoke matrices
 
@@ -49,9 +57,13 @@ The summarizer aggregates independent trials using the median and IQR. It does n
 
 ## Validation
 
+GitHub Actions is the authoritative compile/test/lint gate for pushes, pull requests, and manual validation. It uses Rust 1.99.1, the shared public-repository sccache workflow, strict Clippy (`-D warnings`), whole-workspace tests, the root `record` and `kv-all` feature lanes, and the isolated SurrealDB/RocksDB package.
+
+For the equivalent local validation plus host-specific prerequisites and shell policy tests:
+
     ./scripts/validate.sh
 
-The static validation gate checks the pinned Rust 1.99.1 toolchain, formatting, shell syntax, the shell policy gates, all in-tree benchmark binaries, and the isolated SurrealDB/RocksDB package. Run the smoke matrices after that to exercise every configured adapter against real database files.
+The local script is fail-closed on the configured sccache path; it does not bypass the cache if the daemon is unavailable. Run the smoke matrices separately to exercise every configured adapter against real database files.
 
 ## Wide/comprehensive campaigns
 
@@ -164,6 +176,6 @@ All engine versions are pinned to the latest published usable release verified o
 
 The record lane includes SurrealDB 3.3.4 on its internal SurrealKV 0.21.4 backend, Turso 0.8.3, SQLite 3.54.0 via rusqlite 0.40.2, and an isolated SurrealDB 3.3.4/RocksDB package. SQLite is built project-locally under `.deps/sqlite-3.54.0` because rusqlite's bundled copy is older than current SQLite.
 
-Final benchmark binaries use rustc 1.99.1 with `target-cpu=native` through `scripts/cargo-local-1.99.sh`. The wrapper requires the dedicated sccache daemon on port 4237 and refuses uncached fallback. Our sccache fork resolves the requesting host native CPU/features, hashes that profile into the cache key, and rewrites distributed Rust native codegen to a proven-equivalent explicit CPU/feature set; unresolved native requests are not guessed. The native lane therefore shares the ordinary scheduler and Garage cache safely.
+Final benchmark binaries use rustc 1.99.1 with `target-cpu=native` through `scripts/cargo-local-1.99.sh`. The wrapper requires a managed native-safe sccache daemon and refuses uncached fallback. Non-root builds use the same-owner `/run/sccache-<user>/sccache.sock`; root builds retain the dedicated root daemon on port 4237. Our sccache fork resolves the requesting host native CPU/features, hashes that profile into the cache key, and rewrites distributed Rust native codegen to a proven-equivalent explicit CPU/feature set; unresolved native requests are not guessed. The native lane therefore shares the ordinary scheduler and Garage cache safely.
 
 Fresh baseline publication is orchestrated by `scripts/benchctl.sh baseline-generation`: one generation ID/root names the KV and record stock runs, sizing and short-pressure repair plans, follow-up prefixes, selected corpora and readiness certificates. All measurement stages use the same pinned source commit/binary manifests and continuous-v3 admission; historical publication generations remain immutable rather than being resumed under new binaries.

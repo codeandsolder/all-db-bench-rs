@@ -1,3 +1,4 @@
+use crate::json_value::py_string;
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Number, Value, json};
 use std::{
@@ -531,17 +532,6 @@ fn group_key(case: &Value) -> Vec<Value> {
             })
         })
         .collect()
-}
-
-fn py_string(value: &Value) -> String {
-    match value {
-        Value::Null => "None".to_owned(),
-        Value::Bool(true) => "True".to_owned(),
-        Value::Bool(false) => "False".to_owned(),
-        Value::String(value) => value.clone(),
-        Value::Number(value) => value.to_string(),
-        Value::Array(_) | Value::Object(_) => value.to_string(),
-    }
 }
 
 fn aggregate(cases: &[Value]) -> Result<Vec<Value>> {

@@ -46,7 +46,7 @@ fi
   RUSTC_REAL=$(rustup which rustc --toolchain 1.99.1 2>/dev/null || true)
   [[ -x "$RUSTC_REAL" ]] && "$RUSTC_REAL" --version --verbose || true
   "$ROOT/scripts/cargo-local-1.99.sh" --version || true
-  echo "benchmark_cargo_home=${DB_BENCH_CARGO_HOME:-/tmp/db-bench-cargo-home}"
+  echo "benchmark_cargo_home=${DB_BENCH_CARGO_HOME:-${CARGO_HOME:-$HOME/.cargo}}"
   echo "storage_profile_id=${DBBENCH_STORAGE_PROFILE_ID:-}"
   echo "storage_profile_mode=${DBBENCH_STORAGE_PROFILE_MODE:-}"
   echo "storage_profile_sha256=${DBBENCH_STORAGE_PROFILE_SHA256:-}"
@@ -134,7 +134,7 @@ fi
   cat /proc/diskstats
   echo
   echo "## provenance"
-  sha256sum Cargo.lock Cargo.toml rust-toolchain src/metrics.rs src/bin/*.rs scripts/*.sh docs/*.md engines/surrealdb-rocksdb/Cargo.toml engines/surrealdb-rocksdb/Cargo.lock engines/surrealdb-rocksdb/src/*.rs 2>/dev/null | sort
+  sha256sum Cargo.lock Cargo.toml rust-toolchain crates/bench-common/src/*.rs crates/record-harness/src/*.rs src/*.rs src/kv/*.rs src/record/*.rs src/bin/*.rs scripts/*.sh docs/*.md engines/surrealdb-rocksdb/Cargo.toml engines/surrealdb-rocksdb/src/*.rs engines/surrealdb-rocksdb/src/bin/*.rs 2>/dev/null | sort
   if [[ -x "$ROOT/.deps/sqlite-3.54.0/bin/sqlite3" ]]; then
     echo "sqlite_runtime=$("$ROOT/.deps/sqlite-3.54.0/bin/sqlite3" --version)"
   fi

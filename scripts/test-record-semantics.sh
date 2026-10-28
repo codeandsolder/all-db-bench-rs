@@ -2,21 +2,22 @@
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-RECORD="$ROOT/src/bin/recordbench.rs"
-ROCKS="$ROOT/engines/surrealdb-rocksdb/src/main.rs"
+RECORD="$ROOT/src/record/engine.rs"
+ROCKS="$ROOT/engines/surrealdb-rocksdb/src/lib.rs"
 RUNNER="$ROOT/scripts/run-record-matrix.sh"
 WIDE="$ROOT/scripts/run-record-wide-matrix.sh"
-MAIN="$ROOT/tools/benchctl/src/main.rs"
+DISPATCH="$ROOT/tools/benchctl/src/dispatch.rs"
+CLI="$ROOT/tools/benchctl/src/cli.rs"
 SUPERVISOR="$ROOT/tools/benchctl/src/baseline_supervisor.rs"
 GENERATION="$ROOT/tools/benchctl/src/baseline_generation.rs"
 
 require() {
   local needle=$1 file=$2 message=$3
-  rg -Fq -- "$needle" "$file" || { echo "$message" >&2; exit 1; }
+  grep -Fq -- "$needle" "$file" || { echo "$message" >&2; exit 1; }
 }
 reject() {
   local needle=$1 file=$2 message=$3
-  if rg -Fq -- "$needle" "$file"; then echo "$message" >&2; exit 1; fi
+  if grep -Fq -- "$needle" "$file"; then echo "$message" >&2; exit 1; fi
 }
 
 # Record benchmark binding/materialization semantics.
@@ -67,19 +68,21 @@ for needle in \
 done
 
 # Native baseline control plane must require explicit pinned record binaries and generation inputs.
-require 'BaselineQuickIdle' "$MAIN" 'missing native baseline quick supervisor command'
-require 'BaselineSizingFollowups' "$MAIN" 'missing native baseline followup command'
-require 'rocks_bench_bin: Option<PathBuf>' "$MAIN" 'record supervisor lost explicit Rocks binary argument'
-require 'expected_rocks_bench_sha256: Option<String>' "$MAIN" 'record supervisor lost pinned Rocks SHA argument'
+require 'BaselineQuickIdle' "$CLI" 'missing native baseline quick supervisor command'
+require 'BaselineSizingFollowups' "$CLI" 'missing native baseline followup command'
+require 'rocks_bench_bin: Option<PathBuf>' "$CLI" 'record supervisor lost explicit Rocks binary argument'
+require 'expected_rocks_bench_sha256: Option<String>' "$CLI" 'record supervisor lost pinned Rocks SHA argument'
+require 'rocks_bench_bin: rocks_bench_bin.as_deref()' "$DISPATCH" 'record supervisor no longer forwards explicit Rocks binary'
+require 'expected_rocks_bench_sha256: expected_rocks_bench_sha256.as_deref()' "$DISPATCH" 'record supervisor no longer forwards pinned Rocks SHA'
 reject 'recordbench-ae74103b847171d1' "$SUPERVISOR" 'historical record binary hardcoded into native supervisor'
 reject 'surrealdb-rocksdb-recordbench-c3978a3b66a24edd' "$SUPERVISOR" 'historical Rocks binary hardcoded into native supervisor'
 reject '20261009-record-full-v1-resize-v1' "$SUPERVISOR" 'historical record resize prefix hardcoded into native supervisor'
 require '"baseline-sizing-followups".into()' "$GENERATION" 'generation no longer schedules native sizing followups'
 require 'paths.record_resize_prefix.clone()' "$GENERATION" 'record followups no longer use generation-scoped prefix'
-require 'FinalizeBaselineSizing' "$MAIN" 'missing native baseline finalizer'
-require 'record_stock_results: Option<PathBuf>' "$MAIN" 'finalizer lost explicit record stock input'
-require 'record_audit: Option<PathBuf>' "$MAIN" 'finalizer lost explicit record audit input'
-require '--record-stock-results is required for the selected lane' "$MAIN" 'finalizer no longer fails closed without record stock input'
-require '--record-audit is required for the selected lane' "$MAIN" 'finalizer no longer fails closed without record audit input'
+require 'FinalizeBaselineSizing' "$CLI" 'missing native baseline finalizer'
+require 'record_stock_results: Option<PathBuf>' "$CLI" 'finalizer lost explicit record stock input'
+require 'record_audit: Option<PathBuf>' "$CLI" 'finalizer lost explicit record audit input'
+require '--record-stock-results is required for the selected lane' "$DISPATCH" 'finalizer no longer fails closed without record stock input'
+require '--record-audit is required for the selected lane' "$DISPATCH" 'finalizer no longer fails closed without record audit input'
 
 echo record-semantics-ok

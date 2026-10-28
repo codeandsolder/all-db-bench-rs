@@ -1,13 +1,4 @@
-#![cfg(feature = "record")]
-#![allow(clippy::too_many_lines)]
-
-#[allow(dead_code)]
-#[path = "recordbench.rs"]
-mod base;
-#[path = "../record_sustained_driver.rs"]
-mod driver;
-
 #[tokio::main(flavor = "multi_thread", worker_threads = 1)]
 async fn main() -> anyhow::Result<()> {
-    driver::run().await
+    rust_db_realistic_bench::record::sustained::run().await
 }

@@ -1,6 +1,7 @@
+use crate::file_hash::sha256;
+use crate::json_value::py_string;
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value, json};
-use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     fs,
@@ -42,17 +43,6 @@ pub(crate) struct AuditStockArgs<'a> {
     pub(crate) lane: &'a str,
     pub(crate) json_out: &'a Path,
     pub(crate) markdown_out: Option<&'a Path>,
-}
-
-fn py_string(value: &Value) -> String {
-    match value {
-        Value::Null => "None".to_owned(),
-        Value::Bool(true) => "True".to_owned(),
-        Value::Bool(false) => "False".to_owned(),
-        Value::String(value) => value.clone(),
-        Value::Number(value) => value.to_string(),
-        other => other.to_string(),
-    }
 }
 
 fn value_f64(value: Option<&Value>, default: f64) -> Result<f64> {
@@ -428,11 +418,6 @@ fn identity(item: &Value, lane: &str) -> Result<Vec<String>> {
         );
     }
     Ok(key)
-}
-
-fn sha256(path: &Path) -> Result<String> {
-    let bytes = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
-    Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
 fn runner_ops_override(lane: &str, workload: &str, effective_ops: i64) -> Result<i64> {

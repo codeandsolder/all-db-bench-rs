@@ -1,6 +1,8 @@
+use crate::file_hash::sha256;
+use crate::json_io::read_json;
+use crate::json_value::json_truthy;
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value, json};
-use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
@@ -18,13 +20,6 @@ pub(crate) struct ReadyArgs<'a> {
     pub(crate) stock_run_id: &'a str,
     pub(crate) expected_admission_policy: &'a str,
     pub(crate) out: &'a Path,
-}
-
-fn read_json(path: &Path) -> Result<Value> {
-    serde_json::from_str(
-        &fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?,
-    )
-    .with_context(|| format!("invalid JSON in {}", path.display()))
 }
 
 fn read_rows(path: &Path) -> Result<Vec<Value>> {
@@ -58,22 +53,6 @@ fn value_f64(value: Option<&Value>) -> Result<f64> {
             .with_context(|| format!("invalid number {raw:?}")),
         other => bail!("expected numeric-compatible value, got {other}"),
     }
-}
-
-fn json_truthy(value: Option<&Value>) -> bool {
-    match value {
-        None | Some(Value::Null) => false,
-        Some(Value::Bool(value)) => *value,
-        Some(Value::Number(value)) => value.as_f64().is_some_and(|value| value != 0.0),
-        Some(Value::String(value)) => !value.is_empty(),
-        Some(Value::Array(value)) => !value.is_empty(),
-        Some(Value::Object(value)) => !value.is_empty(),
-    }
-}
-
-fn sha256(path: &Path) -> Result<String> {
-    let bytes = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
-    Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
 fn tmp_path(path: &Path) -> PathBuf {
