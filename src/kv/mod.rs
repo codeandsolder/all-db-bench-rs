@@ -4,6 +4,7 @@ pub(crate) mod concurrency_clients;
 pub(crate) mod data;
 pub(crate) mod engine;
 pub(crate) mod engine_policy;
+pub(crate) mod lifecycle;
 pub(crate) mod metrics;
 pub mod sustained;
 pub(crate) mod types;

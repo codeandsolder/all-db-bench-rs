@@ -1,6 +1,6 @@
 use super::{
-    data::{key, sample_existing_id, value},
     engine::Engine,
+    lifecycle::{DatasetSpec, prefill, warm_existing_reads},
     metrics::{
         ProcDelta, ProcSnapshot, Quantiles, SystemDelta, SystemSnapshot, dir_size, hist,
         peak_rss_kib, quantiles,
@@ -12,7 +12,6 @@ use super::{
 use anyhow::{Context, Result, bail};
 use clap::{Parser, ValueEnum};
 use hdrhistogram::Histogram;
-use rand::{SeedableRng, rngs::SmallRng};
 use serde::Serialize;
 use std::{
     fs,
@@ -169,51 +168,6 @@ struct Measurement {
     db_kept: bool,
     warmup_reads: u64,
     concurrency_handle: &'static str,
-}
-
-async fn prefill(engine: &mut Engine, args: &Args) -> Result<()> {
-    const BATCH: usize = 10_000;
-    let mut puts = Vec::with_capacity(BATCH);
-    for id in 0..args.records {
-        puts.push((
-            key(id, args.key_bytes, args.key_shape, args.seed),
-            value(id, args.value_bytes, args.seed, args.value_pattern),
-        ));
-        if puts.len() == BATCH {
-            engine.write_batch(args.durability, &puts, &[]).await?;
-            puts.clear();
-        }
-    }
-    if args.state_evolution == StateEvolution::Bounded
-        && matches!(args.workload, Workload::Balanced | Workload::Churn)
-    {
-        for slot in 0..args.bounded_churn_slots {
-            let id = args.records.saturating_add(slot);
-            puts.push((
-                key(id, args.key_bytes, args.key_shape, args.seed),
-                value(id, args.value_bytes, args.seed, args.value_pattern),
-            ));
-            if puts.len() == BATCH {
-                engine.write_batch(args.durability, &puts, &[]).await?;
-                puts.clear();
-            }
-        }
-    }
-    if !puts.is_empty() {
-        engine.write_batch(args.durability, &puts, &[]).await?;
-    }
-    Ok(())
-}
-
-async fn warm_reads(engine: &mut Engine, args: &Args) -> Result<()> {
-    let mut rng = SmallRng::seed_from_u64(args.seed ^ 0x7777);
-    for _ in 0..args.records.min(args.warmup_reads) {
-        let id = sample_existing_id(&mut rng, args.records, args.access_pattern, args.workload);
-        let _ = engine
-            .get(&key(id, args.key_bytes, args.key_shape, args.seed))
-            .await?;
-    }
-    Ok(())
 }
 
 struct AggregateRun {
@@ -596,12 +550,32 @@ pub async fn run() -> Result<()> {
     let open_started = Instant::now();
     let mut engine = Engine::open(args.engine, args.durability, &path).await?;
     let open_s = open_started.elapsed().as_secs_f64();
+    let dataset = DatasetSpec {
+        records: args.records,
+        key_bytes: args.key_bytes,
+        key_shape: args.key_shape,
+        seed: args.seed,
+        value_bytes: args.value_bytes,
+        value_pattern: args.value_pattern,
+        durability: args.durability,
+    };
 
     let prefill_s = if args.reuse_db {
         0.0
     } else {
         let prefill_started = Instant::now();
-        prefill(&mut engine, &args).await?;
+        prefill(
+            &mut engine,
+            dataset,
+            if args.state_evolution == StateEvolution::Bounded
+                && matches!(args.workload, Workload::Balanced | Workload::Churn)
+            {
+                args.bounded_churn_slots
+            } else {
+                0
+            },
+        )
+        .await?;
         prefill_started.elapsed().as_secs_f64()
     };
 
@@ -611,7 +585,14 @@ pub async fn run() -> Result<()> {
     }
 
     let warmup_started = Instant::now();
-    warm_reads(&mut engine, &args).await?;
+    warm_existing_reads(
+        &mut engine,
+        dataset,
+        args.warmup_reads,
+        args.access_pattern,
+        args.workload,
+    )
+    .await?;
     let warmup_s = warmup_started.elapsed().as_secs_f64();
 
     let (concurrency_handle, run) = dispatch(engine, &args).await?;
