@@ -30,16 +30,14 @@ impl From<&RecordData> for SurrealRecord {
     }
 }
 
-pub enum Engine {
-    SurrealRocksdb(Surreal<SurrealLocalDb>),
-}
+pub struct Engine(Surreal<SurrealLocalDb>);
 
 impl EngineKind {
-    pub fn version(self) -> &'static str {
+    fn version(self) -> &'static str {
         "SurrealDB 3.3.4 / surrealdb-kvs-rocksdb 3.3.4"
     }
 
-    pub fn mapping(self, d: Durability) -> &'static str {
+    fn mapping(self, d: Durability) -> &'static str {
         match d {
             Durability::Relaxed => "SurrealDB embedded RocksDB sync=never",
             Durability::Sync => "SurrealDB embedded RocksDB sync=every",
@@ -48,100 +46,83 @@ impl EngineKind {
 }
 
 impl Engine {
-    pub async fn open(kind: EngineKind, durability: Durability, path: &Path) -> Result<Self> {
-        match kind {
-            EngineKind::SurrealdbRocksdb => {
-                let sync_mode = match durability {
-                    Durability::Relaxed => "never",
-                    Durability::Sync => "every",
-                };
-                let db = Surreal::new::<RocksDb>(path.join("surrealdb-rocksdb"))
-                    .sync(sync_mode)
-                    .await?;
-                db.use_ns("bench").use_db("bench").await?;
-                db.query("DEFINE INDEX IF NOT EXISTS idx_group ON TABLE item FIELDS bucket")
-                    .await?
-                    .check()?;
-                Ok(Self::SurrealRocksdb(db))
-            }
-        }
+    async fn open(kind: EngineKind, durability: Durability, path: &Path) -> Result<Self> {
+        let EngineKind::SurrealdbRocksdb = kind;
+        let sync_mode = match durability {
+            Durability::Relaxed => "never",
+            Durability::Sync => "every",
+        };
+        let db = Surreal::new::<RocksDb>(path.join("surrealdb-rocksdb"))
+            .sync(sync_mode)
+            .await?;
+        db.use_ns("bench").use_db("bench").await?;
+        db.query("DEFINE INDEX IF NOT EXISTS idx_group ON TABLE item FIELDS bucket")
+            .await?
+            .check()?;
+        Ok(Self(db))
     }
 
-    pub async fn get(&self, id: u64) -> Result<Option<ReadDigest>> {
-        match self {
-            Self::SurrealRocksdb(db) => {
-                let mut response = db
-                    .query("SELECT bucket, payload FROM ONLY $id")
-                    .bind(("id", RecordId::new("item", id as i64)))
-                    .await?;
-                let row: Option<SurrealRecord> = response.take(0)?;
-                Ok(row.map(|record| ReadDigest::new(record.bucket, record.payload.len())))
-            }
-        }
+    async fn get(&self, id: u64) -> Result<Option<ReadDigest>> {
+        let mut response = self
+            .0
+            .query("SELECT bucket, payload FROM ONLY $id")
+            .bind(("id", RecordId::new("item", id as i64)))
+            .await?;
+        let row: Option<SurrealRecord> = response.take(0)?;
+        Ok(row.map(|record| ReadDigest::new(record.bucket, record.payload.len())))
     }
 
-    pub async fn indexed_read(&self, group: u32) -> Result<IndexedRead> {
-        match self {
-            Self::SurrealRocksdb(db) => {
-                let mut resp = db
-                    .query("SELECT bucket, payload FROM item WHERE bucket = $bucket LIMIT 100")
-                    .bind(("bucket", group))
-                    .await?;
-                let rows: Vec<SurrealRecord> = resp.take(0)?;
-                let checksum = rows.iter().fold(0u64, |acc, row| {
-                    acc.wrapping_add(ReadDigest::new(row.bucket, row.payload.len()).checksum())
-                });
-                Ok(IndexedRead {
-                    rows: rows.len(),
-                    checksum,
-                })
-            }
-        }
+    async fn indexed_read(&self, group: u32) -> Result<IndexedRead> {
+        let mut response = self
+            .0
+            .query("SELECT bucket, payload FROM item WHERE bucket = $bucket LIMIT 100")
+            .bind(("bucket", group))
+            .await?;
+        let rows: Vec<SurrealRecord> = response.take(0)?;
+        let checksum = rows.iter().fold(0u64, |acc, row| {
+            acc.wrapping_add(ReadDigest::new(row.bucket, row.payload.len()).checksum())
+        });
+        Ok(IndexedRead {
+            rows: rows.len(),
+            checksum,
+        })
     }
 
-    pub async fn upsert_one(&self, id: u64, data: &RecordData) -> Result<()> {
-        match self {
-            Self::SurrealRocksdb(db) => {
-                db.query("UPSERT $id CONTENT $data RETURN NONE")
-                    .bind(("id", RecordId::new("item", id as i64)))
-                    .bind(("data", SurrealRecord::from(data)))
-                    .await?
-                    .check()?;
-            }
-        }
+    async fn upsert_one(&self, id: u64, data: &RecordData) -> Result<()> {
+        self.0
+            .query("UPSERT $id CONTENT $data RETURN NONE")
+            .bind(("id", RecordId::new("item", id as i64)))
+            .bind(("data", SurrealRecord::from(data)))
+            .await?
+            .check()?;
         Ok(())
     }
 
-    pub async fn write_batch(&self, rows: &[(u64, RecordData)], deletes: &[u64]) -> Result<()> {
-        match self {
-            Self::SurrealRocksdb(db) => {
-                let mut sql = String::from("BEGIN TRANSACTION;\n");
-                for index in 0..rows.len() {
-                    sql.push_str(&format!(
-                        "UPSERT $id_{index} CONTENT $data_{index} RETURN NONE;\n"
-                    ));
-                }
-                for index in 0..deletes.len() {
-                    sql.push_str(&format!("DELETE $delete_{index} RETURN NONE;\n"));
-                }
-                sql.push_str("COMMIT TRANSACTION;");
-                let mut query = db.query(sql);
-                for (index, (id, data)) in rows.iter().enumerate() {
-                    query = query
-                        .bind((format!("id_{index}"), RecordId::new("item", *id as i64)))
-                        .bind((format!("data_{index}"), SurrealRecord::from(data)));
-                }
-                for (index, id) in deletes.iter().enumerate() {
-                    query =
-                        query.bind((format!("delete_{index}"), RecordId::new("item", *id as i64)));
-                }
-                query.await?.check()?;
-            }
+    async fn write_batch(&self, rows: &[(u64, RecordData)], deletes: &[u64]) -> Result<()> {
+        let mut sql = String::from("BEGIN TRANSACTION;\n");
+        for index in 0..rows.len() {
+            sql.push_str(&format!(
+                "UPSERT $id_{index} CONTENT $data_{index} RETURN NONE;\n"
+            ));
         }
+        for index in 0..deletes.len() {
+            sql.push_str(&format!("DELETE $delete_{index} RETURN NONE;\n"));
+        }
+        sql.push_str("COMMIT TRANSACTION;");
+        let mut query = self.0.query(sql);
+        for (index, (id, data)) in rows.iter().enumerate() {
+            query = query
+                .bind((format!("id_{index}"), RecordId::new("item", *id as i64)))
+                .bind((format!("data_{index}"), SurrealRecord::from(data)));
+        }
+        for (index, id) in deletes.iter().enumerate() {
+            query = query.bind((format!("delete_{index}"), RecordId::new("item", *id as i64)));
+        }
+        query.await?.check()?;
         Ok(())
     }
 
-    pub async fn upsert_batch(&self, rows: &[(u64, RecordData)]) -> Result<()> {
+    async fn upsert_batch(&self, rows: &[(u64, RecordData)]) -> Result<()> {
         self.write_batch(rows, &[]).await
     }
 }
@@ -213,11 +194,9 @@ impl all_db_bench_record_harness::backend::RecordBackend for Engine {
         _path: &Path,
         _durability: Durability,
     ) -> impl std::future::Future<Output = Result<(Vec<Self>, &'static str)>> {
-        let Engine::SurrealRocksdb(db) = self;
+        let db = &self.0;
         std::future::ready(Ok((
-            (0..clients)
-                .map(|_| Engine::SurrealRocksdb(db.clone()))
-                .collect(),
+            (0..clients).map(|_| Engine(db.clone())).collect(),
             "native cloned SurrealDB/RocksDB client handles",
         )))
     }
