@@ -13,52 +13,34 @@ fio --version
 
 "$ROOT/scripts/cargo-local-1.99.sh" metadata --locked --no-deps --format-version 1 >/dev/null
 "$ROOT/scripts/cargo-local-1.99.sh" fmt --all --check
-rustfmt +1.99.1 --edition 2024 \
-  engines/surrealdb-rocksdb/src/lib.rs \
-  engines/surrealdb-rocksdb/src/main.rs \
-  engines/surrealdb-rocksdb/src/bin/surrealdb-rocksdb-recordconcurrency.rs \
-  engines/surrealdb-rocksdb/src/bin/surrealdb-rocksdb-recordsustained.rs --check
+"$ROOT/scripts/cargo-local-1.99.sh" fmt \
+  --manifest-path "$ROOT/engines/surrealdb-rocksdb/Cargo.toml" -- --check
 bash -n scripts/*.sh
 for test_script in "$ROOT"/scripts/test-*.sh; do
   "$test_script"
 done
 
-BENCHCTL_TARGET_DIR=${BENCHCTL_TARGET_DIR:-${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target}}
-"$ROOT/scripts/cargo-local-1.99.sh" fmt \
-  --manifest-path "$ROOT/tools/benchctl/Cargo.toml" -- --check
-CARGO_TARGET_DIR="$BENCHCTL_TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" test --locked \
-  --manifest-path "$ROOT/tools/benchctl/Cargo.toml"
-CARGO_TARGET_DIR="$BENCHCTL_TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" clippy --locked \
-  --manifest-path "$ROOT/tools/benchctl/Cargo.toml" -- -D warnings
+ROOT_TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target}
+CARGO_TARGET_DIR="$ROOT_TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" test --locked \
+  --workspace --all-targets
+CARGO_TARGET_DIR="$ROOT_TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" clippy --locked \
+  --workspace --all-targets -- -D warnings
 
-CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target} \
-  "$ROOT/scripts/cargo-local-1.99.sh" check --locked --features kv-all --bin kvbench
-CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target} \
-  "$ROOT/scripts/cargo-local-1.99.sh" check --locked --features kv-all --bin kvconcurrency
-CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target} \
-  "$ROOT/scripts/cargo-local-1.99.sh" check --locked --features kv-all --bin kvsustained
-CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target} \
-  "$ROOT/scripts/cargo-local-1.99.sh" check --locked --features record --bin recordbench
-CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target} \
-  "$ROOT/scripts/cargo-local-1.99.sh" check --locked --features record --bin recordconcurrency
-CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target} \
-  "$ROOT/scripts/cargo-local-1.99.sh" check --locked --features record --bin recordsustained
-"$ROOT/scripts/cargo-local-1.99.sh" fmt \
-  --manifest-path "$ROOT/engines/tsdb-server/Cargo.toml" -- --check
-"$ROOT/scripts/cargo-local-1.99.sh" check --locked \
-  --manifest-path "$ROOT/engines/tsdb-server/Cargo.toml" \
-  --target-dir "${TSDB_TARGET_DIR:-/tmp/rust-db-tsdb-target}"
+CARGO_TARGET_DIR="$ROOT_TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" test --locked \
+  -p rust-db-realistic-bench --all-targets --features record
+CARGO_TARGET_DIR="$ROOT_TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" clippy --locked \
+  -p rust-db-realistic-bench --all-targets --features record -- -D warnings
+CARGO_TARGET_DIR="$ROOT_TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" test --locked \
+  -p rust-db-realistic-bench --all-targets --features kv-all
+CARGO_TARGET_DIR="$ROOT_TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" clippy --locked \
+  -p rust-db-realistic-bench --all-targets --features kv-all -- -D warnings
+
+SURREAL_ROCKS_TARGET_DIR=${SURREAL_ROCKS_TARGET_DIR:-/tmp/rust-db-surreal-rocks-target}
 "$ROOT/scripts/cargo-local-1.99.sh" test --locked \
-  --manifest-path "$ROOT/engines/tsdb-server/Cargo.toml" \
-  --target-dir "${TSDB_TARGET_DIR:-/tmp/rust-db-tsdb-target}"
+  --manifest-path "$ROOT/engines/surrealdb-rocksdb/Cargo.toml" --all-targets \
+  --target-dir "$SURREAL_ROCKS_TARGET_DIR"
 "$ROOT/scripts/cargo-local-1.99.sh" clippy --locked \
-  --manifest-path "$ROOT/engines/tsdb-server/Cargo.toml" \
-  --target-dir "${TSDB_TARGET_DIR:-/tmp/rust-db-tsdb-target}" -- -D warnings
-"$ROOT/scripts/cargo-local-1.99.sh" check --locked \
-  --manifest-path "$ROOT/engines/surrealdb-rocksdb/Cargo.toml" \
-  --target-dir "${SURREAL_ROCKS_TARGET_DIR:-/tmp/rust-db-surreal-rocks-target}"
-"$ROOT/scripts/cargo-local-1.99.sh" clippy --locked \
-  --manifest-path "$ROOT/engines/surrealdb-rocksdb/Cargo.toml" \
-  --target-dir "${SURREAL_ROCKS_TARGET_DIR:-/tmp/rust-db-surreal-rocks-target}" -- -D warnings
+  --manifest-path "$ROOT/engines/surrealdb-rocksdb/Cargo.toml" --all-targets \
+  --target-dir "$SURREAL_ROCKS_TARGET_DIR" -- -D warnings
 
 echo "static validation passed"
