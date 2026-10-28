@@ -9,12 +9,12 @@ if [[ -n "$(git ls-files '*.py')" ]]; then
   exit 1
 fi
 
-if rg -n 'uv run|(^|[[:space:]])python3?([[:space:]]|-m)|^#!.*python' scripts --glob '!test-no-python-tooling.sh'; then
+if grep -RInE --exclude=test-no-python-tooling.sh 'uv run|(^|[[:space:]])python3?([[:space:]]|-m)|^#!.*python' scripts; then
   echo "first-party scripts must not invoke Python or uv" >&2
   exit 1
 fi
 
-if rg -n '/srv/scratch/db-bench-2026-09-27' README.md docs scripts --glob '!test-no-python-tooling.sh'; then
+if grep -RInF --exclude=test-no-python-tooling.sh '/srv/scratch/db-bench-2026-09-27' README.md docs scripts; then
   echo "retired scratch checkout path returned to active tooling/docs" >&2
   exit 1
 fi

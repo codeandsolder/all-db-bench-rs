@@ -12,11 +12,11 @@ GENERATION="$ROOT/tools/benchctl/src/baseline_generation.rs"
 
 require() {
   local needle=$1 file=$2 message=$3
-  rg -Fq -- "$needle" "$file" || { echo "$message" >&2; exit 1; }
+  grep -Fq -- "$needle" "$file" || { echo "$message" >&2; exit 1; }
 }
 reject() {
   local needle=$1 file=$2 message=$3
-  if rg -Fq -- "$needle" "$file"; then echo "$message" >&2; exit 1; fi
+  if grep -Fq -- "$needle" "$file"; then echo "$message" >&2; exit 1; fi
 }
 
 # Record benchmark binding/materialization semantics.
