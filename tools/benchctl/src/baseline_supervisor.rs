@@ -1,6 +1,6 @@
 use crate::json_io::read_json;
 use crate::json_value::json_truthy;
-use crate::{baseline_sizing, file_hash, idle, noise, support};
+use crate::{baseline_sizing, file_hash, idle, noise};
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value, json};
 use std::{fs, os::unix::fs::PermissionsExt, path::Path, process::Command, thread, time::Duration};

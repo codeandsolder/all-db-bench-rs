@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, bail};
-use std::{fs, path::Path, time::Duration};
+use std::{fs, path::Path};
 
 use fjall::{
     CompressionType as FjallCompression, Database as FjallDb, Keyspace, KeyspaceCreateOptions,

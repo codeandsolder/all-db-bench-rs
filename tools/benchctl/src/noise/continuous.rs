@@ -9,6 +9,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     os::unix::process::{CommandExt, ExitStatusExt},
+    path::Path,
     process::{Child, Command, ExitStatus},
     thread,
     time::{Duration, Instant},
