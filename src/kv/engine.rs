@@ -1,4 +1,6 @@
 use anyhow::{Context, Result, bail};
+#[cfg(feature = "kv-external")]
+use std::time::Duration;
 use std::{fs, path::Path};
 
 use fjall::{
