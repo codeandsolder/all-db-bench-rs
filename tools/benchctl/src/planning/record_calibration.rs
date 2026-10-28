@@ -203,10 +203,10 @@ fn build_plan(repo: &Path) -> Result<Value> {
                     repo,
                     RecordCase {
                         scenario: "record-concurrency-core",
-                        engine: engine,
+                        engine,
                         durability: "sync",
-                        workload: workload,
-                        clients: clients,
+                        workload,
+                        clients,
                         records: RECORDS,
                         default_ops: DEFAULT_OPS,
                         payload_bytes: PAYLOAD,
@@ -222,10 +222,10 @@ fn build_plan(repo: &Path) -> Result<Value> {
                     repo,
                     RecordCase {
                         scenario: "record-concurrency-relaxed",
-                        engine: engine,
+                        engine,
                         durability: "relaxed",
-                        workload: workload,
-                        clients: clients,
+                        workload,
+                        clients,
                         records: RECORDS,
                         default_ops: DEFAULT_OPS,
                         payload_bytes: PAYLOAD,
@@ -241,10 +241,10 @@ fn build_plan(repo: &Path) -> Result<Value> {
                     repo,
                     RecordCase {
                         scenario: "record-concurrency-large-payload",
-                        engine: engine,
+                        engine,
                         durability: "sync",
-                        workload: workload,
-                        clients: clients,
+                        workload,
+                        clients,
                         records: RECORDS,
                         default_ops: DEFAULT_OPS,
                         payload_bytes: STRESS_PAYLOAD,
@@ -259,10 +259,10 @@ fn build_plan(repo: &Path) -> Result<Value> {
                 repo,
                 RecordCase {
                     scenario: "record-concurrency-hotset",
-                    engine: engine,
+                    engine,
                     durability: "sync",
                     workload: "read-heavy",
-                    clients: clients,
+                    clients,
                     records: HOT_RECORDS,
                     default_ops: HOT_DEFAULT_OPS,
                     payload_bytes: PAYLOAD,
@@ -276,10 +276,10 @@ fn build_plan(repo: &Path) -> Result<Value> {
                 repo,
                 RecordCase {
                     scenario: "record-concurrency-txn-1",
-                    engine: engine,
+                    engine,
                     durability: "sync",
                     workload: "write-burst",
-                    clients: clients,
+                    clients,
                     records: RECORDS,
                     default_ops: TX1_DEFAULT_OPS,
                     payload_bytes: PAYLOAD,
@@ -291,10 +291,10 @@ fn build_plan(repo: &Path) -> Result<Value> {
                 repo,
                 RecordCase {
                     scenario: "record-concurrency-txn-1000",
-                    engine: engine,
+                    engine,
                     durability: "sync",
                     workload: "write-burst",
-                    clients: clients,
+                    clients,
                     records: RECORDS,
                     default_ops: TX1000_DEFAULT_OPS,
                     payload_bytes: PAYLOAD,
@@ -428,7 +428,7 @@ fn materialize(plan: &Value) -> Result<(Vec<Vec<String>>, Value)> {
             bail!("bounded state unsupported for {workload} in case {index}");
         }
         if workload == "write-burst" {
-            if ops % txn != 0 {
+            if !ops.is_multiple_of(txn) {
                 bail!("write-burst ops must be divisible by txn_size in case {index}");
             }
             if ops < clients * txn {
@@ -483,7 +483,9 @@ fn materialize(plan: &Value) -> Result<(Vec<Vec<String>>, Value)> {
         }
     }
     if !rows.is_empty()
-        && i64::try_from(rows.len()).context("row count overflow")? % expect_trials != 0
+        && !i64::try_from(rows.len())
+            .context("row count overflow")?
+            .is_multiple_of(expect_trials)
     {
         bail!("case count is not divisible by expect_trials");
     }

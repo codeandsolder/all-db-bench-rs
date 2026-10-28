@@ -217,6 +217,9 @@ fn choose_ops(
     let mut cap = (slowest * RECORD_MAX_SLOW_SECONDS).floor() as i64;
     let workload = get_str(&cases[0], "workload")?;
     let txn = get_i64(&cases[0], "txn_size")?;
+    if txn < 1 {
+        bail!("calibration txn_size must be positive");
+    }
     let max_clients = cases
         .iter()
         .map(|item| get_i64(item, "clients"))
@@ -225,7 +228,7 @@ fn choose_ops(
         .max()
         .context("empty calibration family")?;
     let minimum = if workload == "write-burst" {
-        if current_ops % txn != 0 {
+        if !current_ops.is_multiple_of(txn) {
             bail!("calibration write-burst ops are not transaction aligned");
         }
         desired = ((desired + txn - 1) / txn) * txn;

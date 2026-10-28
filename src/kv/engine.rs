@@ -87,7 +87,7 @@ pub(crate) enum Engine {
         env: HeedEnv,
         db: HeedDb<Bytes, Bytes>,
     },
-    Sled(sled::Db),
+    Sled(Box<sled::Db>),
     Lkv(lkv::Database),
     Manifold {
         _db: ManifoldDb,
@@ -196,7 +196,7 @@ impl Engine {
                     .path(path.join("sled"))
                     .flush_every_ms(None)
                     .open()?;
-                Ok(Self::Sled(db))
+                Ok(Self::Sled(Box::new(db)))
             }
             EngineKind::Lkv => {
                 if durability == Durability::Relaxed {
@@ -793,10 +793,10 @@ impl Engine {
     }
 
     pub(crate) async fn close(&mut self) -> Result<()> {
-        if let Self::Turbokv(slot) = self {
-            if let Some(db) = slot.take() {
-                db.close().await?;
-            }
+        if let Self::Turbokv(slot) = self
+            && let Some(db) = slot.take()
+        {
+            db.close().await?;
         }
         Ok(())
     }

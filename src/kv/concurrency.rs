@@ -277,7 +277,7 @@ fn run_clients<C: ClientOps>(
             thread::Builder::new()
                 .name(format!("dbbench-c{client}"))
                 .spawn(move || {
-                    let outcome = (|| -> Result<ClientRun> {
+                    let outcome = {
                         start_barrier.wait();
                         runtime.block_on(run_client(
                             &mut engine,
@@ -288,7 +288,7 @@ fn run_clients<C: ClientOps>(
                             client_slot_start,
                             client_slots,
                         ))
-                    })();
+                    };
                     let _ = tx.send((client, outcome));
 
                     // Keep the task/TID alive until the coordinator has captured its
@@ -411,7 +411,7 @@ async fn dispatch(engine: Engine, args: &Args) -> Result<(&'static str, Aggregat
         )),
         Engine::Sled(db) => Ok((
             "one native sled::Db clone per client; handle is Send+Clone but !Sync",
-            run_clients_without_starving_runtime(SledClient(db), args)?,
+            run_clients_without_starving_runtime(SledClient(*db), args)?,
         )),
         Engine::Lkv(_) => bail!(
             "lkv concurrency unsupported: write transactions require &mut Database and 0.2.1 exposes no cloneable/shared writer handle; benchmark-side mutex would fake concurrency"
@@ -488,7 +488,7 @@ async fn dispatch(engine: Engine, args: &Args) -> Result<(&'static str, Aggregat
 fn median(mut values: Vec<f64>) -> f64 {
     values.sort_by(f64::total_cmp);
     let n = values.len();
-    if n % 2 == 0 {
+    if n.is_multiple_of(2) {
         (values[n / 2 - 1] + values[n / 2]) / 2.0
     } else {
         values[n / 2]

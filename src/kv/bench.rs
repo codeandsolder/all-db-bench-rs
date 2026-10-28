@@ -484,7 +484,8 @@ async fn verify_recovery(
     }
 
     let txn = args.txn_size.max(1) as u64;
-    let transaction_atomic_tail = tail_prefix_present == 0 || tail_prefix_present % txn == 0;
+    let transaction_atomic_tail =
+        tail_prefix_present == 0 || tail_prefix_present.is_multiple_of(txn);
     let verification_ok = missing_prefix_records == 0
         && prefix_present_after_gap == 0
         && tail_present_after_gap == 0

@@ -175,12 +175,14 @@ pub async fn run() -> Result<()> {
     if args.key_bytes < 8 {
         bail!("--key-bytes must be at least 8");
     }
-    if args.window_ops < args.txn_size as u64 || args.window_ops % args.txn_size as u64 != 0 {
+    if args.window_ops < args.txn_size as u64
+        || !args.window_ops.is_multiple_of(args.txn_size as u64)
+    {
         bail!(
             "--window-ops must be a positive multiple of --txn-size so window boundaries do not manufacture partial transactions"
         );
     }
-    if args.ops % args.txn_size as u64 != 0 {
+    if !args.ops.is_multiple_of(args.txn_size as u64) {
         bail!(
             "--ops must be a multiple of --txn-size so the final transaction is not silently shortened"
         );
