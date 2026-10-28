@@ -15,7 +15,6 @@ fio --version
 "$ROOT/scripts/cargo-local-1.99.sh" fmt --all --check
 rustfmt +1.99.1 --edition 2024 \
   engines/surrealdb-rocksdb/src/main.rs \
-  engines/surrealdb-rocksdb/src/metrics.rs \
   engines/surrealdb-rocksdb/src/bin/surrealdb-rocksdb-recordconcurrency.rs \
   engines/surrealdb-rocksdb/src/bin/surrealdb-rocksdb-recordsustained.rs --check
 bash -n scripts/*.sh

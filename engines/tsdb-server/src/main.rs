@@ -1,3 +1,4 @@
+use all_db_bench_common::metrics::{ProcDelta, ProcSnapshot, SystemDelta, SystemSnapshot};
 use anyhow::{Context, Result, bail};
 use clap::{Parser, ValueEnum};
 use hdrhistogram::Histogram;
@@ -6,9 +7,6 @@ use reqwest::blocking::{Client, Response};
 use serde::Serialize;
 use serde_json::Value;
 use snap::raw::Encoder as SnappyEncoder;
-#[path = "../../../src/metrics.rs"]
-mod metrics;
-use metrics::{ProcDelta, ProcSnapshot, SystemDelta, SystemSnapshot};
 use std::{
     fs,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},

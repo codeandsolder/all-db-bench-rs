@@ -1,0 +1,13 @@
+[package]
+name = "all-db-bench-common"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+
+[lints]
+workspace = true

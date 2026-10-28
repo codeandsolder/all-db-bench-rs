@@ -134,7 +134,7 @@ fi
   cat /proc/diskstats
   echo
   echo "## provenance"
-  sha256sum Cargo.lock Cargo.toml rust-toolchain src/metrics.rs src/bin/*.rs scripts/*.sh docs/*.md engines/surrealdb-rocksdb/Cargo.toml engines/surrealdb-rocksdb/Cargo.lock engines/surrealdb-rocksdb/src/*.rs 2>/dev/null | sort
+  sha256sum Cargo.lock Cargo.toml rust-toolchain crates/bench-common/src/*.rs src/*.rs src/kv/*.rs src/record/*.rs src/bin/*.rs scripts/*.sh docs/*.md engines/surrealdb-rocksdb/Cargo.toml engines/surrealdb-rocksdb/src/*.rs 2>/dev/null | sort
   if [[ -x "$ROOT/.deps/sqlite-3.54.0/bin/sqlite3" ]]; then
     echo "sqlite_runtime=$("$ROOT/.deps/sqlite-3.54.0/bin/sqlite3" --version)"
   fi

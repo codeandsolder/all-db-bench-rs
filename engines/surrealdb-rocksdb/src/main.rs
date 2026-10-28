@@ -1,13 +1,11 @@
+pub(crate) use all_db_bench_common::metrics;
+pub(crate) use all_db_bench_common::record_payload::{PayloadPattern, payload_for};
 use anyhow::{Context, Result, bail};
 use clap::{Parser, ValueEnum};
 use hdrhistogram::Histogram;
+use metrics::{ProcDelta, ProcSnapshot, SystemDelta, SystemSnapshot};
 use rand::{RngExt, SeedableRng, rngs::SmallRng};
 use serde::{Deserialize, Serialize};
-pub(crate) mod metrics;
-use metrics::{ProcDelta, ProcSnapshot, SystemDelta, SystemSnapshot};
-#[path = "../../../src/record_payload.rs"]
-mod record_payload;
-pub(crate) use record_payload::{PayloadPattern, payload_for};
 use std::{
     fs,
     path::{Path, PathBuf},
