@@ -4482,10 +4482,7 @@ dependencies = [
  "all-db-bench-record-harness",
  "anyhow",
  "clap",
- "hdrhistogram",
- "rand 0.10.3",
  "serde",
- "serde_json",
  "surrealdb",
  "tokio",
 ]

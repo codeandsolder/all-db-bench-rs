@@ -5205,7 +5205,6 @@ dependencies = [
  "sled",
  "surrealdb",
  "surrealkv 1.0.0",
- "tempfile",
  "tokio",
  "turbokv",
  "turso",

@@ -30,9 +30,8 @@ jobs:
         cargo +1.99.1 test --locked -p all-db-bench-common -p all-db-bench-record-harness
         cargo +1.99.1 clippy --locked -p all-db-bench-common -p all-db-bench-record-harness -- -D warnings
 
-        cargo +1.99.1 check --locked --all-targets
+        cargo +1.99.1 check --locked --workspace --all-targets
         cargo +1.99.1 check --locked --features record --bin recordbench --bin recordconcurrency --bin recordsustained
         cargo +1.99.1 check --locked --features kv-all --bin kvbench --bin kvconcurrency --bin kvsustained
-        cargo +1.99.1 check --locked -p tsdb-server-bench
 
         cargo +1.99.1 check --locked --manifest-path engines/surrealdb-rocksdb/Cargo.toml --all-targets

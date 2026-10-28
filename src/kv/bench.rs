@@ -9,8 +9,6 @@ use std::{
     time::Instant,
 };
 
-#[cfg(test)]
-use super::engine_policy::compression_override_supported;
 use super::{
     data::{key, sample_existing_id, sample_read_id, value},
     engine::Engine,
@@ -695,48 +693,4 @@ pub async fn run() -> Result<()> {
         fs::remove_dir_all(&path).context("remove completed run database")?;
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod compression_value_tests {
-    use super::*;
-
-    #[test]
-    fn value_patterns_are_sized_and_deterministic() {
-        let patterns = [
-            ValuePattern::PseudoRandom,
-            ValuePattern::Zeros,
-            ValuePattern::Repeated,
-            ValuePattern::StructuredBinary,
-            ValuePattern::StructuredText,
-        ];
-        for pattern in patterns {
-            let a = value(42, 4096, 7, pattern);
-            let b = value(42, 4096, 7, pattern);
-            assert_eq!(a.len(), 4096);
-            assert_eq!(a, b);
-        }
-        assert!(
-            value(42, 257, 7, ValuePattern::Zeros)
-                .iter()
-                .all(|&x| x == 0)
-        );
-        assert_ne!(
-            value(42, 4096, 7, ValuePattern::PseudoRandom),
-            value(42, 4096, 7, ValuePattern::StructuredBinary)
-        );
-        assert!(
-            String::from_utf8(value(42, 4096, 7, ValuePattern::StructuredText))
-                .expect("structured text pattern must be UTF-8")
-                .contains("dbbench")
-        );
-    }
-
-    #[test]
-    fn explicit_compression_support_is_intentional() {
-        assert!(compression_override_supported(EngineKind::Fjall));
-        assert!(compression_override_supported(EngineKind::Surrealkv));
-        assert!(compression_override_supported(EngineKind::Turbokv));
-        assert!(!compression_override_supported(EngineKind::Redb));
-    }
 }

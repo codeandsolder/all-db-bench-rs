@@ -146,3 +146,39 @@ pub(crate) fn value(id: u64, len: usize, salt: u64, pattern: ValuePattern) -> Ve
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn value_patterns_are_sized_and_deterministic() {
+        let patterns = [
+            ValuePattern::PseudoRandom,
+            ValuePattern::Zeros,
+            ValuePattern::Repeated,
+            ValuePattern::StructuredBinary,
+            ValuePattern::StructuredText,
+        ];
+        for pattern in patterns {
+            let a = value(42, 4096, 7, pattern);
+            let b = value(42, 4096, 7, pattern);
+            assert_eq!(a.len(), 4096);
+            assert_eq!(a, b);
+        }
+        assert!(
+            value(42, 257, 7, ValuePattern::Zeros)
+                .iter()
+                .all(|&x| x == 0)
+        );
+        assert_ne!(
+            value(42, 4096, 7, ValuePattern::PseudoRandom),
+            value(42, 4096, 7, ValuePattern::StructuredBinary)
+        );
+        assert!(
+            String::from_utf8(value(42, 4096, 7, ValuePattern::StructuredText))
+                .expect("structured text pattern must be UTF-8")
+                .contains("dbbench")
+        );
+    }
+}

@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, bail};
-use std::{fs, path::Path};
+use std::{fs, path::Path, time::Duration};
 
 use fjall::{
     CompressionType as FjallCompression, Database as FjallDb, Keyspace, KeyspaceCreateOptions,
@@ -51,7 +51,10 @@ use roughdb::{
     WriteOptions as RoughWriteOptions,
 };
 
-use super::types::{Durability, EngineCompression, EngineKind};
+use super::{
+    engine_policy::compression_override_supported,
+    types::{Durability, EngineCompression, EngineKind},
+};
 
 pub(crate) const REDB_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("kv");
 pub(crate) const MANIFOLD_TABLE: ManifoldTableDefinition<&[u8], &[u8]> =
@@ -106,8 +109,6 @@ pub(crate) enum Engine {
     #[cfg(feature = "kv-experimental")]
     Lsmdb(LsmDb),
 }
-
-use super::engine_policy::compression_override_supported;
 
 impl Engine {
     pub(crate) async fn open(

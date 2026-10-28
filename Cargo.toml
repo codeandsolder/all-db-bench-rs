@@ -46,18 +46,17 @@ required-features = ["record"]
 kv-external = ["dep:rocksdb", "dep:libmdbx", "dep:persy"]
 kv-experimental = ["dep:roughdb", "dep:jammdb", "dep:lsm-db"]
 kv-all = ["kv-external", "kv-experimental"]
-record = ["dep:surrealdb", "dep:turso", "dep:rusqlite", "surrealdb/kv-surrealkv"]
+record = ["dep:all-db-bench-record-harness", "dep:surrealdb", "dep:turso", "dep:rusqlite", "surrealdb/kv-surrealkv"]
 
 [dependencies]
 all-db-bench-common = { path = "crates/bench-common" }
-all-db-bench-record-harness = { path = "crates/record-harness" }
+all-db-bench-record-harness = { path = "crates/record-harness", optional = true }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 hdrhistogram = "7"
 rand = "0.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tempfile = "3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 
 redb = "=4.4.0"

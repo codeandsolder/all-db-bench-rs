@@ -185,3 +185,50 @@ pub(crate) fn compression_mapping(
         _ => bail!("engine {kind:?} does not expose the requested benchmark compression override"),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compression_overrides_are_explicit() {
+        assert!(compression_override_supported(EngineKind::Fjall));
+        assert!(compression_override_supported(EngineKind::Surrealkv));
+        assert!(compression_override_supported(EngineKind::Turbokv));
+        assert!(!compression_override_supported(EngineKind::Redb));
+
+        assert!(compression_mapping(EngineKind::Redb, EngineCompression::Default).is_ok());
+        assert!(compression_mapping(EngineKind::Redb, EngineCompression::Lz4).is_err());
+        assert!(compression_mapping(EngineKind::Fjall, EngineCompression::Zstd).is_err());
+        assert!(compression_mapping(EngineKind::Surrealkv, EngineCompression::Lz4).is_err());
+    }
+
+    #[test]
+    fn unsupported_durability_modes_fail_in_policy() {
+        assert!(
+            EngineKind::Redb
+                .durability_mapping(Durability::Relaxed)
+                .is_ok()
+        );
+        assert!(
+            EngineKind::Redb
+                .durability_mapping(Durability::Sync)
+                .is_ok()
+        );
+        assert!(
+            EngineKind::Lkv
+                .durability_mapping(Durability::Relaxed)
+                .is_err()
+        );
+        assert!(
+            EngineKind::Manifold
+                .durability_mapping(Durability::Relaxed)
+                .is_err()
+        );
+        assert!(
+            EngineKind::ParitydbHash
+                .durability_mapping(Durability::Sync)
+                .is_err()
+        );
+    }
+}
