@@ -1,3 +1,4 @@
+use crate::json_value::py_string;
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 use std::{
@@ -67,17 +68,6 @@ fn py_int(value: &Value) -> Option<i64> {
         }
         Value::String(value) => value.trim().parse::<i64>().ok(),
         Value::Null | Value::Array(_) | Value::Object(_) => None,
-    }
-}
-
-fn py_string(value: &Value) -> String {
-    match value {
-        Value::Null => "None".to_owned(),
-        Value::Bool(true) => "True".to_owned(),
-        Value::Bool(false) => "False".to_owned(),
-        Value::String(value) => value.clone(),
-        Value::Number(value) => value.to_string(),
-        Value::Array(_) | Value::Object(_) => value.to_string(),
     }
 }
 

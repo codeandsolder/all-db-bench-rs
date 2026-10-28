@@ -1,3 +1,5 @@
+use crate::json_io::read_json;
+use crate::json_value::py_string;
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value, json};
 use std::{
@@ -10,13 +12,6 @@ pub(crate) struct RecoveryArgs<'a> {
     pub(crate) run_dir: &'a Path,
     pub(crate) json_out: Option<&'a Path>,
     pub(crate) markdown_out: Option<&'a Path>,
-}
-
-fn read_json(path: &Path) -> Result<Value> {
-    serde_json::from_str(
-        &fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?,
-    )
-    .with_context(|| format!("invalid JSON in {}", path.display()))
 }
 
 fn read_ndjson(path: &Path) -> Result<Vec<Value>> {
@@ -48,17 +43,6 @@ fn sorted_json_files(dir: &Path) -> Result<Vec<PathBuf>> {
         .collect::<Vec<_>>();
     paths.sort();
     Ok(paths)
-}
-
-fn py_string(value: &Value) -> String {
-    match value {
-        Value::Null => "None".to_owned(),
-        Value::Bool(true) => "True".to_owned(),
-        Value::Bool(false) => "False".to_owned(),
-        Value::String(value) => value.clone(),
-        Value::Number(value) => value.to_string(),
-        other => other.to_string(),
-    }
 }
 
 fn text_field(value: &Value, key: &str, default: &str) -> String {

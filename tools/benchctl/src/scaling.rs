@@ -1,3 +1,4 @@
+use crate::json_io::read_json;
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Number, Value, json};
 use std::{collections::BTreeMap, fs, path::Path};
@@ -28,13 +29,6 @@ const IDENTITY_FIELDS: [&str; 24] = [
     "settle_ms",
     "payload_pattern",
 ];
-
-fn read_json(path: &Path) -> Result<Value> {
-    serde_json::from_str(
-        &fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?,
-    )
-    .with_context(|| format!("invalid JSON in {}", path.display()))
-}
 
 fn value_i64(value: Option<&Value>) -> Option<i64> {
     let value = value?;

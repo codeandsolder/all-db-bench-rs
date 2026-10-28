@@ -1,4 +1,7 @@
-use crate::support::{canonical_identity_sha256, sha256, support_identity};
+use crate::file_hash::sha256;
+use crate::json_io::read_json;
+use crate::json_value::json_truthy;
+use crate::support::{canonical_identity_sha256, support_identity};
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Number, Value};
 use sha2::{Digest, Sha256};
@@ -30,13 +33,6 @@ const DEFAULT_BOUNDED_CHURN_SLOTS: i64 = 8192;
 const RECORD_MAX_SLOW_SECONDS: f64 = 15.0;
 const READ_MATERIALIZATION: &str = "full-record-v1";
 const WRITE_MATERIALIZATION: &str = "no-return-v1";
-
-fn read_json(path: &Path) -> Result<Value> {
-    serde_json::from_str(
-        &fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?,
-    )
-    .with_context(|| format!("invalid JSON in {}", path.display()))
-}
 
 fn write_json(path: &Path, value: &Value) -> Result<()> {
     if let Some(parent) = path.parent() {
@@ -89,17 +85,6 @@ fn get_f64(value: &Value, key: &str) -> Result<f64> {
         bail!("invalid {key}: {raw}");
     };
     Ok(parsed)
-}
-
-fn json_truthy(value: Option<&Value>) -> bool {
-    match value {
-        None | Some(Value::Null) => false,
-        Some(Value::Bool(value)) => *value,
-        Some(Value::Number(value)) => value.as_f64().is_some_and(|number| number != 0.0),
-        Some(Value::String(value)) => !value.is_empty(),
-        Some(Value::Array(value)) => !value.is_empty(),
-        Some(Value::Object(value)) => !value.is_empty(),
-    }
 }
 
 fn object(value: &Value) -> Result<&Map<String, Value>> {

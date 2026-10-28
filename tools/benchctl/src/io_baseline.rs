@@ -1,6 +1,7 @@
 use crate::io_evidence::{
     FioExpectation, composite_mixed_iops, fio_p99_us, load_storage_delta, ratio, validate_fio_job,
 };
+use crate::json_io::read_json;
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value, json};
 use std::{collections::BTreeSet, fs, path::Path};
@@ -9,13 +10,6 @@ pub(crate) struct IoBaselineArgs<'a> {
     pub(crate) run_dir: &'a Path,
     pub(crate) json_out: Option<&'a Path>,
     pub(crate) markdown_out: Option<&'a Path>,
-}
-
-fn read_json(path: &Path) -> Result<Value> {
-    serde_json::from_str(
-        &fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?,
-    )
-    .with_context(|| format!("invalid JSON in {}", path.display()))
 }
 
 fn as_f64(value: Option<&Value>, default: f64) -> f64 {
