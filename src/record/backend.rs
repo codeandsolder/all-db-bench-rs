@@ -4,7 +4,7 @@ use all_db_bench_record_harness::{
 };
 use anyhow::{Context, Result};
 use rusqlite::Connection as SqliteConnection;
-use std::{future::Future, path::Path, time::Duration};
+use std::{path::Path, time::Duration};
 use surrealdb::{Error as SurrealError, types::QueryError};
 
 fn sqlite_client(path: &Path, durability: Durability) -> Result<SqliteConnection> {
@@ -71,52 +71,50 @@ impl RecordBackend for Engine {
         Engine::write_batch(self, rows, deletes)
     }
 
-    fn make_clients(
+    async fn make_clients(
         &self,
         clients: usize,
         path: &Path,
         durability: Durability,
-    ) -> impl Future<Output = Result<(Vec<Self>, &'static str)>> {
-        async move {
-            match self {
-                Engine::Surreal(db) => Ok((
-                    (0..clients).map(|_| Engine::Surreal(db.clone())).collect(),
-                    "native Surreal client clones",
-                )),
-                Engine::Turso(_) => {
-                    let db_path = path.join("turso.db");
-                    let db_path = db_path
-                        .to_str()
-                        .context("Turso database path is not valid UTF-8")?;
-                    let db = turso::Builder::new_local(db_path).build().await?;
-                    let mut handles = Vec::with_capacity(clients);
-                    for _ in 0..clients {
-                        let conn = db.connect()?;
-                        conn.busy_timeout(Duration::from_secs(60))?;
-                        conn.execute(
-                            &format!(
-                                "PRAGMA synchronous={}",
-                                match durability {
-                                    Durability::Relaxed => "NORMAL",
-                                    Durability::Sync => "FULL",
-                                }
-                            ),
-                            (),
-                        )
-                        .await?;
-                        handles.push(Engine::Turso(conn));
-                    }
-                    Ok((handles, "independent Turso Database::connect() connections"))
+    ) -> Result<(Vec<Self>, &'static str)> {
+        match self {
+            Engine::Surreal(db) => Ok((
+                (0..clients).map(|_| Engine::Surreal(db.clone())).collect(),
+                "native Surreal client clones",
+            )),
+            Engine::Turso(_) => {
+                let db_path = path.join("turso.db");
+                let db_path = db_path
+                    .to_str()
+                    .context("Turso database path is not valid UTF-8")?;
+                let db = turso::Builder::new_local(db_path).build().await?;
+                let mut handles = Vec::with_capacity(clients);
+                for _ in 0..clients {
+                    let conn = db.connect()?;
+                    conn.busy_timeout(Duration::from_secs(60))?;
+                    conn.execute(
+                        &format!(
+                            "PRAGMA synchronous={}",
+                            match durability {
+                                Durability::Relaxed => "NORMAL",
+                                Durability::Sync => "FULL",
+                            }
+                        ),
+                        (),
+                    )
+                    .await?;
+                    handles.push(Engine::Turso(conn));
                 }
-                Engine::Sqlite(_) => {
-                    let handles = (0..clients)
-                        .map(|_| sqlite_client(path, durability).map(Engine::Sqlite))
-                        .collect::<Result<Vec<_>>>()?;
-                    Ok((
-                        handles,
-                        "independent SQLite WAL connections; 60s busy timeout",
-                    ))
-                }
+                Ok((handles, "independent Turso Database::connect() connections"))
+            }
+            Engine::Sqlite(_) => {
+                let handles = (0..clients)
+                    .map(|_| sqlite_client(path, durability).map(Engine::Sqlite))
+                    .collect::<Result<Vec<_>>>()?;
+                Ok((
+                    handles,
+                    "independent SQLite WAL connections; 60s busy timeout",
+                ))
             }
         }
     }
