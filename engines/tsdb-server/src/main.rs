@@ -94,7 +94,7 @@ struct Label {
     value: String,
 }
 
-#[derive(Clone, PartialEq, Message)]
+#[derive(Clone, Copy, PartialEq, Message)]
 struct Sample {
     #[prost(double, tag = "1")]
     value: f64,
