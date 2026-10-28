@@ -5204,7 +5204,7 @@ dependencies = [
  "serde_json",
  "sled",
  "surrealdb",
- "surrealkv 1.0.0",
+ "surrealkv 1.1.1",
  "tokio",
  "turbokv",
  "turso",
@@ -6635,9 +6635,9 @@ dependencies = [
 
 [[package]]
 name = "surrealkv"
-version = "1.0.0"
+version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c90cb10dad5eed1ccd8a57abb7a12722393744580eba0de7e36c229abc34d1ad"
+checksum = "d55622f0e207575ac2d1549f27a6f0d1534aa44128b8b074979b966bae9284cf"
 dependencies = [
  "aes-gcm 0.11.1",
  "affinitypool",
@@ -6674,9 +6674,9 @@ dependencies = [
 
 [[package]]
 name = "surrealkv-compat-indxdb"
-version = "0.1.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c19d63e59e26ee1fd1bc5fd433c53db249dcb1ebd6207a71befe3fe6f66e1bc7"
+checksum = "59453fcf702d12b851a08d7f90e5538c6a8570f5a93ca7b3fed01e1340725e14"
 dependencies = [
  "js-sys",
  "thiserror",
@@ -6687,9 +6687,9 @@ dependencies = [
 
 [[package]]
 name = "surrealkv-compat-rocksdb"
-version = "0.1.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc362c8c1799317360beb2e217d4251e32a8e1ccb329d70b6269b2c061cfb178"
+checksum = "001d54519c0d285225426ba9226df02ef6e52b560305a14056f6a0eeb2023ab0"
 dependencies = [
  "lz4_flex 0.12.2",
  "rustix 1.1.5",
@@ -6701,9 +6701,9 @@ dependencies = [
 
 [[package]]
 name = "surrealkv-compat-v1"
-version = "0.1.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4c0df2e6faefdee9b8525f17fd6b883e0b9d4fe8d2ac0796e516b9d25341efb7"
+checksum = "a82d539126edb8fd05c10f8ed86efc90883fea3dccd2298df6792713aeed0644"
 dependencies = [
  "crc32fast",
  "lz4_flex 0.12.2",
