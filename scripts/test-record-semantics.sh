@@ -6,7 +6,7 @@ RECORD="$ROOT/src/record/engine.rs"
 ROCKS="$ROOT/engines/surrealdb-rocksdb/src/lib.rs"
 RUNNER="$ROOT/scripts/run-record-matrix.sh"
 WIDE="$ROOT/scripts/run-record-wide-matrix.sh"
-MAIN="$ROOT/tools/benchctl/src/main.rs"
+DISPATCH="$ROOT/tools/benchctl/src/dispatch.rs"
 CLI="$ROOT/tools/benchctl/src/cli.rs"
 SUPERVISOR="$ROOT/tools/benchctl/src/baseline_supervisor.rs"
 GENERATION="$ROOT/tools/benchctl/src/baseline_generation.rs"
@@ -72,8 +72,8 @@ require 'BaselineQuickIdle' "$CLI" 'missing native baseline quick supervisor com
 require 'BaselineSizingFollowups' "$CLI" 'missing native baseline followup command'
 require 'rocks_bench_bin: Option<PathBuf>' "$CLI" 'record supervisor lost explicit Rocks binary argument'
 require 'expected_rocks_bench_sha256: Option<String>' "$CLI" 'record supervisor lost pinned Rocks SHA argument'
-require 'rocks_bench_bin: rocks_bench_bin.as_deref()' "$MAIN" 'record supervisor no longer forwards explicit Rocks binary'
-require 'expected_rocks_bench_sha256: expected_rocks_bench_sha256.as_deref()' "$MAIN" 'record supervisor no longer forwards pinned Rocks SHA'
+require 'rocks_bench_bin: rocks_bench_bin.as_deref()' "$DISPATCH" 'record supervisor no longer forwards explicit Rocks binary'
+require 'expected_rocks_bench_sha256: expected_rocks_bench_sha256.as_deref()' "$DISPATCH" 'record supervisor no longer forwards pinned Rocks SHA'
 reject 'recordbench-ae74103b847171d1' "$SUPERVISOR" 'historical record binary hardcoded into native supervisor'
 reject 'surrealdb-rocksdb-recordbench-c3978a3b66a24edd' "$SUPERVISOR" 'historical Rocks binary hardcoded into native supervisor'
 reject '20261009-record-full-v1-resize-v1' "$SUPERVISOR" 'historical record resize prefix hardcoded into native supervisor'
@@ -82,7 +82,7 @@ require 'paths.record_resize_prefix.clone()' "$GENERATION" 'record followups no 
 require 'FinalizeBaselineSizing' "$CLI" 'missing native baseline finalizer'
 require 'record_stock_results: Option<PathBuf>' "$CLI" 'finalizer lost explicit record stock input'
 require 'record_audit: Option<PathBuf>' "$CLI" 'finalizer lost explicit record audit input'
-require '--record-stock-results is required for the selected lane' "$MAIN" 'finalizer no longer fails closed without record stock input'
-require '--record-audit is required for the selected lane' "$MAIN" 'finalizer no longer fails closed without record audit input'
+require '--record-stock-results is required for the selected lane' "$DISPATCH" 'finalizer no longer fails closed without record stock input'
+require '--record-audit is required for the selected lane' "$DISPATCH" 'finalizer no longer fails closed without record audit input'
 
 echo record-semantics-ok
