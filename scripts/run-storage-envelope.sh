@@ -90,10 +90,26 @@ add_prop() { PROPS+=(-p "$1"); }
 
 ALLOWED_CPUS=$(jq -r '.limits.allowed_cpus // empty' "$PROFILE")
 CPU_QUOTA=$(jq -r '.limits.cpu_quota_percent // empty' "$PROFILE")
+CPU_WEIGHT=$(jq -r '.limits.cpu_weight // empty' "$PROFILE")
+NICE=$(jq -r '.limits.nice // empty' "$PROFILE")
 MEMORY_MAX=$(jq -r '.limits.memory_max_bytes // empty' "$PROFILE")
 SWAP_MAX=$(jq -r '.limits.memory_swap_max_bytes // empty' "$PROFILE")
 [[ -z "$ALLOWED_CPUS" ]] || add_prop "AllowedCPUs=$ALLOWED_CPUS"
 [[ -z "$CPU_QUOTA" ]] || add_prop "CPUQuota=${CPU_QUOTA}%"
+if [[ -n "$CPU_WEIGHT" ]]; then
+  if [[ ! "$CPU_WEIGHT" =~ ^[0-9]+$ ]] || (( CPU_WEIGHT < 1 || CPU_WEIGHT > 10000 )); then
+    echo "limits.cpu_weight must be an integer from 1 to 10000" >&2
+    exit 2
+  fi
+  add_prop "CPUWeight=$CPU_WEIGHT"
+fi
+if [[ -n "$NICE" ]]; then
+  if [[ ! "$NICE" =~ ^-?[0-9]+$ ]] || (( NICE < -20 || NICE > 19 )); then
+    echo "limits.nice must be an integer from -20 to 19" >&2
+    exit 2
+  fi
+  add_prop "Nice=$NICE"
+fi
 [[ -z "$MEMORY_MAX" ]] || add_prop "MemoryMax=$MEMORY_MAX"
 [[ -z "$SWAP_MAX" ]] || add_prop "MemorySwapMax=$SWAP_MAX"
 

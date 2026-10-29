@@ -1,0 +1,32 @@
+{
+  "format_version": 1,
+  "id": "asus-zfs-zstd-all-bounded-v2",
+  "mode": "bounded",
+  "root": "/srv/db-bench-zfs/zstd-all",
+  "expected": {
+    "hostname": "cachyasus",
+    "filesystem": "zfs",
+    "source": "zpcachyos/dbbench/zstd-all",
+    "zfs": {
+      "compression": "zstd",
+      "recordsize": "128K",
+      "atime": "off",
+      "sync": "standard",
+      "logbias": "latency",
+      "primarycache": "all",
+      "secondarycache": "all",
+      "xattr": "sa",
+      "dnodesize": "legacy",
+      "refquota": "120G"
+    }
+  },
+  "limits": {
+    "allowed_cpus": "0,2,4,6",
+    "cpu_quota_percent": 400,
+    "memory_max_bytes": 8589934592,
+    "memory_swap_max_bytes": 0,
+    "cpu_weight": 10000,
+    "nice": -20
+  },
+  "calibration_basis": "Shared-host Asus benchmark envelope: 4 physical cores (CPUs 0,2,4,6), CPUWeight=10000, Nice=-20, 8 GiB/no swap. Physical storage is intentionally not cgroup-throttled: OpenZFS writeback was observed to escape io.max accounting, so device cleanliness is enforced by device-scoped admission/rejection instead of a misleading per-cgroup physical-I/O limit."
+}

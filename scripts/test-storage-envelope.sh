@@ -24,6 +24,27 @@ grep -Fq -- '--working-directory="$CALLER_CWD"' "$ROOT/scripts/run-storage-envel
   exit 1
 }
 
+# Bounded profiles may also request ordinary-scheduler priority. Keep these
+# declarative so provenance captures them instead of hiding them in launchers.
+grep -Fq '.limits.cpu_weight // empty' "$ROOT/scripts/run-storage-envelope.sh" || {
+  echo "bounded storage envelope does not read limits.cpu_weight" >&2
+  exit 1
+}
+grep -Fq '.limits.nice // empty' "$ROOT/scripts/run-storage-envelope.sh" || {
+  echo "bounded storage envelope does not read limits.nice" >&2
+  exit 1
+}
+# shellcheck disable=SC2016
+grep -Fq 'add_prop "CPUWeight=$CPU_WEIGHT"' "$ROOT/scripts/run-storage-envelope.sh" || {
+  echo "bounded storage envelope does not apply CPUWeight" >&2
+  exit 1
+}
+# shellcheck disable=SC2016
+grep -Fq 'add_prop "Nice=$NICE"' "$ROOT/scripts/run-storage-envelope.sh" || {
+  echo "bounded storage envelope does not apply Nice" >&2
+  exit 1
+}
+
 # Storage-bearing campaign scripts must route DB payloads through the profile root.
 while IFS= read -r script; do
   [[ -n "$script" ]] || continue
