@@ -487,7 +487,8 @@ fn median_elapsed(repo: &Path, group: &Value, prefix: &str) -> Result<f64> {
             values.push(f64v(row.get("elapsed_s"))?);
         }
     }
-    let expected = i64v(group.get("suggested_trials"))? as usize;
+    let expected = usize::try_from(i64v(group.get("suggested_trials"))?)
+        .context("suggested_trials must be non-negative and fit usize")?;
     if values.len() != expected {
         bail!(
             "expected {expected} validated trials for {rid}, found {}",
