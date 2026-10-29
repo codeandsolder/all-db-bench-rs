@@ -563,7 +563,7 @@ impl ClientOps for PersyClient {
                         // deterministic per-key/retry skew prevents immediate lock-step
                         // reacquisition while keeping all retry time inside measured latency.
                         let backoff_us = 100 + ((jitter_seed + retries * 17) % 40) * 50;
-                        std::thread::sleep(std::time::Duration::from_micros(backoff_us));
+                        tokio::time::sleep(std::time::Duration::from_micros(backoff_us)).await;
                     }
                     other => return Err(anyhow::Error::new(other)),
                 },
