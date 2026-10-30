@@ -45,7 +45,7 @@ use super::{
     types::Durability,
 };
 
-#[allow(async_fn_in_trait)]
+#[expect(async_fn_in_trait, reason = "async trait methods are intentional for the benchmark client abstraction")]
 pub(super) trait ClientOps: Clone + Send + 'static {
     async fn get(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>>;
     async fn write_batch(
