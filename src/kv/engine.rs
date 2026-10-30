@@ -62,7 +62,7 @@ pub(crate) const REDB_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::ne
 pub(crate) const MANIFOLD_TABLE: ManifoldTableDefinition<&[u8], &[u8]> =
     ManifoldTableDefinition::new("kv");
 
-#[allow(unsafe_code)]
+#[expect(unsafe_code, reason = "heed requires an unsafe environment open after configuring the map and database limits")]
 fn open_heed_environment(dir: &Path, durability: Durability) -> Result<HeedEnv> {
     let mut options = EnvOpenOptions::new();
     options.map_size(16usize * 1024 * 1024 * 1024).max_dbs(1);
