@@ -4,7 +4,7 @@ use std::{fmt::Debug, future::Future, path::Path};
 
 use crate::{Durability, IndexedRead, ReadDigest, RecordData};
 
-pub trait RecordBackend: Sized + Send + Sync + 'static {
+pub trait RecordBackend: Sized + Send + 'static {
     type Kind: Copy + Debug + Serialize + Send + Sync + 'static;
 
     fn version(kind: Self::Kind) -> &'static str;
