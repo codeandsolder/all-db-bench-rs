@@ -25,6 +25,10 @@ use super::concurrency_clients::{
     ClientOps, FjallClient, HeedClient, ManifoldClient, ParityClient, RedbClient, SledClient,
     SurrealClient, TurboClient,
 };
+#[cfg(feature = "kv-experimental")]
+use super::concurrency_clients::{JammClient, LsmClient, RoughClient};
+#[cfg(feature = "kv-external")]
+use super::concurrency_clients::{MdbxClient, PersyClient, RocksClient};
 
 mod workload;
 use workload::{ClientRun, run_client, verify_bounded_churn_state};

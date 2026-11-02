@@ -146,6 +146,10 @@ struct Measurement<K> {
     concurrency_handle: &'static str,
 }
 
+#[expect(
+    clippy::future_not_send,
+    reason = "record backends are thread-confined: each backend is owned and polled to completion on one worker thread, so requiring Sync would reject valid backends such as rusqlite"
+)]
 async fn prefill<B: RecordBackend>(engine: &B, args: &ConcurrencyArgs) -> Result<()> {
     let batch = args.txn_size.clamp(100, 1000);
     let mut rows = Vec::with_capacity(batch);
@@ -214,6 +218,10 @@ const fn bounded_record_id(records: u64, logical_op: u64) -> u64 {
 
 const MAX_CONFLICT_RETRIES: u64 = 10_000;
 
+#[expect(
+    clippy::future_not_send,
+    reason = "record backends are thread-confined: each backend is owned and polled to completion on one worker thread, so requiring Sync would reject valid backends such as rusqlite"
+)]
 async fn upsert_one_with_retry<B: RecordBackend>(
     engine: &B,
     id: u64,
@@ -236,6 +244,10 @@ async fn upsert_one_with_retry<B: RecordBackend>(
     }
 }
 
+#[expect(
+    clippy::future_not_send,
+    reason = "record backends are thread-confined: each backend is owned and polled to completion on one worker thread, so requiring Sync would reject valid backends such as rusqlite"
+)]
 async fn upsert_batch_with_retry<B: RecordBackend>(
     engine: &B,
     rows: &[(u64, RecordData)],
@@ -260,6 +272,10 @@ async fn upsert_batch_with_retry<B: RecordBackend>(
 #[expect(
     clippy::too_many_lines,
     reason = "the per-client workload state machine is clearer as one exhaustive workload match"
+)]
+#[expect(
+    clippy::future_not_send,
+    reason = "record backends are thread-confined: each backend is owned and polled to completion on one worker thread, so requiring Sync would reject valid backends such as rusqlite"
 )]
 async fn run_client<B: RecordBackend>(
     engine: &B,

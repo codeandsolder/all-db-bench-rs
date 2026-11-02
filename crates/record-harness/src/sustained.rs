@@ -148,6 +148,10 @@ fn hot95_id(rng: &mut SmallRng, records: u64) -> u64 {
     }
 }
 
+#[expect(
+    clippy::future_not_send,
+    reason = "record backends are thread-confined: each backend is owned and polled to completion on one worker thread, so requiring Sync would reject valid backends such as rusqlite"
+)]
 async fn prefill<B: RecordBackend>(engine: &B, args: &SustainedArgs) -> Result<()> {
     const BATCH: usize = 1_000;
     let mut rows = Vec::with_capacity(BATCH);
@@ -164,6 +168,10 @@ async fn prefill<B: RecordBackend>(engine: &B, args: &SustainedArgs) -> Result<(
     Ok(())
 }
 
+#[expect(
+    clippy::future_not_send,
+    reason = "record backends are thread-confined: each backend is owned and polled to completion on one worker thread, so requiring Sync would reject valid backends such as rusqlite"
+)]
 async fn warm_reads<B: RecordBackend>(engine: &B, args: &SustainedArgs) -> Result<()> {
     let mut rng = SmallRng::seed_from_u64(args.seed ^ u64::from(args.trial) ^ 0x7777);
     for _ in 0..args.records.min(args.warmup_reads) {

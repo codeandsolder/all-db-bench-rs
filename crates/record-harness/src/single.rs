@@ -123,6 +123,10 @@ struct Measurement<K> {
     verification: Option<Verification>,
 }
 
+#[expect(
+    clippy::future_not_send,
+    reason = "record backends are thread-confined: each backend is owned and polled to completion on one worker thread, so requiring Sync would reject valid backends such as rusqlite"
+)]
 async fn prefill<B: RecordBackend>(engine: &B, args: &SingleArgs) -> Result<()> {
     let batch = args.txn_size.clamp(100, 1000);
     let mut rows = Vec::with_capacity(batch);
@@ -148,6 +152,10 @@ async fn prefill<B: RecordBackend>(engine: &B, args: &SingleArgs) -> Result<()> 
 #[expect(
     clippy::too_many_lines,
     reason = "the workload state machine is clearer as one exhaustive workload match"
+)]
+#[expect(
+    clippy::future_not_send,
+    reason = "record backends are thread-confined: each backend is owned and polled to completion on one worker thread, so requiring Sync would reject valid backends such as rusqlite"
 )]
 async fn run_workload<B: RecordBackend>(
     engine: &B,
@@ -277,6 +285,10 @@ async fn run_workload<B: RecordBackend>(
     Ok(done)
 }
 
+#[expect(
+    clippy::future_not_send,
+    reason = "record backends are thread-confined: each backend is owned and polled to completion on one worker thread, so requiring Sync would reject valid backends such as rusqlite"
+)]
 async fn verify_recovery<B: RecordBackend>(
     engine: &B,
     args: &SingleArgs,
