@@ -1,4 +1,4 @@
-use crate::file_hash::sha256;
+use crate::file_hash::{lower_hex, sha256};
 use crate::json_io::read_json;
 use crate::json_value::json_truthy;
 use crate::support::{canonical_identity_sha256, support_identity};
@@ -179,7 +179,7 @@ fn case_set_sha256(paths: &[PathBuf]) -> Result<String> {
         }
         digest.update(file_digest.finalize());
     }
-    Ok(format!("{:x}", digest.finalize()))
+    Ok(lower_hex(&digest.finalize()))
 }
 
 #[cfg(test)]

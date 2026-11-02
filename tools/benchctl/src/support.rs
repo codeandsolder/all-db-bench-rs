@@ -1,4 +1,4 @@
-use crate::file_hash::sha256;
+use crate::file_hash::{lower_hex, sha256};
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
@@ -317,7 +317,7 @@ pub(crate) fn canonical_identity_sha256(identity: &Value) -> Result<String> {
     let encoded = serde_json::to_vec(identity)?;
     let mut digest = Sha256::new();
     digest.update(encoded);
-    Ok(format!("{:x}", digest.finalize()))
+    Ok(lower_hex(&digest.finalize()))
 }
 
 fn read_json(path: &str) -> Result<Value> {
