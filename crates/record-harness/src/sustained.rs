@@ -181,10 +181,6 @@ async fn warm_reads<B: RecordBackend>(engine: &B, args: &SustainedArgs) -> Resul
     clippy::too_many_lines,
     reason = "the sustained harness keeps one explicit phase/window state machine to preserve measurement semantics"
 )]
-#[expect(
-    clippy::uninlined_format_args,
-    reason = "the run identifier formats fields directly from the argument structure for schema clarity"
-)]
 pub async fn run<B: RecordBackend>(engine_kind: B::Kind, args: SustainedArgs) -> Result<()> {
     if args.records == 0 || args.ops == 0 || args.window_ops == 0 || args.txn_size == 0 {
         bail!("records, ops, window-ops and txn-size must all be greater than zero");
@@ -198,18 +194,17 @@ pub async fn run<B: RecordBackend>(engine_kind: B::Kind, args: SustainedArgs) ->
         bail!("--ops must be a multiple of --txn-size");
     }
 
+    let durability = &args.durability;
+    let pattern = &args.pattern;
+    let records = args.records;
+    let ops = args.ops;
+    let window_ops = args.window_ops;
+    let payload_bytes = args.payload_bytes;
+    let txn_size = args.txn_size;
+    let trial = args.trial;
     let path = args.root.join(
         format!(
-            "record-sustained-{:?}-{:?}-{:?}-n{}-o{}-w{}-p{}-tx{}-t{}",
-            engine_kind,
-            args.durability,
-            args.pattern,
-            args.records,
-            args.ops,
-            args.window_ops,
-            args.payload_bytes,
-            args.txn_size,
-            args.trial
+            "record-sustained-{engine_kind:?}-{durability:?}-{pattern:?}-n{records}-o{ops}-w{window_ops}-p{payload_bytes}-tx{txn_size}-t{trial}"
         )
         .to_lowercase()
         .replace('_', "-"),

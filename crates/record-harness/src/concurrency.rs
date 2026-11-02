@@ -588,10 +588,6 @@ fn median(mut values: Vec<f64>) -> f64 {
     clippy::too_many_lines,
     reason = "the top-level harness intentionally keeps benchmark phase ordering visible in one linear orchestration"
 )]
-#[expect(
-    clippy::uninlined_format_args,
-    reason = "the run identifier formats fields directly from the argument structure for schema clarity"
-)]
 pub async fn run<B: RecordBackend>(engine_kind: B::Kind, args: ConcurrencyArgs) -> Result<()> {
     if args.records == 0 {
         bail!("--records must be greater than zero");
@@ -615,17 +611,16 @@ pub async fn run<B: RecordBackend>(engine_kind: B::Kind, args: ConcurrencyArgs) 
     }
     let _ = partition_ops(&args)?;
 
+    let durability = &args.durability;
+    let workload = &args.workload;
+    let state_evolution = &args.state_evolution;
+    let clients = args.clients;
+    let records = args.records;
+    let payload_bytes = args.payload_bytes;
+    let txn_size = args.txn_size;
+    let trial = args.trial;
     let run_name = format!(
-        "{:?}-{:?}-{:?}-se{:?}-c{}-n{}-p{}-tx{}-trial{}",
-        engine_kind,
-        args.durability,
-        args.workload,
-        args.state_evolution,
-        args.clients,
-        args.records,
-        args.payload_bytes,
-        args.txn_size,
-        args.trial,
+        "{engine_kind:?}-{durability:?}-{workload:?}-se{state_evolution:?}-c{clients}-n{records}-p{payload_bytes}-tx{txn_size}-trial{trial}"
     )
     .to_lowercase()
     .replace('_', "-");
