@@ -8,7 +8,7 @@ impl EngineKind {
             Self::Redb => "4.4.0",
             Self::Fjall => "3.1.12",
             Self::Surrealkv => "1.0.0",
-            Self::Heed => "0.22.1",
+            Self::Heed => "0.23.1",
             Self::Sled => "1.0.0-alpha.124",
             Self::Lkv => "0.2.1",
             Self::Manifold | Self::ManifoldWal => "3.1.0",

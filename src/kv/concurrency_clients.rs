@@ -216,7 +216,7 @@ impl ClientOps for SurrealClient {
 #[derive(Clone)]
 pub(super) struct HeedClient {
     pub(super) env: HeedEnv,
-    pub(super) db: HeedDb<Bytes, Bytes>,
+    pub(super) db: HeedDb<'static, Bytes, Bytes>,
 }
 
 impl ClientOps for HeedClient {
