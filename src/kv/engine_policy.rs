@@ -6,9 +6,9 @@ impl EngineKind {
     pub(crate) const fn version(self) -> &'static str {
         match self {
             Self::Redb => "4.4.0",
-            Self::Fjall => "3.1.12",
-            Self::Surrealkv => "1.0.0",
-            Self::Heed => "0.22.1",
+            Self::Fjall => "3.1.13",
+            Self::Surrealkv => "1.2.0",
+            Self::Heed => "0.23.1",
             Self::Sled => "1.0.0-alpha.124",
             Self::Lkv => "0.2.1",
             Self::Manifold | Self::ManifoldWal => "3.1.0",
@@ -201,6 +201,58 @@ mod tests {
         assert!(compression_mapping(EngineKind::Redb, EngineCompression::Lz4).is_err());
         assert!(compression_mapping(EngineKind::Fjall, EngineCompression::Zstd).is_err());
         assert!(compression_mapping(EngineKind::Surrealkv, EngineCompression::Lz4).is_err());
+    }
+
+    fn assert_manifest_dependency_version(dependency: &str, expected: &str) {
+        let prefix = format!("{dependency} = ");
+        let declaration = include_str!("../../Cargo.toml")
+            .lines()
+            .find(|line| line.starts_with(&prefix));
+        assert!(
+            declaration.is_some(),
+            "missing dependency declaration for {dependency}"
+        );
+        if let Some(declaration) = declaration {
+            assert!(
+                declaration.contains(&format!("\"={expected}\"")),
+                "{dependency} manifest declaration {declaration:?} disagrees with reported engine version {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn reported_engine_versions_match_manifest() {
+        for (dependency, kind) in [
+            ("redb", EngineKind::Redb),
+            ("fjall", EngineKind::Fjall),
+            ("surrealkv", EngineKind::Surrealkv),
+            ("heed", EngineKind::Heed),
+            ("sled", EngineKind::Sled),
+            ("lkv", EngineKind::Lkv),
+            ("manifold-db", EngineKind::Manifold),
+            ("turbokv", EngineKind::Turbokv),
+            ("parity-db", EngineKind::ParitydbHash),
+        ] {
+            assert_manifest_dependency_version(dependency, kind.version());
+        }
+
+        #[cfg(feature = "kv-external")]
+        for (dependency, kind) in [
+            ("rocksdb", EngineKind::Rocksdb),
+            ("libmdbx", EngineKind::Mdbx),
+            ("persy", EngineKind::Persy),
+        ] {
+            assert_manifest_dependency_version(dependency, kind.version());
+        }
+
+        #[cfg(feature = "kv-experimental")]
+        for (dependency, kind) in [
+            ("roughdb", EngineKind::Roughdb),
+            ("jammdb", EngineKind::Jammdb),
+            ("lsm-db", EngineKind::Lsmdb),
+        ] {
+            assert_manifest_dependency_version(dependency, kind.version());
+        }
     }
 
     #[test]

@@ -7,7 +7,9 @@ use fjall::{
     CompressionType as FjallCompression, Database as FjallDb, Keyspace, KeyspaceCreateOptions,
     PersistMode, config::CompressionPolicy as FjallCompressionPolicy,
 };
-use heed::{Database as HeedDb, Env as HeedEnv, EnvFlags, EnvOpenOptions, types::Bytes};
+use heed::{
+    CommitOrAbort, Database as HeedDb, Env as HeedEnv, EnvFlags, EnvOpenOptions, types::Bytes,
+};
 use manifold::{
     Durability as ManifoldDurability, TableDefinition as ManifoldTableDefinition,
     column_family::{ColumnFamily as ManifoldCf, ColumnFamilyDatabase as ManifoldDb},
@@ -90,7 +92,7 @@ pub enum Engine {
     Surrealkv(SurrealTree),
     Heed {
         env: HeedEnv,
-        db: HeedDb<Bytes, Bytes>,
+        db: HeedDb<'static, Bytes, Bytes>,
     },
     Sled(Box<sled::Db>),
     Lkv(lkv::Database),
@@ -195,9 +197,14 @@ impl Engine {
                 let dir = path.join("heed");
                 fs::create_dir_all(&dir)?;
                 let env = open_heed_environment(&dir, durability)?;
-                let mut wtxn = env.write_txn()?;
-                let db: HeedDb<Bytes, Bytes> = env.create_database(&mut wtxn, None)?;
-                wtxn.commit()?;
+                let wtxn = env.write_txn()?;
+                let db: HeedDb<'static, Bytes, Bytes> = env
+                    .create_databases_and_commit(wtxn, |opener, wtxn| {
+                        opener
+                            .create_database::<Bytes, Bytes>(wtxn, None)
+                            .map(CommitOrAbort::<_, ()>::Commit)
+                    })?
+                    .unwrap_commit();
                 Ok(Self::Heed { env, db })
             }
             EngineKind::Sled => {
