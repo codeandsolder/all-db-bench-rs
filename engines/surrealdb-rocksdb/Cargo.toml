@@ -11,7 +11,7 @@ all-db-bench-record-harness = { path = "../../crates/record-harness" }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
-surrealdb = { version = "=3.3.4", default-features = false, features = ["kv-rocksdb"] }
+surrealdb = { version = "=3.3.5", default-features = false, features = ["kv-rocksdb"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 
 [profile.release]
