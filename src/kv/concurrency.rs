@@ -2,8 +2,8 @@ use super::{
     engine::Engine,
     lifecycle::{DatasetSpec, prefill, warm_existing_reads},
     metrics::{
-        ProcDelta, ProcSnapshot, Quantiles, SystemDelta, SystemSnapshot, dir_size, hist,
-        peak_rss_kib, quantiles,
+        ProcDelta, ProcSnapshot, Quantiles, SystemDelta, SystemSnapshot, count_as_f64, dir_size,
+        hist, peak_rss_kib, quantiles,
     },
     types::{
         AccessPattern, Durability, EngineKind, KeyShape, ValuePattern, Workload, WritePattern,
@@ -21,7 +21,10 @@ use std::{
     time::Instant,
 };
 
-use super::concurrency_clients::*;
+use super::concurrency_clients::{
+    ClientOps, FjallClient, HeedClient, ManifoldClient, ParityClient, RedbClient, SledClient,
+    SurrealClient, TurboClient,
+};
 
 mod workload;
 use workload::{ClientRun, run_client, verify_bounded_churn_state};
@@ -34,6 +37,10 @@ enum StateEvolution {
 }
 
 #[derive(Clone, Debug, Parser)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent CLI feature toggles are clearer as booleans than a synthetic combined mode enum"
+)]
 #[command(about = "Shared-database multi-client scaling benchmark")]
 struct Args {
     #[arg(long, value_enum)]
@@ -187,6 +194,10 @@ struct AggregateRun {
     system_delta: SystemDelta,
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "thread launch, synchronized measurement, join, and aggregation form one concurrency protocol"
+)]
 fn run_clients<C: ClientOps>(
     prototype: C,
     args: &Args,
@@ -248,10 +259,15 @@ fn run_clients<C: ClientOps>(
                     // Keep the task/TID alive until the coordinator has captured its
                     // process-after snapshot. This avoids losing schedstat deltas.
                     let (lock, cv) = &*release;
-                    let mut released = lock.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut released = lock
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                     while !*released {
-                        released = cv.wait(released).unwrap_or_else(|e| e.into_inner());
+                        released = cv
+                            .wait(released)
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
                     }
+                    drop(released);
                 })?,
         );
     }
@@ -279,7 +295,9 @@ fn run_clients<C: ClientOps>(
 
     {
         let (lock, cv) = &*release;
-        *lock.lock().unwrap_or_else(|e| e.into_inner()) = true;
+        *lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
         cv.notify_all();
     }
 
@@ -370,8 +388,8 @@ async fn dispatch(engine: Engine, args: &Args) -> Result<(&'static str, Aggregat
         Engine::Lkv(_) => bail!(
             "lkv concurrency unsupported: write transactions require &mut Database and 0.2.1 exposes no cloneable/shared writer handle; benchmark-side mutex would fake concurrency"
         ),
-        Engine::Manifold { _db, cf } => {
-            let shared = Arc::new(_db);
+        Engine::Manifold { _db: db, cf } => {
+            let shared = Arc::new(db);
             Ok((
                 "shared Arc<ColumnFamilyDatabase> owner + native ColumnFamily clones",
                 run_clients_without_starving_runtime(ManifoldClient { _db: shared, cf }, args)?,
@@ -443,12 +461,24 @@ fn median(mut values: Vec<f64>) -> f64 {
     values.sort_by(f64::total_cmp);
     let n = values.len();
     if n.is_multiple_of(2) {
-        (values[n / 2 - 1] + values[n / 2]) / 2.0
+        f64::midpoint(values[n / 2 - 1], values[n / 2])
     } else {
         values[n / 2]
     }
 }
 
+/// Run the shared-database multi-client scaling benchmark.
+///
+/// # Errors
+/// Returns an error for invalid arguments, unsupported engine semantics, backend failures, or result I/O failures.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the top-level harness intentionally keeps benchmark phase ordering visible"
+)]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the opened engine must remain alive through prefill, warmup, concurrent execution, and final measurement"
+)]
 pub async fn run() -> Result<()> {
     let args = Args::parse();
     if args.records == 0 {
@@ -609,7 +639,7 @@ pub async fn run() -> Result<()> {
     let mut client_rates = Vec::with_capacity(run.clients.len());
     let mut client_measurements = Vec::with_capacity(run.clients.len());
     for client in run.clients {
-        let rate = client.ops_completed as f64 / client.elapsed_s.max(f64::MIN_POSITIVE);
+        let rate = count_as_f64(client.ops_completed) / client.elapsed_s.max(f64::MIN_POSITIVE);
         client_elapsed.push(client.elapsed_s);
         client_rates.push(rate);
         client_measurements.push(ClientMeasurement {
@@ -667,7 +697,7 @@ pub async fn run() -> Result<()> {
         prefill_s,
         warmup_s,
         elapsed_s: run.elapsed_s,
-        ops_per_s: run.completed as f64 / run.elapsed_s.max(f64::MIN_POSITIVE),
+        ops_per_s: count_as_f64(run.completed) / run.elapsed_s.max(f64::MIN_POSITIVE),
         reads: run.reads,
         writes: run.writes,
         deletes: run.deletes,

@@ -1,7 +1,7 @@
 use super::types::Workload;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct MixedEpochTargets {
+pub struct MixedEpochTargets {
     pub reads: u64,
     pub updates: u64,
     pub inserts: u64,
@@ -10,13 +10,13 @@ pub(crate) struct MixedEpochTargets {
 
 impl MixedEpochTargets {
     #[must_use]
-    pub fn total(self) -> u64 {
+    pub const fn total(self) -> u64 {
         self.reads + self.updates + self.inserts + self.deletes
     }
 }
 
 #[must_use]
-pub(crate) fn mixed_epoch_targets(
+pub fn mixed_epoch_targets(
     workload: Workload,
     epoch: u64,
     bounded_state: bool,
@@ -67,13 +67,13 @@ pub(crate) fn mixed_epoch_targets(
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct BoundedChurnSwap {
+pub struct BoundedChurnSwap {
     pub delete_id: u64,
     pub put_id: u64,
 }
 
 #[must_use]
-pub(crate) fn bounded_churn_swap(
+pub const fn bounded_churn_swap(
     records: u64,
     total_slots: u64,
     slot: u64,

@@ -3,7 +3,7 @@ use serde::Serialize;
 
 #[derive(Clone, Copy, Debug, Serialize, ValueEnum)]
 #[serde(rename_all = "kebab-case")]
-pub(crate) enum EngineKind {
+pub enum EngineKind {
     Redb,
     Fjall,
     Surrealkv,
@@ -31,21 +31,21 @@ pub(crate) enum EngineKind {
 
 impl EngineKind {
     #[must_use]
-    pub(crate) fn supports_range_scan(self) -> bool {
+    pub(crate) const fn supports_range_scan(self) -> bool {
         !matches!(self, Self::Lkv | Self::ParitydbHash)
     }
 }
 
 #[derive(Clone, Copy, Debug, Serialize, ValueEnum, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
-pub(crate) enum Durability {
+pub enum Durability {
     Relaxed,
     Sync,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, ValueEnum)]
 #[serde(rename_all = "kebab-case")]
-pub(crate) enum Workload {
+pub enum Workload {
     PointRead,
     RangeScan,
     ReadHeavy,
@@ -58,7 +58,7 @@ pub(crate) enum Workload {
 
 #[derive(Clone, Copy, Debug, Serialize, ValueEnum, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
-pub(crate) enum AccessPattern {
+pub enum AccessPattern {
     Auto,
     Uniform,
     Hot80,
@@ -67,7 +67,7 @@ pub(crate) enum AccessPattern {
 
 #[derive(Clone, Copy, Debug, Serialize, ValueEnum, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
-pub(crate) enum KeyShape {
+pub enum KeyShape {
     Sequential,
     SharedPrefix,
     Hashed,
@@ -75,7 +75,7 @@ pub(crate) enum KeyShape {
 
 #[derive(Clone, Copy, Debug, Serialize, ValueEnum, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
-pub(crate) enum ValuePattern {
+pub enum ValuePattern {
     PseudoRandom,
     Zeros,
     Repeated,
@@ -85,7 +85,7 @@ pub(crate) enum ValuePattern {
 
 #[derive(Clone, Copy, Debug, Serialize, ValueEnum, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
-pub(crate) enum EngineCompression {
+pub enum EngineCompression {
     Default,
     None,
     Lz4,
@@ -95,7 +95,7 @@ pub(crate) enum EngineCompression {
 
 #[derive(Clone, Copy, Debug, Serialize, ValueEnum, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
-pub(crate) enum WritePattern {
+pub enum WritePattern {
     Append,
     UpdateUniform,
     UpdateHot,

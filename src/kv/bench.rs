@@ -16,7 +16,7 @@ use super::{
     lifecycle::{DatasetSpec, prefill, warm_existing_reads},
     metrics::{
         ProcDelta, ProcSnapshot, Quantiles, SettleMeasurement, SystemDelta, SystemSnapshot,
-        dir_size, hist, measure_settle, peak_rss_kib, quantiles, record,
+        count_as_f64, dir_size, hist, measure_settle, peak_rss_kib, quantiles, record,
     },
     types::{
         AccessPattern, Durability, EngineCompression, EngineKind, KeyShape, ValuePattern, Workload,
@@ -91,6 +91,10 @@ struct Args {
 }
 
 #[derive(Debug, Serialize)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "verification_ok is a stable serialized benchmark schema field"
+)]
 struct Verification {
     expected_prefix_records: u64,
     checked_prefix_records: u64,
@@ -158,13 +162,17 @@ struct Measurement {
     verification: Option<Verification>,
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the benchmark workload state machine is clearer as one exhaustive workload match"
+)]
 async fn run_workload(
     engine: &mut Engine,
     args: &Args,
     read_hist: &mut Histogram<u64>,
     write_hist: &mut Histogram<u64>,
 ) -> Result<(u64, u64, u64, u64)> {
-    let mut rng = SmallRng::seed_from_u64(args.seed ^ args.trial as u64);
+    let mut rng = SmallRng::seed_from_u64(args.seed ^ u64::from(args.trial));
     let mut reads = 0u64;
     let mut writes = 0u64;
     let mut deletes = 0u64;
@@ -219,7 +227,7 @@ async fn run_workload(
                 let t = Instant::now();
                 let n = engine.scan_count(&start_key, &end_key).await?;
                 record(read_hist, t.elapsed());
-                if n != args.scan_len as usize {
+                if n != usize::try_from(args.scan_len)? {
                     bail!("range scan returned {n} rows, expected {}", args.scan_len);
                 }
                 reads += args.scan_len;
@@ -233,7 +241,7 @@ async fn run_workload(
                 txn_size
             };
             while done < args.ops {
-                let n = (args.ops - done).min(batch as u64) as usize;
+                let n = usize::try_from(args.ops - done)?.min(batch);
                 let mut puts = Vec::with_capacity(n);
                 for _ in 0..n {
                     let id = match args.write_pattern {
@@ -273,7 +281,7 @@ async fn run_workload(
                 bail!("delete-burst requires ops <= records to avoid repeated tombstones");
             }
             while done < args.ops {
-                let n = (args.ops - done).min(txn_size as u64) as usize;
+                let n = usize::try_from(args.ops - done)?.min(txn_size);
                 let mut dels = Vec::with_capacity(n);
                 for offset in 0..n {
                     let id = done + offset as u64;
@@ -304,7 +312,8 @@ async fn run_workload(
                 let targets = mixed_epoch_targets(args.workload, epoch, false);
                 debug_assert_eq!(targets.total(), epoch);
 
-                let mut units = Vec::with_capacity((targets.reads as usize) + 16);
+                let mut units =
+                    Vec::with_capacity(usize::try_from(targets.reads)?.saturating_add(16));
                 for _ in 0..targets.reads {
                     let (id, _expect_hit) = sample_read_id(
                         &mut rng,
@@ -317,9 +326,9 @@ async fn run_workload(
                     units.push(Unit::Read(make_key(id)));
                 }
 
-                let mut write_specs = Vec::with_capacity(
-                    (targets.updates + targets.inserts + targets.deletes) as usize,
-                );
+                let mut write_specs = Vec::with_capacity(usize::try_from(
+                    targets.updates + targets.inserts + targets.deletes,
+                )?);
                 for _ in 0..targets.updates {
                     let id = sample_existing_id(
                         &mut rng,
@@ -477,6 +486,14 @@ async fn verify_recovery(
     })
 }
 
+/// Run one single-client benchmark invocation and emit its measurement record.
+///
+/// # Errors
+/// Returns an error for invalid arguments, backend failures, verification failures, or result I/O failures.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the top-level benchmark keeps phase ordering explicit for measurement correctness"
+)]
 pub async fn run() -> Result<()> {
     let args = Args::parse();
     if args.records == 0 {
@@ -645,7 +662,7 @@ pub async fn run() -> Result<()> {
         prefill_s,
         warmup_s,
         elapsed_s: elapsed.as_secs_f64(),
-        ops_per_s: completed as f64 / elapsed.as_secs_f64(),
+        ops_per_s: count_as_f64(completed) / elapsed.as_secs_f64(),
         reads,
         writes,
         deletes,
