@@ -15,7 +15,7 @@ use std::{
 
 use crate::{
     Durability, Quantiles, READ_MATERIALIZATION, RecordData, WRITE_MATERIALIZATION,
-    backend::RecordBackend, dir_size, hist, peak_rss_kib, quantiles, record,
+    backend::RecordBackend, count_as_f64, dir_size, hist, peak_rss_kib, quantiles, record,
 };
 
 #[derive(Clone, Copy, Debug, Serialize, ValueEnum)]
@@ -136,7 +136,7 @@ fn row(id: u64, payload_bytes: usize, salt: u64) -> RecordData {
 }
 
 fn logical_put_bytes(payload_bytes: usize) -> u64 {
-    12u64.saturating_add(payload_bytes as u64)
+    12u64.saturating_add(u64::try_from(payload_bytes).unwrap_or(u64::MAX))
 }
 
 fn hot95_id(rng: &mut SmallRng, records: u64) -> u64 {
@@ -148,6 +148,10 @@ fn hot95_id(rng: &mut SmallRng, records: u64) -> u64 {
     }
 }
 
+#[expect(
+    clippy::future_not_send,
+    reason = "record backends are thread-confined: each backend is owned and polled to completion on one worker thread, so requiring Sync would reject valid backends such as rusqlite"
+)]
 async fn prefill<B: RecordBackend>(engine: &B, args: &SustainedArgs) -> Result<()> {
     const BATCH: usize = 1_000;
     let mut rows = Vec::with_capacity(BATCH);
@@ -164,8 +168,12 @@ async fn prefill<B: RecordBackend>(engine: &B, args: &SustainedArgs) -> Result<(
     Ok(())
 }
 
+#[expect(
+    clippy::future_not_send,
+    reason = "record backends are thread-confined: each backend is owned and polled to completion on one worker thread, so requiring Sync would reject valid backends such as rusqlite"
+)]
 async fn warm_reads<B: RecordBackend>(engine: &B, args: &SustainedArgs) -> Result<()> {
-    let mut rng = SmallRng::seed_from_u64(args.seed ^ args.trial as u64 ^ 0x7777);
+    let mut rng = SmallRng::seed_from_u64(args.seed ^ u64::from(args.trial) ^ 0x7777);
     for _ in 0..args.records.min(args.warmup_reads) {
         let id = rng.random_range(0..args.records);
         let _ = engine.get(id).await?;
@@ -173,6 +181,14 @@ async fn warm_reads<B: RecordBackend>(engine: &B, args: &SustainedArgs) -> Resul
     Ok(())
 }
 
+/// Run the shared sustained record benchmark harness.
+///
+/// # Errors
+/// Returns an error for invalid benchmark arguments, backend failures, or result I/O failures.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the sustained harness keeps one explicit phase/window state machine to preserve measurement semantics"
+)]
 pub async fn run<B: RecordBackend>(engine_kind: B::Kind, args: SustainedArgs) -> Result<()> {
     if args.records == 0 || args.ops == 0 || args.window_ops == 0 || args.txn_size == 0 {
         bail!("records, ops, window-ops and txn-size must all be greater than zero");
@@ -186,18 +202,17 @@ pub async fn run<B: RecordBackend>(engine_kind: B::Kind, args: SustainedArgs) ->
         bail!("--ops must be a multiple of --txn-size");
     }
 
+    let durability = &args.durability;
+    let pattern = &args.pattern;
+    let records = args.records;
+    let ops = args.ops;
+    let window_ops = args.window_ops;
+    let payload_bytes = args.payload_bytes;
+    let txn_size = args.txn_size;
+    let trial = args.trial;
     let path = args.root.join(
         format!(
-            "record-sustained-{:?}-{:?}-{:?}-n{}-o{}-w{}-p{}-tx{}-t{}",
-            engine_kind,
-            args.durability,
-            args.pattern,
-            args.records,
-            args.ops,
-            args.window_ops,
-            args.payload_bytes,
-            args.txn_size,
-            args.trial
+            "record-sustained-{engine_kind:?}-{durability:?}-{pattern:?}-n{records}-o{ops}-w{window_ops}-p{payload_bytes}-tx{txn_size}-t{trial}"
         )
         .to_lowercase()
         .replace('_', "-"),
@@ -221,14 +236,14 @@ pub async fn run<B: RecordBackend>(engine_kind: B::Kind, args: SustainedArgs) ->
     let process_before = ProcSnapshot::capture();
     let system_before = SystemSnapshot::capture();
     let foreground_started = Instant::now();
-    let mut rng = SmallRng::seed_from_u64(args.seed ^ args.trial as u64 ^ 0x5155_5354);
+    let mut rng = SmallRng::seed_from_u64(args.seed ^ u64::from(args.trial) ^ 0x5155_5354);
     let mut next_id = args.records;
     let mut done = 0u64;
     let mut puts_total = 0u64;
     let mut deletes_total = 0u64;
     let mut txn_total = 0u64;
     let mut logical_bytes_total = 0u64;
-    let mut total_hist = hist();
+    let mut total_hist = hist()?;
     let mut windows = Vec::new();
     let mut active_elapsed = Duration::ZERO;
 
@@ -238,7 +253,7 @@ pub async fn run<B: RecordBackend>(engine_kind: B::Kind, args: SustainedArgs) ->
         let window_proc_before = ProcSnapshot::capture();
         let window_sys_before = SystemSnapshot::capture();
         let window_started = Instant::now();
-        let mut window_hist = hist();
+        let mut window_hist = hist()?;
         let mut window_puts = 0u64;
         let mut window_deletes = 0u64;
         let mut window_txns = 0u64;
@@ -253,21 +268,21 @@ pub async fn run<B: RecordBackend>(engine_kind: B::Kind, args: SustainedArgs) ->
             }
 
             while done < window_target {
-                let epoch = (window_target - done).min(1_000);
+                let epoch = usize::try_from((window_target - done).min(1_000))?;
                 let update_count = epoch * 40 / 100;
                 let insert_count = epoch * 30 / 100;
                 let delete_count = epoch - update_count - insert_count;
-                let mut specs = Vec::with_capacity(epoch as usize);
-                specs.extend(std::iter::repeat_n(ChurnOp::Update, update_count as usize));
-                specs.extend(std::iter::repeat_n(ChurnOp::Insert, insert_count as usize));
-                specs.extend(std::iter::repeat_n(ChurnOp::Delete, delete_count as usize));
+                let mut specs = Vec::with_capacity(epoch);
+                specs.extend(std::iter::repeat_n(ChurnOp::Update, update_count));
+                specs.extend(std::iter::repeat_n(ChurnOp::Insert, insert_count));
+                specs.extend(std::iter::repeat_n(ChurnOp::Delete, delete_count));
                 specs.shuffle(&mut rng);
 
                 for chunk in specs.chunks(args.txn_size) {
                     let mut rows = Vec::with_capacity(chunk.len());
                     let mut deletes = Vec::with_capacity(chunk.len());
                     for (op_offset, spec) in chunk.iter().enumerate() {
-                        let salt = args.seed ^ done ^ op_offset as u64;
+                        let salt = args.seed ^ done ^ u64::try_from(op_offset)?;
                         match spec {
                             ChurnOp::Update => {
                                 let id = rng.random_range(0..args.records);
@@ -283,8 +298,8 @@ pub async fn run<B: RecordBackend>(engine_kind: B::Kind, args: SustainedArgs) ->
                             }
                         }
                     }
-                    let put_count = rows.len() as u64;
-                    let delete_count = deletes.len() as u64;
+                    let put_count = u64::try_from(rows.len())?;
+                    let delete_count = u64::try_from(deletes.len())?;
                     let logical_bytes = put_count
                         .saturating_mul(logical_put_bytes(args.payload_bytes))
                         + delete_count.saturating_mul(8);
@@ -293,7 +308,7 @@ pub async fn run<B: RecordBackend>(engine_kind: B::Kind, args: SustainedArgs) ->
                     let latency = started.elapsed();
                     record(&mut window_hist, latency);
                     record(&mut total_hist, latency);
-                    done += chunk.len() as u64;
+                    done = done.saturating_add(u64::try_from(chunk.len())?);
                     window_puts += put_count;
                     window_deletes += delete_count;
                     window_txns += 1;
@@ -302,10 +317,12 @@ pub async fn run<B: RecordBackend>(engine_kind: B::Kind, args: SustainedArgs) ->
             }
         } else {
             while done < window_target {
-                let n = (window_target - done).min(args.txn_size as u64) as usize;
+                let n = usize::try_from(window_target - done)
+                    .unwrap_or(usize::MAX)
+                    .min(args.txn_size);
                 let mut rows = Vec::with_capacity(n);
                 for op_offset in 0..n {
-                    let salt = args.seed ^ done ^ op_offset as u64;
+                    let salt = args.seed ^ done ^ u64::try_from(op_offset)?;
                     let id = match args.pattern {
                         SustainedPattern::Append => {
                             let id = next_id;
@@ -318,14 +335,14 @@ pub async fn run<B: RecordBackend>(engine_kind: B::Kind, args: SustainedArgs) ->
                     };
                     rows.push((id, row(id, args.payload_bytes, salt)));
                 }
-                let put_count = rows.len() as u64;
+                let put_count = u64::try_from(rows.len())?;
                 let logical_bytes = put_count.saturating_mul(logical_put_bytes(args.payload_bytes));
                 let started = Instant::now();
                 engine.upsert_batch(&rows).await?;
                 let latency = started.elapsed();
                 record(&mut window_hist, latency);
                 record(&mut total_hist, latency);
-                done += n as u64;
+                done = done.saturating_add(u64::try_from(n)?);
                 window_puts += put_count;
                 window_txns += 1;
                 window_logical_bytes = window_logical_bytes.saturating_add(logical_bytes);
@@ -338,12 +355,13 @@ pub async fn run<B: RecordBackend>(engine_kind: B::Kind, args: SustainedArgs) ->
         let window_sys_after = SystemSnapshot::capture();
         let window_completed = done - window_start_ops;
         windows.push(WindowMeasurement {
-            index: windows.len() as u64,
+            index: u64::try_from(windows.len())?,
             ops_start: window_start_ops,
             ops_end: done,
             ops_completed: window_completed,
             elapsed_s: elapsed.as_secs_f64(),
-            ops_per_s: window_completed as f64 / elapsed.as_secs_f64().max(f64::MIN_POSITIVE),
+            ops_per_s: count_as_f64(window_completed)
+                / elapsed.as_secs_f64().max(f64::MIN_POSITIVE),
             puts: window_puts,
             deletes: window_deletes,
             transactions: window_txns,
@@ -403,8 +421,9 @@ pub async fn run<B: RecordBackend>(engine_kind: B::Kind, args: SustainedArgs) ->
             .saturating_sub(active_elapsed)
             .as_secs_f64()
             / foreground_wall_elapsed.as_secs_f64().max(f64::MIN_POSITIVE),
-        ops_per_s: done as f64 / foreground_wall_elapsed.as_secs_f64().max(f64::MIN_POSITIVE),
-        active_ops_per_s: done as f64 / active_elapsed.as_secs_f64().max(f64::MIN_POSITIVE),
+        ops_per_s: count_as_f64(done)
+            / foreground_wall_elapsed.as_secs_f64().max(f64::MIN_POSITIVE),
+        active_ops_per_s: count_as_f64(done) / active_elapsed.as_secs_f64().max(f64::MIN_POSITIVE),
         puts: puts_total,
         deletes: deletes_total,
         transactions: txn_total,

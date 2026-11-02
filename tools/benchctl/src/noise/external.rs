@@ -90,12 +90,13 @@ pub(super) fn cpu_percent_from_samples(
     if let Some((before_ticks, before_start)) = before
         && before_start == after_start
     {
-        let cpu_s = after_ticks.saturating_sub(before_ticks) as f64 / ticks_per_second as f64;
+        let cpu_s =
+            int_as_f64!(after_ticks.saturating_sub(before_ticks)) / int_as_f64!(ticks_per_second);
         return 100.0 * cpu_s / elapsed_s.max(1e-9);
     }
-    let age_s = (uptime_s - after_start as f64 / ticks_per_second as f64)
-        .max(1.0 / ticks_per_second as f64);
-    100.0 * (after_ticks as f64 / ticks_per_second as f64) / age_s
+    let age_s = (uptime_s - int_as_f64!(after_start) / int_as_f64!(ticks_per_second))
+        .max(1.0 / int_as_f64!(ticks_per_second));
+    100.0 * (int_as_f64!(after_ticks) / int_as_f64!(ticks_per_second)) / age_s
 }
 
 type MetadataRow = (u32, u32, i32, String, String);
@@ -115,21 +116,29 @@ fn metadata_rows() -> Result<Vec<MetadataRow>> {
     let mut rows = Vec::new();
     for raw in stdout.lines() {
         let mut parts = raw.split_whitespace();
-        let (Some(pid), Some(ppid), Some(nice), Some(comm)) =
+        let (Some(pid_raw), Some(parent_pid_raw), Some(nice_raw), Some(comm)) =
             (parts.next(), parts.next(), parts.next(), parts.next())
         else {
             continue;
         };
-        let (Ok(pid), Ok(ppid), Ok(nice)) =
-            (pid.parse::<u32>(), ppid.parse::<u32>(), nice.parse::<i32>())
-        else {
+        let (Ok(process_id), Ok(parent_process_id), Ok(nice_value)) = (
+            pid_raw.parse::<u32>(),
+            parent_pid_raw.parse::<u32>(),
+            nice_raw.parse::<i32>(),
+        ) else {
             continue;
         };
         let args = parts.collect::<Vec<_>>().join(" ");
         if args.is_empty() {
             continue;
         }
-        rows.push((pid, ppid, nice, comm.to_owned(), args));
+        rows.push((
+            process_id,
+            parent_process_id,
+            nice_value,
+            comm.to_owned(),
+            args,
+        ));
     }
     Ok(rows)
 }
@@ -213,7 +222,7 @@ pub(super) fn aggregate_foreign_cpu_percent(
         .sum()
 }
 
-pub(crate) fn run_external(args: ExternalNoiseArgs<'_>) -> Result<i32> {
+pub fn run_external(args: ExternalNoiseArgs<'_>) -> Result<i32> {
     if !args.sample_ms.is_finite() || !args.max_aggregate_cpu_percent.is_finite() {
         bail!("noise thresholds must be finite");
     }

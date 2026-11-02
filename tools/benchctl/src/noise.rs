@@ -2,13 +2,13 @@ mod continuous;
 mod external;
 mod proc;
 
-pub(crate) use continuous::run_continuous;
-pub(crate) use external::run_external;
+pub use continuous::run_continuous;
+pub use external::run_external;
 
 use std::path::Path;
 
-#[derive(Debug)]
-pub(crate) struct ExternalNoiseArgs<'a> {
+#[derive(Debug, Clone, Copy)]
+pub struct ExternalNoiseArgs<'a> {
     pub(crate) ignore_nice_at_least: i32,
     pub(crate) json_out: Option<&'a Path>,
     pub(crate) exclude_pids: &'a [u32],
@@ -16,8 +16,8 @@ pub(crate) struct ExternalNoiseArgs<'a> {
     pub(crate) sample_ms: f64,
 }
 
-#[derive(Debug)]
-pub(crate) struct ContinuousNoiseArgs<'a> {
+#[derive(Debug, Clone, Copy)]
+pub struct ContinuousNoiseArgs<'a> {
     pub(crate) json_out: &'a Path,
     pub(crate) sample_ms: f64,
     pub(crate) ignore_cpu_nice_at_least: i32,
@@ -275,7 +275,10 @@ mod tests {
 
     #[test]
     fn contamination_thresholds_match_python_contract() {
-        assert!(contamination_reasons(1024.0, 1024.0, 10.0, 1.0, 1.0, 50.0).is_empty());
+        assert_eq!(
+            contamination_reasons(1024.0, 1024.0, 10.0, 1.0, 1.0, 50.0),
+            [] as [&str; 0]
+        );
         assert_eq!(
             contamination_reasons(
                 2.0 * 1024.0 * 1024.0,

@@ -7,8 +7,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-#[derive(Debug)]
-pub(crate) struct TsdbSummaryArgs<'a> {
+#[derive(Debug, Clone, Copy)]
+pub struct TsdbSummaryArgs<'a> {
     pub(crate) run_dir: &'a Path,
     pub(crate) expect_trials: Option<usize>,
     pub(crate) json_out: Option<&'a Path>,
@@ -80,7 +80,7 @@ fn median(values: &mut [f64]) -> Result<f64> {
     values.sort_by(f64::total_cmp);
     let middle = values.len() / 2;
     if values.len().is_multiple_of(2) {
-        Ok((values[middle - 1] + values[middle]) / 2.0)
+        Ok(f64::midpoint(values[middle - 1], values[middle]))
     } else {
         Ok(values[middle])
     }
@@ -124,6 +124,10 @@ fn fmt(value: f64, digits: usize) -> String {
     format!("{value:.digits$}")
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
+)]
 fn build_summary(cases: &[Value], expect_trials: Option<usize>) -> Result<Value> {
     let mut grouped = BTreeMap::<String, Vec<&Value>>::new();
     for case in cases {
@@ -292,7 +296,7 @@ fn render_markdown(summary: &Value) -> Result<String> {
     Ok(lines.join("\n") + "\n")
 }
 
-pub(crate) fn run(args: TsdbSummaryArgs<'_>) -> Result<i32> {
+pub fn run(args: TsdbSummaryArgs<'_>) -> Result<i32> {
     let cases = read_cases(args.run_dir)?;
     let summary = build_summary(&cases, args.expect_trials)?;
     let json_text = serde_json::to_string_pretty(&summary)? + "\n";

@@ -44,7 +44,8 @@ impl Lane {
     }
 }
 
-pub(crate) struct QuickArgs<'a> {
+#[derive(Clone, Copy)]
+pub struct QuickArgs<'a> {
     pub(crate) lane: &'a str,
     pub(crate) repo: &'a Path,
     pub(crate) bench_bin: &'a Path,
@@ -61,7 +62,8 @@ pub(crate) struct QuickArgs<'a> {
     pub(crate) max_io_full_avg10: f64,
 }
 
-pub(crate) struct FollowupArgs<'a> {
+#[derive(Clone, Copy)]
+pub struct FollowupArgs<'a> {
     pub(crate) lane: &'a str,
     pub(crate) repo: &'a Path,
     pub(crate) plan: &'a Path,
@@ -110,7 +112,7 @@ fn status(state: &str, campaign: &str) -> Map<String, Value> {
 fn sleep_duration(value: f64) -> Result<Duration> {
     if !value.is_finite() {
         bail!("busy sleep must be finite")
-    };
+    }
     Ok(Duration::from_secs_f64(value.max(0.1)))
 }
 
@@ -176,7 +178,11 @@ fn audit_quick(repo: &Path, run_id: &str, json_out: &Path, markdown_out: &Path) 
     Ok(())
 }
 
-pub(crate) fn run_quick(args: QuickArgs<'_>) -> Result<i32> {
+#[expect(
+    clippy::too_many_lines,
+    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
+)]
+pub fn run_quick(args: QuickArgs<'_>) -> Result<i32> {
     let lane = Lane::parse(args.lane)?;
     let sleep = sleep_duration(args.busy_sleep)?;
     if !executable(args.bench_bin) {
@@ -219,7 +225,7 @@ pub(crate) fn run_quick(args: QuickArgs<'_>) -> Result<i32> {
             let _ = idle::write_status(args.status_file, s)?;
             if !args.watch {
                 return Ok(75);
-            };
+            }
             if busy == 1 || busy.is_multiple_of(30) {
                 println!(
                     "{} quick waiting for idle: busy_events={busy}",
@@ -322,7 +328,7 @@ pub(crate) fn run_quick(args: QuickArgs<'_>) -> Result<i32> {
         let _ = idle::write_status(args.status_file, s)?;
         if !args.watch {
             return Ok(75);
-        };
+        }
         if busy == 1 || busy.is_multiple_of(30) {
             println!(
                 "{} quick yielded after host became busy: busy_events={busy}",
@@ -389,7 +395,7 @@ fn groups_from_plan(
         let q = read_json(path)?;
         if i64v(q.get("quality_policy_version")).unwrap_or(-1) != 1 {
             bail!("unsupported stock quality policy")
-        };
+        }
         groups.extend(
             q.get("groups")
                 .and_then(Value::as_array)
@@ -398,14 +404,12 @@ fn groups_from_plan(
                 .cloned(),
         );
     }
-    fn order(g: &Value) -> i32 {
-        match g.get("resize_strategy").and_then(Value::as_str) {
-            Some("more-ops") => 0,
-            Some("more-trials") => 1,
-            Some("quality-repair") => 2,
-            _ => 99,
-        }
-    }
+    let order = |group: &Value| match group.get("resize_strategy").and_then(Value::as_str) {
+        Some("more-ops") => 0,
+        Some("more-trials") => 1,
+        Some("quality-repair") => 2,
+        _ => 99,
+    };
     groups.sort_by(|a, b| {
         order(a)
             .cmp(&order(b))
@@ -436,13 +440,13 @@ fn followup_complete(repo: &Path, group: &Value, prefix: &str) -> bool {
         || json_truthy(data.get("problems"))
     {
         return false;
-    };
+    }
     let Some(gs) = data.get("groups").and_then(Value::as_array) else {
         return false;
     };
     if gs.len() != 1 {
         return false;
-    };
+    }
     let r = &gs[0];
     r.get("engine") == group.get("engine")
         && r.get("durability") == group.get("durability")
@@ -451,8 +455,8 @@ fn followup_complete(repo: &Path, group: &Value, prefix: &str) -> bool {
         && r.get("trials").and_then(Value::as_array).is_some_and(|v| {
             v.iter()
                 .enumerate()
-                .all(|(i, x)| x.as_i64() == Some((i + 1) as i64))
-                && v.len() == trials as usize
+                .all(|(i, x)| x.as_i64() == Some(i64::try_from(i + 1).unwrap_or(i64::MAX)))
+                && v.len() == numeric_to_usize!(trials)
         })
 }
 
@@ -463,7 +467,7 @@ fn median(mut values: Vec<f64>) -> Option<f64> {
     values.sort_by(f64::total_cmp);
     let m = values.len() / 2;
     Some(if values.len().is_multiple_of(2) {
-        (values[m - 1] + values[m]) / 2.0
+        f64::midpoint(values[m - 1], values[m])
     } else {
         values[m]
     })
@@ -582,7 +586,11 @@ fn add_group_env(
     Ok(())
 }
 
-pub(crate) fn run_followups(args: FollowupArgs<'_>) -> Result<i32> {
+#[expect(
+    clippy::too_many_lines,
+    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
+)]
+pub fn run_followups(args: FollowupArgs<'_>) -> Result<i32> {
     let lane = Lane::parse(args.lane)?;
     let sleep = sleep_duration(args.busy_sleep)?;
     if !args.repo.is_dir() || !args.plan.is_file() || !executable(args.bench_bin) {
@@ -603,7 +611,7 @@ pub(crate) fn run_followups(args: FollowupArgs<'_>) -> Result<i32> {
     };
     let mut groups = groups_from_plan(args.plan, args.quality_plan, args.quality_only)?;
     if let Some(limit) = args.limit {
-        groups.truncate(limit)
+        groups.truncate(limit);
     }
     let total = groups.len();
     if lane == Lane::Kv {
@@ -612,9 +620,9 @@ pub(crate) fn run_followups(args: FollowupArgs<'_>) -> Result<i32> {
             args.repo.display(),
             args.bench_bin.display(),
             args.watch
-        )
+        );
     } else {
-        println!("record resize planned={total}")
+        println!("record resize planned={total}");
     }
     let mut completed = 0_usize;
     let mut skipped = 0_usize;
@@ -627,7 +635,7 @@ pub(crate) fn run_followups(args: FollowupArgs<'_>) -> Result<i32> {
         if followup_complete(args.repo, group, args.run_prefix) {
             skipped += 1;
             if lane == Lane::Kv {
-                println!("[{index}/{total}] skip complete {rid}")
+                println!("[{index}/{total}] skip complete {rid}");
             }
             let cal = calibration_elapsed(args.repo, group, index, &args, lane);
             match cal {
@@ -737,7 +745,7 @@ pub(crate) fn run_followups(args: FollowupArgs<'_>) -> Result<i32> {
                     let _ = idle::write_status(args.status_file, s)?;
                     return Ok(2);
                 }
-                verified = true
+                verified = true;
             }
             let s = followup_status(
                 "running",
@@ -811,7 +819,7 @@ pub(crate) fn run_followups(args: FollowupArgs<'_>) -> Result<i32> {
                     }
                 );
             }
-            thread::sleep(sleep)
+            thread::sleep(sleep);
         }
         match calibration_elapsed(args.repo, group, index, &args, lane) {
             Ok(Some(v)) => println!(
@@ -845,11 +853,11 @@ pub(crate) fn run_followups(args: FollowupArgs<'_>) -> Result<i32> {
     if lane == Lane::Kv {
         println!(
             "done completed_now={completed} skipped={skipped} planned={total} busy_events={busy}"
-        )
+        );
     } else {
         println!(
             "record resize complete: completed_now={completed} skipped={skipped} total={total}"
-        )
+        );
     }
     Ok(0)
 }
@@ -875,7 +883,7 @@ mod tests {
         Ok(p)
     }
     fn group() -> Value {
-        json!({"engine":"redb","durability":"sync","workload":"point-read","records":100000,"suggested_effective_ops":300000,"runner_ops_override":300000,"suggested_trials":3,"resize_strategy":"more-ops","median_elapsed_s":0.5,"status":"undersized"})
+        json!({"engine":"redb","durability":"sync","workload":"point-read","records":100_000,"suggested_effective_ops":300_000,"runner_ops_override":300_000,"suggested_trials":3,"resize_strategy":"more-ops","median_elapsed_s":0.5,"status":"undersized"})
     }
     #[test]
     fn run_id_matches_python() -> Result<()> {
@@ -907,7 +915,7 @@ mod tests {
         fs::write(
             d.join("summary.json"),
             serde_json::to_string(
-                &json!({"row_count":3,"group_count":1,"problems":[],"groups":[{"engine":"redb","durability":"sync","workload":"point-read","ops_requested":300000,"trials":[1,2,3]}]}),
+                &json!({"row_count":3,"group_count":1,"problems":[],"groups":[{"engine":"redb","durability":"sync","workload":"point-read","ops_requested":300_000,"trials":[1,2,3]}]}),
             )?,
         )?;
         assert!(followup_complete(&p, &g, "x"));

@@ -27,7 +27,7 @@ fn read_rows(input: &Path) -> Result<Vec<Value>> {
     Ok(rows)
 }
 
-pub(crate) fn summarize_file(
+pub fn summarize_file(
     input: &Path,
     json_out: Option<&Path>,
     markdown_out: Option<&Path>,
@@ -200,7 +200,7 @@ mod tests {
             kv_row(8, "bounded", 8192, 1, 600.0),
         ];
         let (groups, problems) = summarize_rows(&rows, Some(1))?;
-        assert!(problems.is_empty());
+        assert_eq!(problems, [] as [std::string::String; 0]);
         let growth = groups
             .iter()
             .find(|group| group.clients == 8 && group.state_evolution == "growth")
@@ -245,7 +245,7 @@ mod tests {
         });
         let second = kv_row(1, "growth", 0, 2, 110.0);
         let (groups, problems) = summarize_rows(&[first, second], Some(2))?;
-        assert!(problems.is_empty());
+        assert_eq!(problems, [] as [std::string::String; 0]);
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].open_s_median, Some(0.25));
         assert_eq!(groups[0].settle_cpu_ns_median, Some(100.0));

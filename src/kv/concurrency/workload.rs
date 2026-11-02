@@ -25,6 +25,10 @@ pub(super) struct ClientRun {
     pub(super) write_hist: Histogram<u64>,
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the per-client workload state machine is clearer as one exhaustive workload match"
+)]
 pub(super) async fn run_client<C: ClientOps>(
     engine: &mut C,
     args: &Args,
@@ -36,8 +40,8 @@ pub(super) async fn run_client<C: ClientOps>(
 ) -> Result<ClientRun> {
     let salt = mix_u64((client as u64).wrapping_add(0x636c_6965_6e74_0001));
     let mut rng = SmallRng::seed_from_u64(args.seed ^ u64::from(args.trial) ^ salt);
-    let mut read_hist = hist();
-    let mut write_hist = hist();
+    let mut read_hist = hist()?;
+    let mut write_hist = hist()?;
     let mut reads = 0u64;
     let mut writes = 0u64;
     let mut deletes = 0u64;
@@ -45,7 +49,7 @@ pub(super) async fn run_client<C: ClientOps>(
     let mut done = 0u64;
     let txn_size = args.txn_size.max(1);
     let mut next_id = args.records.saturating_add(offset);
-    let mut churn_active_a = vec![true; churn_slot_count as usize];
+    let mut churn_active_a = vec![true; usize::try_from(churn_slot_count)?];
     let mut churn_cursor = 0u64;
     let make_key = |id| key(id, args.key_bytes, args.key_shape, args.seed);
     let make_value = |id, salt| value(id, args.value_bytes, salt, args.value_pattern);
@@ -95,7 +99,7 @@ pub(super) async fn run_client<C: ClientOps>(
                     .scan_count(&make_key(start_id), &make_key(end_id))
                     .await?;
                 record(&mut read_hist, t.elapsed());
-                if n != args.scan_len as usize {
+                if n != usize::try_from(args.scan_len)? {
                     bail!(
                         "client {client} range scan returned {n}, expected {}",
                         args.scan_len
@@ -112,7 +116,7 @@ pub(super) async fn run_client<C: ClientOps>(
                 txn_size
             };
             while done < ops {
-                let n = (ops - done).min(batch as u64) as usize;
+                let n = usize::try_from(ops - done)?.min(batch);
                 let mut puts = Vec::with_capacity(n);
                 for local in 0..n {
                     let id = match args.write_pattern {
@@ -152,7 +156,7 @@ pub(super) async fn run_client<C: ClientOps>(
                 bail!("delete-burst requires total ops <= records");
             }
             while done < ops {
-                let n = (ops - done).min(txn_size as u64) as usize;
+                let n = usize::try_from(ops - done)?.min(txn_size);
                 let mut dels = Vec::with_capacity(n);
                 for local in 0..n {
                     dels.push(make_key(offset + done + local as u64));
@@ -191,7 +195,8 @@ pub(super) async fn run_client<C: ClientOps>(
                 );
                 debug_assert_eq!(targets.total(), epoch);
 
-                let mut units = Vec::with_capacity((targets.reads as usize) + 16);
+                let mut units =
+                    Vec::with_capacity(usize::try_from(targets.reads)?.saturating_add(16));
                 for _ in 0..targets.reads {
                     let (id, _expect_hit) = sample_read_id(
                         &mut rng,
@@ -204,9 +209,9 @@ pub(super) async fn run_client<C: ClientOps>(
                     units.push(Unit::Read(make_key(id)));
                 }
 
-                let mut specs = Vec::with_capacity(
-                    (targets.updates + targets.inserts + targets.deletes) as usize,
-                );
+                let mut specs = Vec::with_capacity(usize::try_from(
+                    targets.updates + targets.inserts + targets.deletes,
+                )?);
                 for _ in 0..targets.updates {
                     let id = sample_existing_id(
                         &mut rng,
@@ -226,7 +231,7 @@ pub(super) async fn run_client<C: ClientOps>(
                         bail!("bounded churn requires paired insert/delete targets");
                     }
                     for _ in 0..targets.inserts {
-                        let local_slot = (churn_cursor % churn_slot_count) as usize;
+                        let local_slot = usize::try_from(churn_cursor % churn_slot_count)?;
                         churn_cursor = churn_cursor.saturating_add(1);
                         let slot = churn_slot_start.saturating_add(local_slot as u64);
                         let swap = bounded_churn_swap(

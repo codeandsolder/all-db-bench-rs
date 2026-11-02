@@ -19,6 +19,10 @@ struct GroupKey {
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "ratio suffix is part of the explicit comparison-metric vocabulary"
+)]
 struct Ratios {
     throughput_ratio: Option<f64>,
     cpu_ns_per_op_ratio: Option<f64>,
@@ -122,7 +126,7 @@ fn median(mut values: Vec<f64>) -> Option<f64> {
     values.sort_by(f64::total_cmp);
     let middle = values.len() / 2;
     if values.len().is_multiple_of(2) {
-        Some((values[middle - 1] + values[middle]) / 2.0)
+        Some(f64::midpoint(values[middle - 1], values[middle]))
     } else {
         Some(values[middle])
     }
@@ -305,6 +309,10 @@ fn latency_p99(row: &Value, field: &str) -> Option<f64> {
     nested_f64(row, &[field, "p99_us"])
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
+)]
 fn summarize_group(key: &GroupKey, rows: &[&Value]) -> Result<SummaryGroup> {
     let mut trials = Vec::with_capacity(rows.len());
     let mut ops_per_s = Vec::with_capacity(rows.len());
@@ -343,13 +351,13 @@ fn summarize_group(key: &GroupKey, rows: &[&Value]) -> Result<SummaryGroup> {
         let completed = req_u64(row, "ops_completed")?.max(1);
         let cpu_ns = nested_f64(row, &["measured_process", "cpu_runtime_ns"])
             .context("missing measured_process.cpu_runtime_ns")?;
-        cpu_ns_per_op.push(cpu_ns / completed as f64);
+        cpu_ns_per_op.push(cpu_ns / int_as_f64!(completed));
 
         let apparent_bytes =
             nested_f64(row, &["compression_storage", "footprint", "apparent_bytes"])
                 .context("missing compression_storage.footprint.apparent_bytes")?;
         apparent.push(apparent_bytes);
-        let logical_bytes = logical_live_bytes(row, key) as f64;
+        let logical_bytes = int_as_f64!(logical_live_bytes(row, key));
         logical.push(logical_bytes);
 
         if allocation_reliable {
@@ -365,12 +373,12 @@ fn summarize_group(key: &GroupKey, rows: &[&Value]) -> Result<SummaryGroup> {
         }
 
         let (read_bytes, write_bytes) = device_bytes(row);
-        device_reads.push(read_bytes as f64);
-        device_writes.push(write_bytes as f64);
+        device_reads.push(int_as_f64!(read_bytes));
+        device_writes.push(int_as_f64!(write_bytes));
         let process_read = nested_f64(row, &["measured_process", "read_bytes"]).unwrap_or(0.0);
         let process_write = nested_f64(row, &["measured_process", "write_bytes"]).unwrap_or(0.0);
-        process_reads_per_op.push(process_read / completed as f64);
-        process_writes_per_op.push(process_write / completed as f64);
+        process_reads_per_op.push(process_read / int_as_f64!(completed));
+        process_writes_per_op.push(process_write / int_as_f64!(completed));
 
         if let Some(value) = nested_delta(row, "dataset_snapshot", "used") {
             zfs_used.push(value);
@@ -524,8 +532,8 @@ fn fnum(value: Option<f64>, digits: usize) -> String {
     }
 }
 
-fn mib(value: Option<f64>) -> Option<f64> {
-    value.map(|bytes| bytes / (1024.0 * 1024.0))
+fn bytes_to_mib(bytes: f64) -> f64 {
+    bytes / (1024.0 * 1024.0)
 }
 
 fn markdown(summary: &[SummaryGroup], lane: &str) -> String {
@@ -558,10 +566,16 @@ fn markdown(summary: &[SummaryGroup], lane: &str) -> String {
                 item.value_pattern.as_deref().unwrap_or("—"),
                 fnum(item.ops_per_s_median, 0),
                 fnum(item.cpu_ns_per_op_median, 0),
-                fnum(mib(item.db_allocated_block_bytes_median), 2),
-                fnum(mib(item.zfs_dataset_used_delta_median), 2),
-                fnum(mib(item.zfs_dataset_logicalused_delta_median), 2),
-                fnum(mib(item.lifecycle_device_write_bytes_median), 2),
+                fnum(item.db_allocated_block_bytes_median.map(bytes_to_mib), 2),
+                fnum(item.zfs_dataset_used_delta_median.map(bytes_to_mib), 2),
+                fnum(
+                    item.zfs_dataset_logicalused_delta_median.map(bytes_to_mib),
+                    2
+                ),
+                fnum(
+                    item.lifecycle_device_write_bytes_median.map(bytes_to_mib),
+                    2
+                ),
                 fnum(ratios.and_then(|values| values.throughput_ratio), 3),
                 fnum(ratios.and_then(|values| values.cpu_ns_per_op_ratio), 3),
                 fnum(physical, 3),
@@ -594,10 +608,13 @@ fn markdown(summary: &[SummaryGroup], lane: &str) -> String {
                 item.payload_pattern.as_deref().unwrap_or("—"),
                 fnum(item.ops_per_s_median, 0),
                 fnum(item.cpu_ns_per_op_median, 0),
-                fnum(mib(item.db_apparent_bytes_median), 2),
-                fnum(mib(item.db_allocated_block_bytes_median), 2),
-                fnum(mib(item.zfs_dataset_used_delta_median), 2),
-                fnum(mib(item.lifecycle_device_write_bytes_median), 2),
+                fnum(item.db_apparent_bytes_median.map(bytes_to_mib), 2),
+                fnum(item.db_allocated_block_bytes_median.map(bytes_to_mib), 2),
+                fnum(item.zfs_dataset_used_delta_median.map(bytes_to_mib), 2),
+                fnum(
+                    item.lifecycle_device_write_bytes_median.map(bytes_to_mib),
+                    2
+                ),
                 fnum(ratios.and_then(|values| values.throughput_ratio), 3),
                 fnum(ratios.and_then(|values| values.cpu_ns_per_op_ratio), 3),
                 fnum(physical, 3),
@@ -608,7 +625,7 @@ fn markdown(summary: &[SummaryGroup], lane: &str) -> String {
     lines.join("\n")
 }
 
-pub(crate) fn summarize_file(input: &Path, json_out: &Path, markdown_out: &Path) -> Result<()> {
+pub fn summarize_file(input: &Path, json_out: &Path, markdown_out: &Path) -> Result<()> {
     let content =
         fs::read_to_string(input).with_context(|| format!("failed to read {}", input.display()))?;
     let mut rows = Vec::new();

@@ -165,8 +165,17 @@ fn pressure_total(path: &str, class: &str) -> u64 {
     0
 }
 
-fn saturating_delta(after: u64, before: u64) -> u64 {
+const fn saturating_delta(after: u64, before: u64) -> u64 {
     after.saturating_sub(before)
+}
+
+fn duration_nanos_u64(duration: Duration) -> u64 {
+    u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
+}
+
+fn fraction_of_wall(value_ns: u64, wall_ns: u64) -> f64 {
+    Duration::from_nanos(value_ns).as_secs_f64()
+        / Duration::from_nanos(wall_ns.max(1)).as_secs_f64()
 }
 
 fn clock_ticks_per_second() -> u64 {
@@ -202,6 +211,7 @@ where
 }
 
 impl ProcSnapshot {
+    #[must_use]
     pub fn capture() -> Self {
         let status = parse_colon_numbers("/proc/self/status");
         let io = parse_colon_numbers("/proc/self/io");
@@ -211,18 +221,16 @@ impl ProcSnapshot {
         // is coarse (USER_HZ), so keep it as a monotonic backstop for workers
         // that may disappear between snapshots. Per-task schedstat supplies
         // nanosecond-resolution CPU/runqueue counters for surviving/new tasks.
-        let (minflt, majflt, process_cpu_ticks) = match fs::read_to_string("/proc/self/stat") {
-            Ok(text) => {
-                let tail = text.rsplit_once(") ").map(|(_, tail)| tail).unwrap_or("");
+        let (minflt, majflt, process_cpu_ticks) =
+            fs::read_to_string("/proc/self/stat").map_or((0, 0, 0), |text| {
+                let tail = text.rsplit_once(") ").map_or("", |(_, tail)| tail);
                 let fields: Vec<&str> = tail.split_whitespace().collect();
                 let minflt = fields.get(7).and_then(|v| v.parse().ok()).unwrap_or(0);
                 let majflt = fields.get(9).and_then(|v| v.parse().ok()).unwrap_or(0);
                 let utime: u64 = fields.get(11).and_then(|v| v.parse().ok()).unwrap_or(0);
                 let stime: u64 = fields.get(12).and_then(|v| v.parse().ok()).unwrap_or(0);
                 (minflt, majflt, utime.saturating_add(stime))
-            }
-            Err(_) => (0, 0, 0),
-        };
+            });
 
         let mut task_counters = BTreeMap::new();
         if let Ok(tasks) = fs::read_dir("/proc/self/task") {
@@ -236,17 +244,14 @@ impl ProcSnapshot {
                 };
                 let base = task.path();
                 let (cpu_runtime_ns, runqueue_wait_ns, timeslices) =
-                    match fs::read_to_string(base.join("schedstat")) {
-                        Ok(text) => {
-                            let mut fields = text.split_whitespace();
-                            (
-                                fields.next().and_then(|v| v.parse().ok()).unwrap_or(0),
-                                fields.next().and_then(|v| v.parse().ok()).unwrap_or(0),
-                                fields.next().and_then(|v| v.parse().ok()).unwrap_or(0),
-                            )
-                        }
-                        Err(_) => (0, 0, 0),
-                    };
+                    fs::read_to_string(base.join("schedstat")).map_or((0, 0, 0), |text| {
+                        let mut fields = text.split_whitespace();
+                        (
+                            fields.next().and_then(|v| v.parse().ok()).unwrap_or(0),
+                            fields.next().and_then(|v| v.parse().ok()).unwrap_or(0),
+                            fields.next().and_then(|v| v.parse().ok()).unwrap_or(0),
+                        )
+                    });
                 let task_status = parse_colon_numbers(&base.join("status").to_string_lossy());
                 task_counters.insert(
                     tid,
@@ -297,7 +302,9 @@ impl ProcSnapshot {
             write_bytes: *io.get("write_bytes").unwrap_or(&0),
             cancelled_write_bytes: *io.get("cancelled_write_bytes").unwrap_or(&0),
             current_rss_kib: *status.get("VmRSS").unwrap_or(&0),
-            threads: (task_counters.len() as u64).max(*status.get("Threads").unwrap_or(&0)),
+            threads: u64::try_from(task_counters.len())
+                .unwrap_or(u64::MAX)
+                .max(*status.get("Threads").unwrap_or(&0)),
             task_counters,
             process_cpu_ticks,
             clock_ticks_per_second,
@@ -305,14 +312,14 @@ impl ProcSnapshot {
         }
     }
 
+    #[must_use]
     pub fn delta(&self, after: &Self, elapsed: Duration) -> ProcDelta {
         let accounting_elapsed = self
             .captured_at
             .zip(after.captured_at)
             .and_then(|(before, after)| after.checked_duration_since(before))
             .unwrap_or(elapsed);
-        let accounting_wall_ns = accounting_elapsed.as_nanos().max(1).min(u64::MAX as u128) as u64;
-        let wall_ns = accounting_wall_ns as f64;
+        let accounting_wall_ns = duration_nanos_u64(accounting_elapsed).max(1);
 
         let task_cpu_runtime_ns = task_delta(&self.task_counters, &after.task_counters, |task| {
             task.cpu_runtime_ns
@@ -322,9 +329,10 @@ impl ProcSnapshot {
             .clock_ticks_per_second
             .max(self.clock_ticks_per_second)
             .max(1);
-        let process_cpu_runtime_ns = ((tick_delta as u128) * 1_000_000_000u128
-            / ticks_per_second as u128)
-            .min(u64::MAX as u128) as u64;
+        let process_cpu_runtime_ns = u64::try_from(
+            u128::from(tick_delta) * 1_000_000_000u128 / u128::from(ticks_per_second),
+        )
+        .unwrap_or(u64::MAX);
         // schedstat is nanosecond-resolution and is the reported CPU metric.
         // The process-wide USER_HZ counter remains diagnostic only: taking
         // max(task_ns, tick_ns) badly overestimates very short runs because one
@@ -371,14 +379,15 @@ impl ProcSnapshot {
             rss_after_kib: after.current_rss_kib,
             threads_before: self.threads,
             threads_after: after.threads,
-            cpu_runtime_fraction_of_wall: cpu_runtime_ns as f64 / wall_ns,
-            runqueue_wait_fraction_of_wall: runqueue_wait_ns as f64 / wall_ns,
+            cpu_runtime_fraction_of_wall: fraction_of_wall(cpu_runtime_ns, accounting_wall_ns),
+            runqueue_wait_fraction_of_wall: fraction_of_wall(runqueue_wait_ns, accounting_wall_ns),
             accounting_wall_ns,
         }
     }
 }
 
 impl SystemSnapshot {
+    #[must_use]
     pub fn capture() -> Self {
         let mem = parse_colon_numbers("/proc/meminfo");
         let vm = parse_space_numbers("/proc/vmstat");
@@ -407,13 +416,13 @@ impl SystemSnapshot {
         }
     }
 
+    #[must_use]
     pub fn delta(&self, after: &Self) -> SystemDelta {
         let accounting_wall_ns = self
             .captured_at
             .zip(after.captured_at)
             .and_then(|(before, after)| after.checked_duration_since(before))
-            .map(|elapsed| elapsed.as_nanos().max(1).min(u64::MAX as u128) as u64)
-            .unwrap_or(1);
+            .map_or(1, |elapsed| duration_nanos_u64(elapsed).max(1));
         SystemDelta {
             psi_cpu_some_us: saturating_delta(after.psi_cpu_some_us, self.psi_cpu_some_us),
             psi_io_some_us: saturating_delta(after.psi_io_some_us, self.psi_io_some_us),

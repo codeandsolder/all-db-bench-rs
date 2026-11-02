@@ -8,7 +8,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub(crate) struct RecoveryArgs<'a> {
+#[derive(Clone, Copy)]
+pub struct RecoveryArgs<'a> {
     pub(crate) run_dir: &'a Path,
     pub(crate) json_out: Option<&'a Path>,
     pub(crate) markdown_out: Option<&'a Path>,
@@ -96,7 +97,11 @@ fn ensure_parent(path: &Path) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn run(args: RecoveryArgs<'_>) -> Result<()> {
+#[expect(
+    clippy::too_many_lines,
+    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
+)]
+pub fn run(args: RecoveryArgs<'_>) -> Result<()> {
     let run_dir = args
         .run_dir
         .canonicalize()

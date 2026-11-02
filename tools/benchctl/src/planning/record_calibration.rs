@@ -139,6 +139,7 @@ fn policy_ops(repo: &Path, scenario: &str, workload: &str, default_ops: i64) -> 
     Ok(value)
 }
 
+#[derive(Clone, Copy)]
 struct RecordCase<'a> {
     scenario: &'a str,
     engine: &'a str,
@@ -187,6 +188,10 @@ fn add_case(cases: &mut Vec<Value>, repo: &Path, case: RecordCase<'_>) -> Result
     Ok(())
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
+)]
 fn build_plan(repo: &Path) -> Result<Value> {
     let mut cases = Vec::new();
     for engine in ENGINES {
@@ -325,6 +330,10 @@ fn validate_delimiters(values: &[String], index: usize) -> Result<()> {
     Ok(())
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
+)]
 fn materialize(plan: &Value) -> Result<(Vec<Vec<String>>, Value)> {
     let version = plan
         .get("record_concurrency_plan_version")
@@ -500,12 +509,13 @@ fn materialize(plan: &Value) -> Result<(Vec<Vec<String>>, Value)> {
     ))
 }
 
-pub(crate) struct RecordCalibrationArgs<'a> {
+#[derive(Clone, Copy)]
+pub struct RecordCalibrationArgs<'a> {
     pub(crate) repo: &'a Path,
     pub(crate) out: &'a Path,
 }
 
-pub(crate) fn run_calibration(args: RecordCalibrationArgs<'_>) -> Result<()> {
+pub fn run_calibration(args: RecordCalibrationArgs<'_>) -> Result<()> {
     let plan = build_plan(args.repo)?;
     if get_i64(&plan, "case_count")? != 164 {
         bail!(
@@ -524,13 +534,14 @@ pub(crate) fn run_calibration(args: RecordCalibrationArgs<'_>) -> Result<()> {
     Ok(())
 }
 
-pub(crate) struct MaterializeArgs<'a> {
+#[derive(Clone, Copy)]
+pub struct MaterializeArgs<'a> {
     pub(crate) plan: &'a Path,
     pub(crate) tsv_out: Option<&'a Path>,
     pub(crate) meta_out: Option<&'a Path>,
 }
 
-pub(crate) fn run_materialize(args: MaterializeArgs<'_>) -> Result<()> {
+pub fn run_materialize(args: MaterializeArgs<'_>) -> Result<()> {
     let plan = read_json(args.plan)?;
     let (rows, meta) = materialize(&plan)?;
     if let Some(path) = args.tsv_out {

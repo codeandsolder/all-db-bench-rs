@@ -5,7 +5,10 @@ use super::{
 };
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value, json};
-use std::{collections::BTreeMap, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct FamilyKey {
@@ -68,6 +71,10 @@ struct CalibrationResults {
     provenance: Map<String, Value>,
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
+)]
 fn load_results(repo: &Path, plan_path: &Path, run_dir: &Path) -> Result<CalibrationResults> {
     let plan = read_json(plan_path)?;
     if get_i64(&plan, "record_concurrency_plan_version")? != RECORD_PLAN_VERSION
@@ -193,14 +200,14 @@ fn choose_ops(
     cases: &[Value],
     results: &BTreeMap<ResultKey, Value>,
 ) -> Result<(i64, Map<String, Value>)> {
-    let current: BTreeMap<i64, ()> = cases
+    let current: BTreeSet<i64> = cases
         .iter()
-        .map(|item| Ok((get_i64(item, "ops")?, ())))
+        .map(|item| get_i64(item, "ops"))
         .collect::<Result<_>>()?;
     if current.len() != 1 {
         bail!("family calibration ops mismatch");
     }
-    let current_ops = *current.keys().next().context("missing calibration ops")?;
+    let current_ops = *current.iter().next().context("missing calibration ops")?;
     let mut fastest = f64::NEG_INFINITY;
     let mut slowest = f64::INFINITY;
     for item in cases {
@@ -213,8 +220,8 @@ fn choose_ops(
         fastest = fastest.max(rate);
         slowest = slowest.min(rate);
     }
-    let mut desired = (fastest * TARGET_SECONDS).ceil() as i64;
-    let mut cap = (slowest * RECORD_MAX_SLOW_SECONDS).floor() as i64;
+    let mut desired = f64_to_i64!((fastest * TARGET_SECONDS).ceil());
+    let mut cap = f64_to_i64!((slowest * RECORD_MAX_SLOW_SECONDS).floor());
     let workload = get_str(&cases[0], "workload")?;
     let txn = get_i64(&cases[0], "txn_size")?;
     if txn < 1 {
@@ -251,11 +258,11 @@ fn choose_ops(
     analysis.insert("minimum_ops".to_owned(), json!(minimum));
     analysis.insert(
         "projected_fastest_s".to_owned(),
-        json!(selected as f64 / fastest),
+        json!(int_as_f64!(selected) / fastest),
     );
     analysis.insert(
         "projected_slowest_s".to_owned(),
-        json!(selected as f64 / slowest),
+        json!(int_as_f64!(selected) / slowest),
     );
     analysis.insert("window_limited".to_owned(), json!(selected < desired));
     analysis.insert(
@@ -265,6 +272,10 @@ fn choose_ops(
     Ok((selected, analysis))
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
+)]
 fn build_final(repo: &Path, plan_path: &Path, run_dir: &Path, trials: i64) -> Result<Value> {
     if trials < 1 {
         bail!("trials must be positive");
@@ -370,7 +381,8 @@ fn build_final(repo: &Path, plan_path: &Path, run_dir: &Path, trials: i64) -> Re
     Ok(Value::Object(out))
 }
 
-pub(crate) struct RecordFinalArgs<'a> {
+#[derive(Clone, Copy)]
+pub struct RecordFinalArgs<'a> {
     pub(crate) repo: &'a Path,
     pub(crate) calibration_plan: &'a Path,
     pub(crate) calibration_run: &'a Path,
@@ -378,7 +390,7 @@ pub(crate) struct RecordFinalArgs<'a> {
     pub(crate) trials: i64,
 }
 
-pub(crate) fn run_record_final(args: RecordFinalArgs<'_>) -> Result<()> {
+pub fn run_record_final(args: RecordFinalArgs<'_>) -> Result<()> {
     let plan = build_final(
         args.repo,
         args.calibration_plan,
@@ -433,7 +445,7 @@ mod tests {
         })
     }
 
-    fn plan(cases: Vec<Value>) -> Value {
+    fn plan(cases: &[Value]) -> Value {
         json!({
             "record_concurrency_plan_version": 2,
             "read_materialization": READ_MATERIALIZATION,
@@ -461,7 +473,7 @@ mod tests {
             row.as_object_mut().context("case object")?.remove("ops");
             row["ops_requested"] = json!(ops);
             row["ops_completed"] = json!(ops);
-            row["elapsed_s"] = json!(ops as f64 / rate);
+            row["elapsed_s"] = json!(int_as_f64!(ops) / rate);
             row["ops_per_s"] = json!(rate);
             fs::write(
                 run.join("cases").join(format!("{index}.json")),
@@ -496,7 +508,7 @@ mod tests {
             .iter()
             .map(|item| if item["clients"] == 1 { 1000.0 } else { 100.0 })
             .collect();
-        let source = plan(cases.clone());
+        let source = plan(&cases);
         let (plan_path, run) = write_run(&dir, &source, &cases, &rates)?;
         let out = build_final(&repo()?, &plan_path, &run, 3)?;
         assert_eq!(out["record_concurrency_plan_version"], 2);
@@ -529,7 +541,7 @@ mod tests {
             case("point-read", "growth", 100, 1, 10_000),
             case("point-read", "growth", 100, 8, 10_000),
         ];
-        let source = plan(cases.clone());
+        let source = plan(&cases);
         let (plan_path, run) = write_run(&dir, &source, &cases, &[1000.0, 500.0])?;
         let out = build_final(&repo()?, &plan_path, &run, 3)?;
         let family = &out["families"][0];
@@ -544,7 +556,7 @@ mod tests {
     fn v1_and_wrong_materialization_are_rejected() -> Result<()> {
         let dir = TestDir::new("record-reject")?;
         let cases = vec![case("point-read", "growth", 100, 1, 1000)];
-        let mut source = plan(cases.clone());
+        let mut source = plan(&cases);
         source["record_concurrency_plan_version"] = json!(1);
         let (plan_path, run) = write_run(&dir, &source, &cases, &[1000.0])?;
         assert!(build_final(&repo()?, &plan_path, &run, 3).is_err());

@@ -5,7 +5,7 @@ use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 use std::{collections::HashMap, fs, path::Path};
 
-pub(crate) const SIZING_POLICY_VERSION: i64 = 3;
+pub const SIZING_POLICY_VERSION: i64 = 3;
 const READ_ONLY_WORKLOADS: [&str; 3] = ["indexed-read", "point-read", "range-scan"];
 const GROUP_FIELDS: [&str; 21] = [
     "lane",
@@ -32,7 +32,7 @@ const GROUP_FIELDS: [&str; 21] = [
 ];
 
 #[derive(Clone, Copy)]
-pub(crate) struct SizingConfig {
+pub struct SizingConfig {
     pub(crate) read_only_min_seconds: f64,
     pub(crate) read_only_target_seconds: f64,
     pub(crate) stateful_min_total_seconds: f64,
@@ -56,7 +56,8 @@ impl Default for SizingConfig {
     }
 }
 
-pub(crate) struct AuditArgs<'a> {
+#[derive(Clone, Copy)]
+pub struct AuditArgs<'a> {
     pub(crate) results: &'a Path,
     pub(crate) expect_trials: i64,
     pub(crate) config: SizingConfig,
@@ -64,7 +65,8 @@ pub(crate) struct AuditArgs<'a> {
     pub(crate) markdown_out: Option<&'a Path>,
 }
 
-pub(crate) struct RefineArgs<'a> {
+#[derive(Clone, Copy)]
+pub struct RefineArgs<'a> {
     pub(crate) quality_plan: &'a Path,
     pub(crate) sizing_audit: &'a Path,
     pub(crate) resize_root: &'a Path,
@@ -120,8 +122,8 @@ fn sort_key(key: &[Value]) -> Vec<String> {
     key.iter().map(py_string).collect()
 }
 
-fn round_up_ops(value: f64) -> i64 {
-    let requested = value.ceil().max(1.0) as i64;
+const fn round_up_ops(value: f64) -> i64 {
+    let requested = f64_to_i64!(value.ceil().max(1.0));
     let quantum = if requested < 1_000 {
         10
     } else if requested < 10_000 {
@@ -137,7 +139,7 @@ fn round_up_ops(value: f64) -> i64 {
 }
 
 fn round_up_odd_trials(value: f64) -> i64 {
-    let mut requested = (value.ceil() as i64).max(3);
+    let mut requested = f64_to_i64!(value.ceil()).max(3);
     if requested % 2 == 0 {
         requested += 1;
     }
@@ -176,7 +178,7 @@ fn median(values: &[f64]) -> Option<f64> {
     values.sort_by(f64::total_cmp);
     let mid = values.len() / 2;
     if values.len().is_multiple_of(2) {
-        Some((values[mid - 1] + values[mid]) / 2.0)
+        Some(f64::midpoint(values[mid - 1], values[mid]))
     } else {
         Some(values[mid])
     }
@@ -186,7 +188,7 @@ fn cv(values: &[f64]) -> f64 {
     if values.is_empty() {
         return 0.0;
     }
-    let mean = values.iter().sum::<f64>() / values.len() as f64;
+    let mean = values.iter().sum::<f64>() / int_as_f64!(values.len());
     if values.len() < 2 || mean == 0.0 {
         return 0.0;
     }
@@ -194,7 +196,7 @@ fn cv(values: &[f64]) -> f64 {
         .iter()
         .map(|value| (value - mean).powi(2))
         .sum::<f64>()
-        / (values.len() - 1) as f64;
+        / int_as_f64!((values.len() - 1));
     variance.sqrt() / mean
 }
 
@@ -215,6 +217,10 @@ fn field_string(row: &Value, field: &str) -> String {
     row.get(field).map_or_else(|| "None".to_owned(), py_string)
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
+)]
 fn report_group(
     first: &Value,
     rows: &[Value],
@@ -285,7 +291,7 @@ fn report_group(
 
     if undersized && read_only {
         let scaled =
-            effective_ops as f64 * config.read_only_target_seconds / median_elapsed.max(1e-9);
+            int_as_f64!(effective_ops) * config.read_only_target_seconds / median_elapsed.max(1e-9);
         let suggested = round_up_ops(scaled);
         suggested_effective_ops = Some(suggested);
         runner_override = Some(runner_ops_override(first, suggested)?);
@@ -348,11 +354,7 @@ fn report_group(
     }))
 }
 
-pub(crate) fn audit_rows(
-    rows: &[Value],
-    expect_trials: i64,
-    config: SizingConfig,
-) -> Result<Value> {
+pub fn audit_rows(rows: &[Value], expect_trials: i64, config: SizingConfig) -> Result<Value> {
     let mut grouped = HashMap::<String, (Vec<Value>, Vec<Value>)>::new();
     for row in rows {
         let key = group_key(row);
@@ -420,10 +422,15 @@ pub(crate) fn audit_rows(
 }
 
 fn percent(value: f64, digits: usize) -> String {
-    format!("{:.*}%", digits, value * 100.0)
+    let percentage = value * 100.0;
+    format!("{percentage:.digits$}%")
 }
 
-pub(crate) fn render_audit_markdown(report: &Value) -> Result<String> {
+#[expect(
+    clippy::too_many_lines,
+    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
+)]
+pub fn render_audit_markdown(report: &Value) -> Result<String> {
     let counts = report
         .get("counts")
         .and_then(Value::as_object)
@@ -533,25 +540,25 @@ pub(crate) fn render_audit_markdown(report: &Value) -> Result<String> {
             .get("trials")
             .and_then(Value::as_array)
             .map_or(0, Vec::len);
+        let status = group.get("status").and_then(Value::as_str).unwrap_or("");
+        let strategy = group
+            .get("resize_strategy")
+            .and_then(Value::as_str)
+            .unwrap_or("—");
+        let engine = field_string(group, "engine");
+        let durability = field_string(group, "durability");
+        let workload = field_string(group, "workload");
+        let ops = comma_int(value_i64(group.get("ops_requested"))?);
+        let measured_total_s = value_f64(group.get("measured_total_s"))?;
+        let median_elapsed_s = value_f64(group.get("median_elapsed_s"))?;
+        let cv = percent(value_f64(group.get("throughput_cv"))?, 1);
+        let spread = percent(value_f64(group.get("throughput_relative_spread"))?, 1);
+        let suggested_ops = suggested.map_or_else(|| "—".to_owned(), comma_int);
+        let suggested_trials =
+            suggested_trials.map_or_else(|| "—".to_owned(), |value| value.to_string());
+        let runner_ops = runner.map_or_else(|| "—".to_owned(), comma_int);
         lines.push(format!(
-            "| {} | {} | {} | {} | {} | {} | {} | {:.3} | {:.3} | {} | {} | {} | {} | {} |",
-            group.get("status").and_then(Value::as_str).unwrap_or(""),
-            group
-                .get("resize_strategy")
-                .and_then(Value::as_str)
-                .unwrap_or("—"),
-            field_string(group, "engine"),
-            field_string(group, "durability"),
-            field_string(group, "workload"),
-            comma_int(value_i64(group.get("ops_requested"))?),
-            trials,
-            value_f64(group.get("measured_total_s"))?,
-            value_f64(group.get("median_elapsed_s"))?,
-            percent(value_f64(group.get("throughput_cv"))?, 1),
-            percent(value_f64(group.get("throughput_relative_spread"))?, 1),
-            suggested.map_or_else(|| "—".to_owned(), comma_int),
-            suggested_trials.map_or_else(|| "—".to_owned(), |value| value.to_string()),
-            runner.map_or_else(|| "—".to_owned(), comma_int),
+            "| {status} | {strategy} | {engine} | {durability} | {workload} | {ops} | {trials} | {measured_total_s:.3} | {median_elapsed_s:.3} | {cv} | {spread} | {suggested_ops} | {suggested_trials} | {runner_ops} |"
         ));
     }
     if let Some(problems) = report.get("problems").and_then(Value::as_array)
@@ -579,7 +586,7 @@ fn read_ndjson(path: &Path) -> Result<Vec<Value>> {
         .collect()
 }
 
-pub(crate) fn run_audit(args: AuditArgs<'_>) -> Result<i32> {
+pub fn run_audit(args: AuditArgs<'_>) -> Result<i32> {
     let rows = read_ndjson(args.results)?;
     let report = audit_rows(&rows, args.expect_trials, args.config)?;
     if let Some(path) = args.json_out {
@@ -592,11 +599,7 @@ pub(crate) fn run_audit(args: AuditArgs<'_>) -> Result<i32> {
     } else {
         print!("{markdown}");
     }
-    Ok(if json_truthy(report.get("problems")) {
-        1
-    } else {
-        0
-    })
+    Ok(i32::from(json_truthy(report.get("problems"))))
 }
 
 fn slug(value: &str) -> String {
@@ -639,7 +642,11 @@ fn config_from_audit(audit: &Value) -> Result<SizingConfig> {
     })
 }
 
-pub(crate) fn refine_plan(
+#[expect(
+    clippy::too_many_lines,
+    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
+)]
+pub fn refine_plan(
     quality_plan: &Value,
     sizing_audit: &Value,
     resize_root: &Path,
@@ -765,7 +772,7 @@ pub(crate) fn refine_plan(
     Ok(Value::Object(result))
 }
 
-pub(crate) fn render_refine_markdown(plan: &Value, resize_prefix: &str) -> Result<String> {
+pub fn render_refine_markdown(plan: &Value, resize_prefix: &str) -> Result<String> {
     let groups = plan
         .get("groups")
         .and_then(Value::as_array)
@@ -792,22 +799,20 @@ pub(crate) fn render_refine_markdown(plan: &Value, resize_prefix: &str) -> Resul
             .get("quality_repair_refinement_strategy")
             .and_then(Value::as_str)
             .unwrap_or("—");
+        let engine = field_string(group, "engine");
+        let durability = field_string(group, "durability");
+        let workload = field_string(group, "workload");
+        let suggested_ops = comma_int(value_i64(group.get("suggested_effective_ops"))?);
+        let suggested_trials = value_i64(group.get("suggested_trials"))?;
+        let run_id = group_run_id(group, resize_prefix)?;
         lines.push(format!(
-            "| {} | {} | {} | {} | {} | {} | {} | `{}` |",
-            field_string(group, "engine"),
-            field_string(group, "durability"),
-            field_string(group, "workload"),
-            status,
-            strategy,
-            comma_int(value_i64(group.get("suggested_effective_ops"))?),
-            value_i64(group.get("suggested_trials"))?,
-            group_run_id(group, resize_prefix)?,
+            "| {engine} | {durability} | {workload} | {status} | {strategy} | {suggested_ops} | {suggested_trials} | `{run_id}` |"
         ));
     }
     Ok(lines.join("\n") + "\n")
 }
 
-pub(crate) fn run_refine(args: RefineArgs<'_>) -> Result<()> {
+pub fn run_refine(args: RefineArgs<'_>) -> Result<()> {
     let quality = read_json(args.quality_plan)?;
     let sizing = read_json(args.sizing_audit)?;
     let refined = refine_plan(&quality, &sizing, args.resize_root, args.resize_prefix)?;
@@ -839,7 +844,7 @@ mod tests {
     fn row(engine: &str, elapsed: f64, rate: f64, trial: i64, workload: &str) -> Value {
         json!({
             "lane":"kv","scenario":"baseline-core","engine":engine,"engine_version":"1",
-            "durability":"sync","workload":workload,"records":100000,"ops_requested":50000,
+            "durability":"sync","workload":workload,"records":100_000,"ops_requested":50000,
             "clients":1,"value_bytes":256,"value_pattern":"pseudo-random","key_bytes":8,
             "key_shape":"sequential","access_pattern":"auto","miss_percent":0,
             "write_pattern":"append","txn_size":100,"scan_len":100,"settle_ms":0,
@@ -856,7 +861,13 @@ mod tests {
             ("variable", 5.0, [100.0, 130.0, 70.0]),
         ] {
             for (index, rate) in rates.into_iter().enumerate() {
-                rows.push(row(engine, elapsed, rate, index as i64 + 1, "point-read"));
+                rows.push(row(
+                    engine,
+                    elapsed,
+                    rate,
+                    i64::try_from(index).unwrap_or(i64::MAX) + 1,
+                    "point-read",
+                ));
             }
         }
         let report = audit_rows(&rows, 3, SizingConfig::default())?;
@@ -869,8 +880,8 @@ mod tests {
             .and_then(|groups| groups.iter().find(|group| group["engine"] == "short"))
             .cloned()
             .unwrap_or(Value::Null);
-        assert_eq!(short["suggested_effective_ops"], 300000);
-        assert_eq!(short["runner_ops_override"], 300000);
+        assert_eq!(short["suggested_effective_ops"], 300_000);
+        assert_eq!(short["runner_ops_override"], 300_000);
         Ok(())
     }
 
@@ -883,7 +894,7 @@ mod tests {
         let group = &report["groups"][0];
         assert_eq!(group["resize_strategy"], "more-trials");
         assert_eq!(group["suggested_effective_ops"], 50000);
-        assert_eq!(group["runner_ops_override"], 500000);
+        assert_eq!(group["runner_ops_override"], 500_000);
         assert_eq!(group["suggested_trials"], 11);
         Ok(())
     }
@@ -892,7 +903,7 @@ mod tests {
     fn operation_rounding_matches_policy() {
         assert_eq!(round_up_ops(1.0), 10);
         assert_eq!(round_up_ops(999.1), 1000);
-        assert_eq!(round_up_ops(300000.0), 300000);
-        assert_eq!(round_up_ops(1000001.0), 1100000);
+        assert_eq!(round_up_ops(300_000.0), 300_000);
+        assert_eq!(round_up_ops(1_000_001.0), 1_100_000);
     }
 }

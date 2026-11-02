@@ -2,18 +2,14 @@ use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value, json};
 use std::{collections::BTreeMap, fs, path::Path};
 
-pub(crate) fn ratio(num: Option<f64>, den: Option<f64>) -> Option<f64> {
+pub fn ratio(num: Option<f64>, den: Option<f64>) -> Option<f64> {
     match (num, den) {
         (Some(num), Some(den)) if den > 0.0 => Some(num / den),
         _ => None,
     }
 }
 
-pub(crate) fn composite_mixed_iops(
-    read_iops: f64,
-    write_iops: f64,
-    read_fraction: f64,
-) -> Result<f64> {
+pub fn composite_mixed_iops(read_iops: f64, write_iops: f64, read_fraction: f64) -> Result<f64> {
     if read_iops <= 0.0 || write_iops <= 0.0 {
         bail!("directional IOPS must be positive");
     }
@@ -24,7 +20,7 @@ pub(crate) fn composite_mixed_iops(
     Ok((read_iops / read_fraction).min(write_iops / write_fraction))
 }
 
-pub(crate) fn fio_p99_us(direction: &Value) -> Option<f64> {
+pub fn fio_p99_us(direction: &Value) -> Option<f64> {
     direction
         .get("clat_ns")?
         .get("percentile")?
@@ -63,7 +59,8 @@ fn value_as_f64(value: Option<&Value>, default: f64) -> Result<f64> {
     }
 }
 
-pub(crate) struct FioExpectation<'a> {
+#[derive(Clone, Copy)]
+pub struct FioExpectation<'a> {
     pub(crate) rw: Option<&'a str>,
     pub(crate) rwmixread: Option<i64>,
     pub(crate) bs_bytes: Option<i64>,
@@ -72,7 +69,7 @@ pub(crate) struct FioExpectation<'a> {
     pub(crate) direct: Option<i64>,
 }
 
-pub(crate) fn validate_fio_job(job: &Value, expected: FioExpectation<'_>) -> Result<()> {
+pub fn validate_fio_job(job: &Value, expected: FioExpectation<'_>) -> Result<()> {
     let error = value_as_i64(job.get("error"), 0)?;
     if error != 0 {
         bail!("fio error={error}");
@@ -154,7 +151,11 @@ fn checked_delta(after: i64, before: i64, label: &str) -> Result<i64> {
     Ok(delta)
 }
 
-pub(crate) fn load_storage_delta(path: &Path) -> Result<Value> {
+#[expect(
+    clippy::too_many_lines,
+    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
+)]
+pub fn load_storage_delta(path: &Path) -> Result<Value> {
     let raw: Value = serde_json::from_str(
         &fs::read_to_string(path)
             .with_context(|| format!("failed to read storage sidecar {}", path.display()))?,
@@ -300,9 +301,9 @@ pub(crate) fn load_storage_delta(path: &Path) -> Result<Value> {
 
     let elapsed = accounting_s.max(1e-9);
     let arc_hit_fraction = ratio(
-        zfs_arc_hits.map(|value| value as f64),
+        zfs_arc_hits.map(|value| int_as_f64!(value)),
         match (zfs_arc_hits, zfs_arc_misses) {
-            (Some(hits), Some(misses)) => Some((hits + misses) as f64),
+            (Some(hits), Some(misses)) => Some(int_as_f64!((hits + misses))),
             _ => None,
         },
     );
@@ -328,8 +329,8 @@ pub(crate) fn load_storage_delta(path: &Path) -> Result<Value> {
         "zfs_direct_read_bytes": zfs_direct_read_bytes,
         "zfs_direct_write_ios": zfs_direct_write_ios,
         "zfs_direct_write_bytes": zfs_direct_write_bytes,
-        "storage_read_mbps": storage_read_bytes as f64 / elapsed / 1_000_000.0,
-        "storage_write_mbps": storage_write_bytes as f64 / elapsed / 1_000_000.0,
+        "storage_read_mbps": int_as_f64!(storage_read_bytes) / elapsed / 1_000_000.0,
+        "storage_write_mbps": int_as_f64!(storage_write_bytes) / elapsed / 1_000_000.0,
         "zfs_arc_hit_fraction": arc_hit_fraction,
     }))
 }
@@ -347,7 +348,7 @@ mod tests {
 
     static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 
-    fn sidecar(before_stat: Vec<i64>, after_stat: Vec<i64>) -> Result<PathBuf> {
+    fn sidecar(before_stat: &[i64], after_stat: &[i64]) -> Result<PathBuf> {
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
             "all-db-bench-io-evidence-{}-{id}.json",
@@ -388,10 +389,10 @@ mod tests {
     #[test]
     fn in_flight_gauge_may_decrease() -> Result<()> {
         let path = sidecar(
-            vec![
+            &[
                 100, 0, 200, 0, 300, 0, 400, 0, 7, 500, 600, 0, 0, 700, 0, 10, 0,
             ],
-            vec![
+            &[
                 101, 0, 210, 0, 302, 0, 420, 0, 2, 503, 605, 0, 0, 700, 0, 11, 0,
             ],
         )?;
@@ -414,8 +415,8 @@ mod tests {
     #[test]
     fn consumed_monotonic_counter_may_not_decrease() -> Result<()> {
         let path = sidecar(
-            vec![100, 0, 200, 0, 300, 0, 400, 0, 1, 500, 600],
-            vec![99, 0, 210, 0, 302, 0, 420, 0, 0, 503, 605],
+            &[100, 0, 200, 0, 300, 0, 400, 0, 1, 500, 600],
+            &[99, 0, 210, 0, 302, 0, 420, 0, 0, 503, 605],
         )?;
         let result = load_storage_delta(&path);
         fs::remove_file(&path)?;

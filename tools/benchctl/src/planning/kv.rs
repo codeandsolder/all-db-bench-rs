@@ -249,6 +249,10 @@ struct CalibrationResults {
     provenance: Map<String, Value>,
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
+)]
 fn load_calibration_results(
     repo: &Path,
     plan_path: &Path,
@@ -395,6 +399,10 @@ fn merge_object(target: &mut Map<String, Value>, source: &Map<String, Value>) {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
+)]
 fn build_final_plans(
     repo: &Path,
     audit_path: &Path,
@@ -548,12 +556,14 @@ fn build_final_plans(
     Ok((Value::Object(steady), Value::Object(delete)))
 }
 
-pub(crate) struct KvCalibrationArgs<'a> {
+#[derive(Clone, Copy)]
+pub struct KvCalibrationArgs<'a> {
     pub(crate) sizing_audit: &'a Path,
     pub(crate) out: &'a Path,
 }
 
-pub(crate) struct KvFinalArgs<'a> {
+#[derive(Clone, Copy)]
+pub struct KvFinalArgs<'a> {
     pub(crate) repo: &'a Path,
     pub(crate) sizing_audit: &'a Path,
     pub(crate) calibration_plan: &'a Path,
@@ -563,7 +573,7 @@ pub(crate) struct KvFinalArgs<'a> {
     pub(crate) trials: i64,
 }
 
-pub(crate) fn run_kv_calibration(args: KvCalibrationArgs<'_>) -> Result<()> {
+pub fn run_kv_calibration(args: KvCalibrationArgs<'_>) -> Result<()> {
     let plan = build_calibration_plan(args.sizing_audit)?;
     write_json(args.out, &plan)?;
     println!(
@@ -577,7 +587,7 @@ pub(crate) fn run_kv_calibration(args: KvCalibrationArgs<'_>) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn run_kv_final(args: KvFinalArgs<'_>) -> Result<()> {
+pub fn run_kv_final(args: KvFinalArgs<'_>) -> Result<()> {
     let (steady, delete) = build_final_plans(
         args.repo,
         args.sizing_audit,
@@ -622,12 +632,12 @@ mod tests {
             "recommendation": if fixed && status == "undersized" { "more-ops" } else { "keep-stock" },
             "suggested_ops": if fixed { ops.max(super::rounded_ops(rate * 3.0)?) } else { ops },
             "suggested_trials": 3,
-            "fastest_observed_median_elapsed_s": ops as f64 / rate,
+            "fastest_observed_median_elapsed_s": int_as_f64!(ops) / rate,
             "max_observed_median_ops_per_s": rate,
         }))
     }
 
-    fn write_audit(path: &std::path::Path, families: Vec<Value>, missing: i64) -> Result<()> {
+    fn write_audit(path: &std::path::Path, families: &[Value], missing: i64) -> Result<()> {
         let repo = repo()?;
         let support = kv_support(&repo)?;
         let identity = support_identity(
@@ -657,7 +667,7 @@ mod tests {
         let path = dir.0.join("audit.json");
         write_audit(
             &path,
-            vec![family("point-read", "undersized", 1000.0, 50_000)?],
+            &[family("point-read", "undersized", 1000.0, 50_000)?],
             1,
         )?;
         assert!(build_calibration_plan(&path).is_err());
@@ -670,7 +680,7 @@ mod tests {
         let path = dir.0.join("audit.json");
         write_audit(
             &path,
-            vec![
+            &[
                 family("point-read", "undersized", 100_000.0, 200_000)?,
                 family("range-scan", "sized", 300.0, 1_000)?,
                 family("balanced", "sized", 200_000.0, 50_000)?,
@@ -702,7 +712,7 @@ mod tests {
         let audit = dir.0.join("audit.json");
         write_audit(
             &audit,
-            vec![
+            &[
                 family("point-read", "undersized", 100_000.0, 200_000)?,
                 family("range-scan", "sized", 300.0, 1_000)?,
                 family("balanced", "sized", 200_000.0, 50_000)?,
@@ -735,7 +745,7 @@ mod tests {
                 250_000.0
             };
             row["ops_per_s"] = json!(rate);
-            row["elapsed_s"] = json!(ops as f64 / rate);
+            row["elapsed_s"] = json!(int_as_f64!(ops) / rate);
             fs::write(
                 run.join("cases").join(format!("c{index}.json")),
                 serde_json::to_vec(&row)?,
@@ -769,11 +779,7 @@ mod tests {
     fn calibration_support_must_bind_identity_and_plan() -> Result<()> {
         let dir = TestDir::new("kv-bind")?;
         let audit = dir.0.join("audit.json");
-        write_audit(
-            &audit,
-            vec![family("balanced", "sized", 1_000.0, 50_000)?],
-            0,
-        )?;
+        write_audit(&audit, &[family("balanced", "sized", 1_000.0, 50_000)?], 0)?;
         let plan = build_calibration_plan(&audit)?;
         let plan_path = dir.0.join("plan.json");
         write_json(&plan_path, &plan)?;
@@ -795,11 +801,7 @@ mod tests {
     fn stored_identity_digest_is_canonical() -> Result<()> {
         let dir = TestDir::new("kv-digest")?;
         let audit = dir.0.join("audit.json");
-        write_audit(
-            &audit,
-            vec![family("balanced", "sized", 1_000.0, 50_000)?],
-            0,
-        )?;
+        write_audit(&audit, &[family("balanced", "sized", 1_000.0, 50_000)?], 0)?;
         let plan = build_calibration_plan(&audit)?;
         assert_eq!(
             plan["expected_measurement_identity_sha256"],

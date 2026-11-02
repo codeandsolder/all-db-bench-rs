@@ -4,7 +4,7 @@ use super::{
     lifecycle::{DatasetSpec, prefill},
     metrics::{
         ProcDelta, ProcSnapshot, Quantiles, SettleMeasurement, SystemDelta, SystemSnapshot,
-        dir_size, hist, measure_settle, peak_rss_kib, quantiles, record,
+        count_as_f64, dir_size, hist, measure_settle, peak_rss_kib, quantiles, record,
     },
     types::{AccessPattern, Durability, EngineKind, KeyShape, ValuePattern, Workload},
 };
@@ -139,7 +139,7 @@ struct Measurement {
 }
 
 async fn warm_reads(engine: &mut Engine, args: &Args) -> Result<()> {
-    let mut rng = SmallRng::seed_from_u64(args.seed ^ args.trial as u64 ^ 0x7777);
+    let mut rng = SmallRng::seed_from_u64(args.seed ^ u64::from(args.trial) ^ 0x7777);
     for _ in 0..args.records.min(args.warmup_reads) {
         let id = rng.random_range(0..args.records);
         let _ = engine
@@ -149,6 +149,14 @@ async fn warm_reads(engine: &mut Engine, args: &Args) -> Result<()> {
     Ok(())
 }
 
+/// Run the sustained-write benchmark and emit windowed measurements.
+///
+/// # Errors
+/// Returns an error for invalid arguments, backend failures, or result I/O failures.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the sustained harness keeps one explicit phase/window state machine to preserve measurement semantics"
+)]
 pub async fn run() -> Result<()> {
     let args = Args::parse();
     if args.records == 0 || args.ops == 0 || args.window_ops == 0 || args.txn_size == 0 {
@@ -220,14 +228,14 @@ pub async fn run() -> Result<()> {
     let process_before = ProcSnapshot::capture();
     let system_before = SystemSnapshot::capture();
     let foreground_started = Instant::now();
-    let mut rng = SmallRng::seed_from_u64(args.seed ^ args.trial as u64 ^ 0x5155_5354);
+    let mut rng = SmallRng::seed_from_u64(args.seed ^ u64::from(args.trial) ^ 0x5155_5354);
     let mut next_id = args.records;
     let mut done = 0u64;
     let mut puts_total = 0u64;
     let mut deletes_total = 0u64;
     let mut txn_total = 0u64;
     let mut logical_bytes_total = 0u64;
-    let mut total_hist = hist();
+    let mut total_hist = hist()?;
     let mut windows = Vec::new();
     let mut active_elapsed = Duration::ZERO;
 
@@ -237,7 +245,7 @@ pub async fn run() -> Result<()> {
         let window_proc_before = ProcSnapshot::capture();
         let window_sys_before = SystemSnapshot::capture();
         let window_started = Instant::now();
-        let mut window_hist = hist();
+        let mut window_hist = hist()?;
         let mut window_puts = 0u64;
         let mut window_deletes = 0u64;
         let mut window_txns = 0u64;
@@ -256,10 +264,20 @@ pub async fn run() -> Result<()> {
                 let update_count = epoch * 40 / 100;
                 let insert_count = epoch * 30 / 100;
                 let delete_count = epoch - update_count - insert_count;
-                let mut specs = Vec::with_capacity(epoch as usize);
-                specs.extend(std::iter::repeat_n(ChurnOp::Update, update_count as usize));
-                specs.extend(std::iter::repeat_n(ChurnOp::Insert, insert_count as usize));
-                specs.extend(std::iter::repeat_n(ChurnOp::Delete, delete_count as usize));
+                let epoch = usize::try_from(epoch)?;
+                let mut specs = Vec::with_capacity(epoch);
+                specs.extend(std::iter::repeat_n(
+                    ChurnOp::Update,
+                    usize::try_from(update_count)?,
+                ));
+                specs.extend(std::iter::repeat_n(
+                    ChurnOp::Insert,
+                    usize::try_from(insert_count)?,
+                ));
+                specs.extend(std::iter::repeat_n(
+                    ChurnOp::Delete,
+                    usize::try_from(delete_count)?,
+                ));
                 specs.shuffle(&mut rng);
 
                 for chunk in specs.chunks(args.txn_size) {
@@ -308,7 +326,7 @@ pub async fn run() -> Result<()> {
             }
         } else {
             while done < window_target {
-                let n = (window_target - done).min(args.txn_size as u64) as usize;
+                let n = usize::try_from(window_target - done)?.min(args.txn_size);
                 let mut puts = Vec::with_capacity(n);
                 for op_offset in 0..n {
                     let salt = args.seed ^ done ^ op_offset as u64;
@@ -359,7 +377,8 @@ pub async fn run() -> Result<()> {
             ops_end: done,
             ops_completed: window_completed,
             elapsed_s: elapsed.as_secs_f64(),
-            ops_per_s: window_completed as f64 / elapsed.as_secs_f64().max(f64::MIN_POSITIVE),
+            ops_per_s: count_as_f64(window_completed)
+                / elapsed.as_secs_f64().max(f64::MIN_POSITIVE),
             puts: window_puts,
             deletes: window_deletes,
             transactions: window_txns,
@@ -421,8 +440,9 @@ pub async fn run() -> Result<()> {
             .saturating_sub(active_elapsed)
             .as_secs_f64()
             / foreground_wall_elapsed.as_secs_f64().max(f64::MIN_POSITIVE),
-        ops_per_s: done as f64 / foreground_wall_elapsed.as_secs_f64().max(f64::MIN_POSITIVE),
-        active_ops_per_s: done as f64 / active_elapsed.as_secs_f64().max(f64::MIN_POSITIVE),
+        ops_per_s: count_as_f64(done)
+            / foreground_wall_elapsed.as_secs_f64().max(f64::MIN_POSITIVE),
+        active_ops_per_s: count_as_f64(done) / active_elapsed.as_secs_f64().max(f64::MIN_POSITIVE),
         puts: puts_total,
         deletes: deletes_total,
         transactions: txn_total,

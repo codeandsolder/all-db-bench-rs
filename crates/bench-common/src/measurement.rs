@@ -1,5 +1,5 @@
 use crate::metrics::{ProcDelta, ProcSnapshot, SystemDelta, SystemSnapshot};
-use hdrhistogram::Histogram;
+use hdrhistogram::{Histogram, errors::CreationError};
 use serde::Serialize;
 use std::{
     fs,
@@ -20,20 +20,35 @@ pub struct Quantiles {
     max_us: f64,
 }
 
-#[must_use]
-pub fn histogram() -> Histogram<u64> {
+/// Create the bounded latency histogram used by benchmark measurements.
+///
+/// # Errors
+/// Returns [`CreationError`] if the fixed histogram configuration is rejected by hdrhistogram.
+pub fn histogram() -> Result<Histogram<u64>, CreationError> {
     Histogram::new_with_bounds(1, HIST_MAX_NS, 3)
-        .expect("fixed benchmark histogram bounds are valid")
+}
+
+fn duration_millis_u64(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
+#[must_use]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "benchmark rates are reported as f64; sub-unit precision above 2^53 operations is immaterial"
+)]
+pub const fn count_as_f64(value: u64) -> f64 {
+    value as f64
 }
 
 pub fn record_duration(histogram: &mut Histogram<u64>, duration: Duration) {
-    let ns = duration.as_nanos().min(HIST_MAX_NS as u128) as u64;
+    let ns = u64::try_from(duration.as_nanos().min(u128::from(HIST_MAX_NS))).unwrap_or(HIST_MAX_NS);
     let _ = histogram.record(ns.max(1));
 }
 
 #[must_use]
 pub fn quantiles(histogram: &Histogram<u64>) -> Quantiles {
-    let us = |value: u64| value as f64 / 1000.0;
+    let us = |value: u64| Duration::from_nanos(value).as_secs_f64() * 1_000_000.0;
     if histogram.is_empty() {
         return Quantiles {
             count: 0,
@@ -136,10 +151,10 @@ where
     let mut prev_elapsed = Duration::ZERO;
     let mut samples = Vec::new();
 
-    while (started.elapsed().as_millis() as u64) < requested_ms {
+    while duration_millis_u64(started.elapsed()) < requested_ms {
         let elapsed = started.elapsed();
         let remaining_ms = requested_ms
-            .saturating_sub(elapsed.as_millis() as u64)
+            .saturating_sub(duration_millis_u64(elapsed))
             .max(1);
         sleep(Duration::from_millis(remaining_ms.min(sample_ms))).await;
 
@@ -148,8 +163,8 @@ where
         let now_sys = SystemSnapshot::capture();
         let interval = now_elapsed.saturating_sub(prev_elapsed);
         samples.push(SettleSample {
-            elapsed_ms: now_elapsed.as_millis() as u64,
-            interval_ms: interval.as_millis() as u64,
+            elapsed_ms: duration_millis_u64(now_elapsed),
+            interval_ms: duration_millis_u64(interval),
             db_bytes: dir_size(path),
             process: prev_proc.delta(&now_proc, interval),
             system: prev_sys.delta(&now_sys),

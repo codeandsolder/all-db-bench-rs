@@ -17,7 +17,7 @@ use std::{
 
 use crate::{
     Durability, Quantiles, READ_MATERIALIZATION, RecordData, WRITE_MATERIALIZATION, Workload,
-    dir_size, hist, peak_rss_kib, quantiles, record,
+    count_as_f64, dir_size, hist, peak_rss_kib, quantiles, record,
 };
 
 use crate::backend::RecordBackend;
@@ -146,6 +146,10 @@ struct Measurement<K> {
     concurrency_handle: &'static str,
 }
 
+#[expect(
+    clippy::future_not_send,
+    reason = "record backends are thread-confined: each backend is owned and polled to completion on one worker thread, so requiring Sync would reject valid backends such as rusqlite"
+)]
 async fn prefill<B: RecordBackend>(engine: &B, args: &ConcurrencyArgs) -> Result<()> {
     let batch = args.txn_size.clamp(100, 1000);
     let mut rows = Vec::with_capacity(batch);
@@ -208,12 +212,16 @@ fn partition_ops(args: &ConcurrencyArgs) -> Result<Vec<(u64, u64)>> {
         .collect())
 }
 
-fn bounded_record_id(records: u64, logical_op: u64) -> u64 {
+const fn bounded_record_id(records: u64, logical_op: u64) -> u64 {
     logical_op % records
 }
 
 const MAX_CONFLICT_RETRIES: u64 = 10_000;
 
+#[expect(
+    clippy::future_not_send,
+    reason = "record backends are thread-confined: each backend is owned and polled to completion on one worker thread, so requiring Sync would reject valid backends such as rusqlite"
+)]
 async fn upsert_one_with_retry<B: RecordBackend>(
     engine: &B,
     id: u64,
@@ -236,6 +244,10 @@ async fn upsert_one_with_retry<B: RecordBackend>(
     }
 }
 
+#[expect(
+    clippy::future_not_send,
+    reason = "record backends are thread-confined: each backend is owned and polled to completion on one worker thread, so requiring Sync would reject valid backends such as rusqlite"
+)]
 async fn upsert_batch_with_retry<B: RecordBackend>(
     engine: &B,
     rows: &[(u64, RecordData)],
@@ -257,6 +269,14 @@ async fn upsert_batch_with_retry<B: RecordBackend>(
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the per-client workload state machine is clearer as one exhaustive workload match"
+)]
+#[expect(
+    clippy::future_not_send,
+    reason = "record backends are thread-confined: each backend is owned and polled to completion on one worker thread, so requiring Sync would reject valid backends such as rusqlite"
+)]
 async fn run_client<B: RecordBackend>(
     engine: &B,
     args: &ConcurrencyArgs,
@@ -265,15 +285,19 @@ async fn run_client<B: RecordBackend>(
     global_offset: u64,
 ) -> Result<ClientRun> {
     let mut rng = SmallRng::seed_from_u64(
-        args.seed ^ args.trial as u64 ^ ((client as u64 + 1).wrapping_mul(0x9e37_79b9)),
+        args.seed
+            ^ u64::from(args.trial)
+            ^ (u64::try_from(client)?
+                .saturating_add(1)
+                .wrapping_mul(0x9e37_79b9)),
     );
     let mut done = 0u64;
     let mut reads = 0u64;
     let mut writes = 0u64;
     let mut transactions = 0u64;
     let mut write_conflict_retries = 0u64;
-    let mut op_hist = hist();
-    let mut tx_hist = hist();
+    let mut op_hist = hist()?;
+    let mut tx_hist = hist()?;
     let mut next_id = args.records + global_offset;
     let started = Instant::now();
 
@@ -443,6 +467,10 @@ struct AggregateRun {
     system_delta: SystemDelta,
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "thread launch, synchronized measurement, join, and aggregation form one concurrency protocol"
+)]
 fn run_clients<B: RecordBackend>(
     clients: Vec<B>,
     args: &ConcurrencyArgs,
@@ -477,10 +505,15 @@ fn run_clients<B: RecordBackend>(
                     ));
                     let _ = tx.send((client_index, outcome));
                     let (lock, cv) = &*release;
-                    let mut released = lock.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut released = lock
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                     while !*released {
-                        released = cv.wait(released).unwrap_or_else(|e| e.into_inner());
+                        released = cv
+                            .wait(released)
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
                     }
+                    drop(released);
                 })?,
         );
     }
@@ -507,7 +540,9 @@ fn run_clients<B: RecordBackend>(
 
     {
         let (lock, cv) = &*release;
-        *lock.lock().unwrap_or_else(|e| e.into_inner()) = true;
+        *lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
         cv.notify_all();
     }
     for join in joins {
@@ -517,8 +552,8 @@ fn run_clients<B: RecordBackend>(
     receive_result?;
 
     client_runs.sort_by_key(|r| r.client);
-    let mut op_hist = hist();
-    let mut tx_hist = hist();
+    let mut op_hist = hist()?;
+    let mut tx_hist = hist()?;
     let mut completed = 0u64;
     let mut reads = 0u64;
     let mut writes = 0u64;
@@ -555,12 +590,20 @@ fn median(mut values: Vec<f64>) -> f64 {
     values.sort_by(f64::total_cmp);
     let n = values.len();
     if n.is_multiple_of(2) {
-        (values[n / 2 - 1] + values[n / 2]) / 2.0
+        f64::midpoint(values[n / 2 - 1], values[n / 2])
     } else {
         values[n / 2]
     }
 }
 
+/// Run the shared record-concurrency benchmark harness.
+///
+/// # Errors
+/// Returns an error for invalid benchmark arguments, backend failures, thread failures, or result I/O failures.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the top-level harness intentionally keeps benchmark phase ordering visible in one linear orchestration"
+)]
 pub async fn run<B: RecordBackend>(engine_kind: B::Kind, args: ConcurrencyArgs) -> Result<()> {
     if args.records == 0 {
         bail!("--records must be greater than zero");
@@ -584,17 +627,16 @@ pub async fn run<B: RecordBackend>(engine_kind: B::Kind, args: ConcurrencyArgs) 
     }
     let _ = partition_ops(&args)?;
 
+    let durability = &args.durability;
+    let workload = &args.workload;
+    let state_evolution = &args.state_evolution;
+    let clients = args.clients;
+    let records = args.records;
+    let payload_bytes = args.payload_bytes;
+    let txn_size = args.txn_size;
+    let trial = args.trial;
     let run_name = format!(
-        "{:?}-{:?}-{:?}-se{:?}-c{}-n{}-p{}-tx{}-trial{}",
-        engine_kind,
-        args.durability,
-        args.workload,
-        args.state_evolution,
-        args.clients,
-        args.records,
-        args.payload_bytes,
-        args.txn_size,
-        args.trial,
+        "{engine_kind:?}-{durability:?}-{workload:?}-se{state_evolution:?}-c{clients}-n{records}-p{payload_bytes}-tx{txn_size}-trial{trial}"
     )
     .to_lowercase()
     .replace('_', "-");
@@ -639,7 +681,7 @@ pub async fn run<B: RecordBackend>(engine_kind: B::Kind, args: ConcurrencyArgs) 
     let mut client_rates = Vec::with_capacity(run.clients.len());
     let mut client_measurements = Vec::with_capacity(run.clients.len());
     for c in run.clients {
-        let rate = c.ops_completed as f64 / c.elapsed_s.max(f64::MIN_POSITIVE);
+        let rate = count_as_f64(c.ops_completed) / c.elapsed_s.max(f64::MIN_POSITIVE);
         client_elapsed.push(c.elapsed_s);
         client_rates.push(rate);
         client_measurements.push(ClientMeasurement {
@@ -686,7 +728,7 @@ pub async fn run<B: RecordBackend>(engine_kind: B::Kind, args: ConcurrencyArgs) 
         warmup_s,
         client_setup_s,
         elapsed_s: run.elapsed_s,
-        ops_per_s: run.completed as f64 / run.elapsed_s.max(f64::MIN_POSITIVE),
+        ops_per_s: count_as_f64(run.completed) / run.elapsed_s.max(f64::MIN_POSITIVE),
         reads: run.reads,
         writes: run.writes,
         transactions: run.transactions,

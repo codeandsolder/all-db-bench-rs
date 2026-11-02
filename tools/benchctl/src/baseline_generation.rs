@@ -12,8 +12,8 @@ use std::{
 
 const ADMISSION_POLICY: &str = "pre-io+pre/continuous/post-external-v3";
 
-#[derive(Clone, Debug)]
-pub(crate) struct GenerationArgs<'a> {
+#[derive(Clone, Debug, Copy)]
+pub struct GenerationArgs<'a> {
     pub(crate) repo: &'a Path,
     pub(crate) generation_root: &'a Path,
     pub(crate) generation_id: &'a str,
@@ -77,7 +77,7 @@ fn checked_repo_commit(repo: &Path) -> Result<String> {
         .context("failed to inspect generation checkout")?;
     if !out.status.success() {
         bail!("git status failed for generation checkout")
-    };
+    }
     if !String::from_utf8(out.stdout)?.trim().is_empty() {
         bail!("generation runner checkout has tracked modifications")
     }
@@ -88,7 +88,7 @@ fn checked_repo_commit(repo: &Path) -> Result<String> {
         .context("failed to inspect generation commit")?;
     if !out.status.success() {
         bail!("git rev-parse failed for generation checkout")
-    };
+    }
     Ok(String::from_utf8(out.stdout)?.trim().to_owned())
 }
 fn checked_sha(value: Option<&Value>, label: &str) -> Result<String> {
@@ -99,13 +99,13 @@ fn checked_sha(value: Option<&Value>, label: &str) -> Result<String> {
             .all(|b| b.is_ascii_digit() || matches!(b, b'a'..=b'f'))
     {
         bail!("{label} manifest SHA-256 is invalid")
-    };
+    }
     Ok(sha.to_owned())
 }
 fn checked_binary(path: PathBuf, label: &str) -> Result<PathBuf> {
     if !executable(&path) {
         bail!("{label} binary is not executable: {}", path.display())
-    };
+    }
     Ok(path)
 }
 
@@ -180,7 +180,7 @@ fn script(repo: &Path) -> Result<String> {
     let p = repo.join("scripts/benchctl.sh");
     if !executable(&p) {
         bail!("generation script is not executable: {}", p.display())
-    };
+    }
     Ok(p.to_string_lossy().into_owned())
 }
 fn py_float(v: f64) -> String {
@@ -193,6 +193,7 @@ fn py_float(v: f64) -> String {
 fn p(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
+#[derive(Clone, Copy)]
 struct StagePlanArgs<'a> {
     repo: &'a Path,
     paths: &'a GenerationPaths,
@@ -203,6 +204,10 @@ struct StagePlanArgs<'a> {
     watch: bool,
     busy_sleep: f64,
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
+)]
 fn stages(input: StagePlanArgs<'_>) -> Result<Vec<StageDump>> {
     let StagePlanArgs {
         repo,
@@ -521,7 +526,7 @@ fn generation_status(state: &str, id: &str, commit: &str) -> Map<String, Value> 
     m
 }
 
-pub(crate) fn run(args: GenerationArgs<'_>) -> Result<i32> {
+pub fn run(args: GenerationArgs<'_>) -> Result<i32> {
     let pins = load_pins(
         args.repo,
         args.kv_binary_manifest,
@@ -529,7 +534,7 @@ pub(crate) fn run(args: GenerationArgs<'_>) -> Result<i32> {
     )?;
     let paths = generation_paths(args.generation_root, args.generation_id);
     for dir in [&paths.plans, &paths.status, &paths.selected, &paths.ready] {
-        fs::create_dir_all(dir).with_context(|| format!("failed to create {}", dir.display()))?
+        fs::create_dir_all(dir).with_context(|| format!("failed to create {}", dir.display()))?;
     }
     let planned = stages(StagePlanArgs {
         repo: args.repo,
@@ -626,7 +631,7 @@ mod tests {
         Ok(repo)
     }
     #[test]
-    fn generation_namespace_is_consistent() -> Result<()> {
+    fn generation_namespace_is_consistent() {
         let p = generation_paths(Path::new("/generation"), "refresh");
         assert_eq!(p.kv_stock_id, "refresh-kv-stock");
         assert_eq!(p.record_resize_prefix, "refresh-record-resize");
@@ -634,7 +639,6 @@ mod tests {
             p.kv_audit,
             Path::new("/generation/plans/refresh-kv-sizing.json")
         );
-        Ok(())
     }
     #[test]
     fn stage_plan_has_thirteen_generation_scoped_steps() -> Result<()> {

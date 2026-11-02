@@ -1,6 +1,6 @@
 use serde_json::Value;
 
-pub(crate) fn py_string(value: &Value) -> String {
+pub fn py_string(value: &Value) -> String {
     match value {
         Value::Null => "None".to_owned(),
         Value::Bool(true) => "True".to_owned(),
@@ -11,7 +11,7 @@ pub(crate) fn py_string(value: &Value) -> String {
     }
 }
 
-pub(crate) fn json_truthy(value: Option<&Value>) -> bool {
+pub fn json_truthy(value: Option<&Value>) -> bool {
     match value {
         None | Some(Value::Null) => false,
         Some(Value::Bool(value)) => *value,

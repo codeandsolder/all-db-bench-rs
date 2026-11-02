@@ -8,10 +8,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-pub(crate) const QUALITY_POLICY_VERSION: i64 = 1;
+pub const QUALITY_POLICY_VERSION: i64 = 1;
 
 #[derive(Clone)]
-pub(crate) struct ScrubConfig {
+pub struct ScrubConfig {
     pub(crate) max_elapsed_s: f64,
     pub(crate) max_runqueue_fraction: f64,
     pub(crate) max_cpu_psi_fraction: f64,
@@ -37,7 +37,8 @@ impl Default for ScrubConfig {
     }
 }
 
-pub(crate) struct AuditStockArgs<'a> {
+#[derive(Clone, Copy)]
+pub struct AuditStockArgs<'a> {
     pub(crate) run_dir: &'a Path,
     pub(crate) sizing_audit: &'a Path,
     pub(crate) lane: &'a str,
@@ -126,7 +127,7 @@ fn cpu_list_count(spec: &str) -> Result<i64> {
     Ok(count.max(1))
 }
 
-pub(crate) fn available_cpus() -> i64 {
+pub fn available_cpus() -> i64 {
     if let Ok(status) = fs::read_to_string("/proc/self/status")
         && let Some(spec) = status
             .lines()
@@ -140,14 +141,15 @@ pub(crate) fn available_cpus() -> i64 {
         .max(1)
 }
 
+static EMPTY_INTERVAL_PARTS: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+
 fn interval_parts<'a>(row: &'a Value, interval: &str) -> Result<(f64, &'a Value, &'a Value)> {
     let (elapsed_field, process_field, system_field) = match interval {
         "measured" => ("elapsed_s", "measured_process", "measured_system_delta"),
         "open" => ("open_s", "open_process", "open_system_delta"),
         other => bail!("unknown pressure interval: {other}"),
     };
-    static EMPTY: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
-    let empty = EMPTY.get_or_init(|| json!({}));
+    let empty = EMPTY_INTERVAL_PARTS.get_or_init(|| json!({}));
     let elapsed = value_f64(row.get(elapsed_field), 0.0)?;
     let process = row
         .get(process_field)
@@ -160,7 +162,7 @@ fn interval_parts<'a>(row: &'a Value, interval: &str) -> Result<(f64, &'a Value,
     Ok((elapsed, process, system))
 }
 
-pub(crate) fn pressure_evidence(
+pub fn pressure_evidence(
     row: &Value,
     interval: &str,
     config: &ScrubConfig,
@@ -171,7 +173,8 @@ pub(crate) fn pressure_evidence(
         return Ok(None);
     }
     let cpu_fraction = value_f64(process.get("cpu_runtime_fraction_of_wall"), 0.0)?;
-    let max_benchmark_cpu_fraction = (cpu_count as f64 * config.max_benchmark_cpu_share).max(1.0);
+    let max_benchmark_cpu_fraction =
+        (int_as_f64!(cpu_count) * config.max_benchmark_cpu_share).max(1.0);
     if cpu_fraction > max_benchmark_cpu_fraction {
         return Ok(None);
     }
@@ -294,7 +297,7 @@ fn archive_case(run_dir: &Path, case_path: &Path, evidence: &Value) -> Result<Pa
     Ok(target)
 }
 
-pub(crate) fn scrub(run_dir: &Path, config: &ScrubConfig) -> Result<Value> {
+pub fn scrub(run_dir: &Path, config: &ScrubConfig) -> Result<Value> {
     let cpu_count = config.cpu_count.unwrap_or_else(available_cpus).max(1);
     let intervals = if config.intervals.is_empty() {
         vec!["measured".to_owned()]
@@ -396,8 +399,8 @@ pub(crate) fn scrub(run_dir: &Path, config: &ScrubConfig) -> Result<Value> {
     }))
 }
 
-pub(crate) fn run_scrub(run_dir: &Path, config: ScrubConfig) -> Result<()> {
-    println!("{}", python_compact(&scrub(run_dir, &config)?)?);
+pub fn run_scrub(run_dir: &Path, config: &ScrubConfig) -> Result<()> {
+    println!("{}", python_compact(&scrub(run_dir, config)?)?);
     Ok(())
 }
 
@@ -431,7 +434,7 @@ fn runner_ops_override(lane: &str, workload: &str, effective_ops: i64) -> Result
     }
 }
 
-pub(crate) fn build_plan(
+pub fn build_plan(
     run_dir: &Path,
     sizing_audit: &Value,
     scrub_report: &Value,
@@ -502,8 +505,7 @@ pub(crate) fn build_plan(
         let effective_ops = value_i64(group.get("ops_requested"), 0)?;
         let workload = group
             .get("workload")
-            .map(py_string)
-            .unwrap_or_else(|| "None".to_owned());
+            .map_or_else(|| "None".to_owned(), py_string);
         let mut item = group
             .as_object()
             .cloned()
@@ -549,7 +551,7 @@ fn comma_int(value: i64) -> String {
     if value < 0 { format!("-{out}") } else { out }
 }
 
-pub(crate) fn render_markdown(plan: &Value) -> Result<String> {
+pub fn render_markdown(plan: &Value) -> Result<String> {
     let groups = plan
         .get("groups")
         .and_then(Value::as_array)
@@ -582,21 +584,22 @@ pub(crate) fn render_markdown(plan: &Value) -> Result<String> {
             .map(py_string)
             .collect::<Vec<_>>()
             .join(",");
-        lines.push(format!(
-            "| {} | {} | {} | {} | {} | {} | {} |",
+        let cells = [
             py_string(group.get("engine").unwrap_or(&Value::Null)),
             py_string(group.get("durability").unwrap_or(&Value::Null)),
             py_string(group.get("workload").unwrap_or(&Value::Null)),
             py_string(group.get("status").unwrap_or(&Value::Null)),
             comma_int(value_i64(group.get("ops_requested"), 0)?),
-            value_i64(group.get("suggested_trials"), 0)?,
-            trials
-        ));
+            value_i64(group.get("suggested_trials"), 0)?.to_string(),
+            trials,
+        ];
+        let row = cells.join(" | ");
+        lines.push(format!("| {row} |"));
     }
     Ok(lines.join("\n") + "\n")
 }
 
-pub(crate) fn run_audit_stock(args: AuditStockArgs<'_>) -> Result<()> {
+pub fn run_audit_stock(args: AuditStockArgs<'_>) -> Result<()> {
     if !matches!(args.lane, "kv" | "record") {
         bail!("unsupported lane: {:?}", args.lane);
     }
@@ -633,12 +636,12 @@ mod tests {
     use std::fs;
 
     fn row(trial: i64, elapsed: f64, rq: f64, psi: f64, cpu: f64) -> Value {
-        let wall_ns = (elapsed * 1_000_000_000.0) as i64;
+        let wall_ns = f64_to_i64!((elapsed * 1_000_000_000.0));
         json!({
             "trial":trial,"engine":"rocksdb","durability":"relaxed","workload":"write-burst",
             "elapsed_s":elapsed,"ops_per_s":1_000_000.0,
             "measured_process":{"cpu_runtime_fraction_of_wall":cpu,"runqueue_wait_fraction_of_wall":rq,"write_bytes":1234},
-            "measured_system_delta":{"accounting_wall_ns":wall_ns,"psi_cpu_some_us":(psi*wall_ns as f64/1000.0) as i64}
+            "measured_system_delta":{"accounting_wall_ns":wall_ns,"psi_cpu_some_us":f64_to_i64!((psi*int_as_f64!(wall_ns)/1000.0))}
         })
     }
 
@@ -708,7 +711,7 @@ mod tests {
         let group = |engine: &str, status: &str| {
             json!({
                 "engine":engine,"engine_version":"1","durability":"relaxed","workload":"write-burst",
-                "records":100000,"ops_requested":50000,"status":status,"suggested_effective_ops":null,
+                "records":100_000,"ops_requested":50000,"status":status,"suggested_effective_ops":null,
                 "runner_ops_override":null,"suggested_trials":null,"resize_strategy":null
             })
         };

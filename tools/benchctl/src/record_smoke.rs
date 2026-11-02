@@ -11,7 +11,12 @@ const READ: &str = "full-record-v1";
 const WRITE: &str = "no-return-v1";
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
-pub(crate) struct RecordSmokeArgs<'a> {
+#[expect(
+    clippy::struct_field_names,
+    reason = "bin suffix distinguishes the executable roles in the smoke-test contract"
+)]
+#[derive(Clone, Copy)]
+pub struct RecordSmokeArgs<'a> {
     pub(crate) bench_bin: &'a Path,
     pub(crate) concurrency_bin: &'a Path,
     pub(crate) sustained_bin: &'a Path,
@@ -32,7 +37,7 @@ impl TempRoot {
             ));
             match fs::create_dir(&path) {
                 Ok(()) => return Ok(Self(path)),
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
                 Err(error) => {
                     return Err(error)
                         .with_context(|| format!("failed to create {}", path.display()));
@@ -226,7 +231,7 @@ fn verify_files(args: &RecordSmokeArgs<'_>) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn run(args: RecordSmokeArgs<'_>) -> Result<()> {
+pub fn run(args: RecordSmokeArgs<'_>) -> Result<()> {
     verify_files(&args)?;
     let root = TempRoot::create()?;
 

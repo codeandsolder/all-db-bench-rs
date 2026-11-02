@@ -17,11 +17,11 @@ mod kv_materialize;
 mod record;
 mod record_calibration;
 
-pub(crate) use audit::{AuditArgs, run_concurrency_sizing_audit};
-pub(crate) use kv::{KvCalibrationArgs, KvFinalArgs, run_kv_calibration, run_kv_final};
-pub(crate) use kv_materialize::{KvMaterializeArgs, run_materialize as run_kv_materialize};
-pub(crate) use record::{RecordFinalArgs, run_record_final};
-pub(crate) use record_calibration::{
+pub use audit::{AuditArgs, run_concurrency_sizing_audit};
+pub use kv::{KvCalibrationArgs, KvFinalArgs, run_kv_calibration, run_kv_final};
+pub use kv_materialize::{KvMaterializeArgs, run_materialize as run_kv_materialize};
+pub use record::{RecordFinalArgs, run_record_final};
+pub use record_calibration::{
     MaterializeArgs, RecordCalibrationArgs, run_calibration as run_record_calibration,
     run_materialize as run_record_materialize,
 };
@@ -60,10 +60,10 @@ fn value_i64(value: &Value) -> Option<i64> {
     if let Some(value) = value.as_f64()
         && value.is_finite()
         && value.fract() == 0.0
-        && value >= i64::MIN as f64
-        && value <= i64::MAX as f64
+        && value >= int_as_f64!(i64::MIN)
+        && value <= int_as_f64!(i64::MAX)
     {
-        return Some(value as i64);
+        return Some(f64_to_i64!(value));
     }
     value.as_str()?.parse::<i64>().ok()
 }
@@ -108,16 +108,16 @@ fn rounded_ops(value: f64) -> Result<i64> {
     if !value.is_finite() || value <= 0.0 {
         bail!("invalid operation recommendation: {value}");
     }
-    let exponent = value.log10().floor() as i32;
+    let exponent = f64_to_i32!(value.log10().floor());
     let scale = 10_f64.powi(exponent);
     let normalized = value / scale;
     for step in [1.0, 2.0, 5.0, 10.0] {
         if normalized <= step {
             let result = step * scale;
-            if result > i64::MAX as f64 {
+            if result > int_as_f64!(i64::MAX) {
                 bail!("operation recommendation too large: {result}");
             }
-            return Ok((result as i64).max(1));
+            return Ok(f64_to_i64!(result).max(1));
         }
     }
     bail!("unable to round operation recommendation: {value}")
@@ -130,7 +130,7 @@ fn median(values: &mut [f64]) -> Result<f64> {
     values.sort_by(f64::total_cmp);
     let middle = values.len() / 2;
     if values.len().is_multiple_of(2) {
-        Ok((values[middle - 1] + values[middle]) / 2.0)
+        Ok(f64::midpoint(values[middle - 1], values[middle]))
     } else {
         Ok(values[middle])
     }

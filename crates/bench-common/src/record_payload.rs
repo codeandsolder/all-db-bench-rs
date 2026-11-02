@@ -11,7 +11,7 @@ pub enum PayloadPattern {
     StructuredText,
 }
 
-fn mix(mut x: u64) -> u64 {
+const fn mix(mut x: u64) -> u64 {
     x ^= x >> 12;
     x ^= x << 25;
     x ^= x >> 27;
@@ -23,6 +23,7 @@ fn legacy_payload(id: u64, len: usize, salt: u64) -> String {
     payload_for(PayloadPattern::HexRandom, id, len, salt)
 }
 
+#[must_use]
 pub fn payload_for(pattern: PayloadPattern, id: u64, len: usize, salt: u64) -> String {
     let mut x = id ^ salt ^ 0x9e37_79b9_7f4a_7c15;
     match pattern {
@@ -31,7 +32,7 @@ pub fn payload_for(pattern: PayloadPattern, id: u64, len: usize, salt: u64) -> S
             let mut out = String::with_capacity(len);
             for _ in 0..len {
                 x = mix(x);
-                out.push(char::from(HEX[(x as usize) & 15]));
+                out.push(char::from(HEX[usize::from(x.to_le_bytes()[0] & 0x0f)]));
             }
             out
         }
@@ -121,7 +122,7 @@ mod tests {
         assert!(structured.contains("\"schema\":\"telemetry-v1\""));
         let repeated_bytes = repeated.as_bytes();
         let (chunks, remainder) = repeated_bytes.as_chunks::<8>();
-        assert!(remainder.is_empty());
+        assert_eq!(remainder, []);
         assert!(
             chunks
                 .iter()

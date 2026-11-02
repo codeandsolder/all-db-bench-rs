@@ -8,8 +8,8 @@ use std::{collections::BTreeSet, fs, path::Path};
 const IMPORTER_SOURCE: &str = include_str!("import_concurrency.rs");
 const POLICY: &str = "reuse only accepted non-Persy v1 cases; all Persy cases rerun under v2 lock-timeout/retry semantics";
 
-#[derive(Debug)]
-pub(crate) struct ImportArgs<'a> {
+#[derive(Debug, Clone, Copy)]
+pub struct ImportArgs<'a> {
     pub(crate) source: Option<&'a Path>,
     pub(crate) dest: Option<&'a Path>,
     pub(crate) excluded_engines: &'a [String],
@@ -248,7 +248,7 @@ fn verify_import(run_dir: &Path) -> Result<Value> {
     Ok(manifest)
 }
 
-pub(crate) fn run(args: ImportArgs<'_>) -> Result<()> {
+pub fn run(args: ImportArgs<'_>) -> Result<()> {
     if let Some(run_dir) = args.verify_run {
         if args.source.is_some() || args.dest.is_some() {
             bail!("--verify-run cannot be combined with source/dest");

@@ -7,19 +7,19 @@ use std::{
     path::{Path, PathBuf},
 };
 
-#[derive(Debug)]
-pub(crate) struct ProcessTreeArgs<'a> {
+#[derive(Debug, Clone, Copy)]
+pub struct ProcessTreeArgs<'a> {
     pub(crate) pid: u32,
     pub(crate) output: Option<&'a Path>,
 }
 
-fn parse_stat(pid: u32) -> Option<(u32, u32)> {
-    let text = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+fn parse_stat(process_id: u32) -> Option<(u32, u32)> {
+    let text = fs::read_to_string(format!("/proc/{process_id}/stat")).ok()?;
     let (_, tail) = text.rsplit_once(") ")?;
     let mut fields = tail.split_whitespace();
     let _state = fields.next()?;
-    let ppid = fields.next()?.parse::<u32>().ok()?;
-    Some((pid, ppid))
+    let parent_process_id = fields.next()?.parse::<u32>().ok()?;
+    Some((process_id, parent_process_id))
 }
 
 fn descendants(root: u32) -> Result<Vec<u32>> {
@@ -171,7 +171,7 @@ fn snapshot(root: u32) -> Result<Value> {
     }))
 }
 
-pub(crate) fn run(args: ProcessTreeArgs<'_>) -> Result<i32> {
+pub fn run(args: ProcessTreeArgs<'_>) -> Result<i32> {
     let data = snapshot(args.pid)?;
     let text = serde_json::to_string(&data)? + "\n";
     if let Some(path) = args.output {
@@ -183,7 +183,7 @@ pub(crate) fn run(args: ProcessTreeArgs<'_>) -> Result<i32> {
         .get("pids")
         .and_then(Value::as_array)
         .is_some_and(|pids| !pids.is_empty());
-    Ok(if has_pids { 0 } else { 1 })
+    Ok(i32::from(!has_pids))
 }
 
 #[cfg(test)]

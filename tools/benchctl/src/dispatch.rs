@@ -14,7 +14,11 @@ fn finish(code: i32) -> Result<()> {
     }
 }
 
-pub(crate) fn run(command: Command) -> Result<()> {
+#[expect(
+    clippy::too_many_lines,
+    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
+)]
+pub fn run(command: Command) -> Result<()> {
     match command {
         Command::BaselineGeneration {
             repo,
@@ -178,7 +182,7 @@ pub(crate) fn run(command: Command) -> Result<()> {
             dry_run,
         } => short_pressure::run_scrub(
             &run_dir,
-            short_pressure::ScrubConfig {
+            &short_pressure::ScrubConfig {
                 max_elapsed_s,
                 max_runqueue_fraction,
                 max_cpu_psi_fraction,

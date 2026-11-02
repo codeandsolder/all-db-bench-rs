@@ -58,11 +58,14 @@ use super::{
     types::{Durability, EngineCompression, EngineKind},
 };
 
-pub(crate) const REDB_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("kv");
-pub(crate) const MANIFOLD_TABLE: ManifoldTableDefinition<&[u8], &[u8]> =
+pub const REDB_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("kv");
+pub const MANIFOLD_TABLE: ManifoldTableDefinition<&[u8], &[u8]> =
     ManifoldTableDefinition::new("kv");
 
-#[allow(unsafe_code)]
+#[expect(
+    unsafe_code,
+    reason = "heed requires an unsafe environment open after configuring the map and database limits"
+)]
 fn open_heed_environment(dir: &Path, durability: Durability) -> Result<HeedEnv> {
     let mut options = EnvOpenOptions::new();
     options.map_size(16usize * 1024 * 1024 * 1024).max_dbs(1);
@@ -78,7 +81,7 @@ fn open_heed_environment(dir: &Path, durability: Durability) -> Result<HeedEnv> 
     unsafe { Ok(options.open(dir)?) }
 }
 
-pub(crate) enum Engine {
+pub enum Engine {
     Redb(RedbDb),
     Fjall {
         db: FjallDb,
@@ -121,6 +124,10 @@ impl Engine {
         Self::open_with_compression(kind, durability, path, EngineCompression::Default).await
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "engine construction is one exhaustive backend dispatch table"
+    )]
     pub(crate) async fn open_with_compression(
         kind: EngineKind,
         durability: Durability,
@@ -356,7 +363,7 @@ impl Engine {
             Self::Fjall { keyspace, .. } => keyspace.get(key)?.map(|v| v.to_vec()),
             Self::Surrealkv(tree) => {
                 let txn = tree.begin_with_mode(SurrealMode::ReadOnly)?;
-                txn.get(key)?.map(|v| v.to_vec())
+                txn.get(key)?
             }
             Self::Heed { env, db } => {
                 let txn = env.read_txn()?;
@@ -410,6 +417,14 @@ impl Engine {
         })
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "write semantics are kept adjacent in one exhaustive backend dispatch table"
+    )]
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "backend transaction guards are intentionally scoped to their exhaustive match arms"
+    )]
     pub(crate) async fn write_batch(
         &mut self,
         durability: Durability,
@@ -632,6 +647,10 @@ impl Engine {
         Ok(())
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "range-scan semantics are kept adjacent in one exhaustive backend dispatch table"
+    )]
     pub(crate) async fn scan_count(&mut self, start: &[u8], end: &[u8]) -> Result<usize> {
         Ok(match self {
             Self::Redb(db) => {
@@ -664,6 +683,8 @@ impl Engine {
                         break;
                     }
                 }
+                drop(iter);
+                drop(txn);
                 n
             }
             Self::Heed { env, db } => {

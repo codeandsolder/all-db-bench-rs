@@ -2,7 +2,7 @@ use rand::{RngExt, rngs::SmallRng};
 
 use super::types::{AccessPattern, KeyShape, ValuePattern, Workload};
 
-pub(crate) fn mix_u64(mut x: u64) -> u64 {
+pub const fn mix_u64(mut x: u64) -> u64 {
     x ^= x >> 30;
     x = x.wrapping_mul(0xbf58_476d_1ce4_e5b9);
     x ^= x >> 27;
@@ -10,7 +10,7 @@ pub(crate) fn mix_u64(mut x: u64) -> u64 {
     x ^ (x >> 31)
 }
 
-pub(crate) fn key(id: u64, len: usize, shape: KeyShape, seed: u64) -> Vec<u8> {
+pub fn key(id: u64, len: usize, shape: KeyShape, seed: u64) -> Vec<u8> {
     debug_assert!(len >= 8);
     let mut out = vec![0u8; len];
     match shape {
@@ -40,7 +40,7 @@ pub(crate) fn key(id: u64, len: usize, shape: KeyShape, seed: u64) -> Vec<u8> {
     out
 }
 
-pub(crate) fn sample_existing_id(
+pub fn sample_existing_id(
     rng: &mut SmallRng,
     records: u64,
     pattern: AccessPattern,
@@ -71,7 +71,7 @@ pub(crate) fn sample_existing_id(
     }
 }
 
-pub(crate) fn sample_read_id(
+pub fn sample_read_id(
     rng: &mut SmallRng,
     records: u64,
     ops: u64,
@@ -92,7 +92,7 @@ pub(crate) fn sample_read_id(
     }
 }
 
-pub(crate) fn value(id: u64, len: usize, salt: u64, pattern: ValuePattern) -> Vec<u8> {
+pub fn value(id: u64, len: usize, salt: u64, pattern: ValuePattern) -> Vec<u8> {
     match pattern {
         ValuePattern::Zeros => vec![0u8; len],
         ValuePattern::Repeated => {
@@ -113,7 +113,7 @@ pub(crate) fn value(id: u64, len: usize, salt: u64, pattern: ValuePattern) -> Ve
                 block[24..32].copy_from_slice(&(block_index as u64).to_le_bytes());
                 x = mix_u64(x.wrapping_add(block_index as u64));
                 block[32..40].copy_from_slice(&x.to_le_bytes());
-                block[40..].fill((block_index % 7) as u8);
+                block[40..].fill(u8::try_from(block_index % 7).unwrap_or_default());
                 chunk.copy_from_slice(&block[..chunk.len()]);
             }
             out
@@ -175,10 +175,7 @@ mod tests {
             value(42, 4096, 7, ValuePattern::PseudoRandom),
             value(42, 4096, 7, ValuePattern::StructuredBinary)
         );
-        assert!(
-            String::from_utf8(value(42, 4096, 7, ValuePattern::StructuredText))
-                .expect("structured text pattern must be UTF-8")
-                .contains("dbbench")
-        );
+        let structured = String::from_utf8(value(42, 4096, 7, ValuePattern::StructuredText));
+        assert!(structured.is_ok_and(|text| text.contains("dbbench")));
     }
 }

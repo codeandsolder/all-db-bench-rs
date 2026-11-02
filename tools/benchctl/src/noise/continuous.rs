@@ -66,9 +66,7 @@ fn proc_cmd(pid: u32) -> String {
             return text;
         }
     }
-    fs::read_to_string(format!("/proc/{pid}/comm"))
-        .map(|text| text.trim().to_owned())
-        .unwrap_or_default()
+    fs::read_to_string(format!("/proc/{pid}/comm")).map_or_default(|text| text.trim().to_owned())
 }
 
 pub(super) fn continuous_descendants(
@@ -200,7 +198,11 @@ fn atomic_write_json(path: &Path, value: &Value) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn run_continuous(args: ContinuousNoiseArgs<'_>) -> Result<i32> {
+#[expect(
+    clippy::too_many_lines,
+    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
+)]
+pub fn run_continuous(args: ContinuousNoiseArgs<'_>) -> Result<i32> {
     if args.command.is_empty() {
         bail!("command is required after --");
     }
@@ -225,7 +227,7 @@ pub(crate) fn run_continuous(args: ContinuousNoiseArgs<'_>) -> Result<i32> {
 
     let ticks = clock_ticks_per_second()?;
     let start_uptime_s = uptime_seconds();
-    let start_ticks = (start_uptime_s * ticks as f64) as u64;
+    let start_ticks = f64_to_u64!((start_uptime_s * int_as_f64!(ticks)));
     let own_ancestors = ancestor_pids(std::process::id());
     let (meta_prev, mut io_prev) = sample_proc();
     let mut cpu_prev = meta_prev
@@ -266,7 +268,11 @@ pub(crate) fn run_continuous(args: ContinuousNoiseArgs<'_>) -> Result<i32> {
             let sample_period = Duration::from_secs_f64(args.sample_ms / 1000.0);
             let since_last = now.saturating_duration_since(last_sample);
             if status.is_none() && since_last < sample_period {
-                thread::sleep((sample_period - since_last).min(Duration::from_millis(50)));
+                thread::sleep(
+                    sample_period
+                        .saturating_sub(since_last)
+                        .min(Duration::from_millis(50)),
+                );
                 continue;
             }
 
@@ -319,7 +325,8 @@ pub(crate) fn run_continuous(args: ContinuousNoiseArgs<'_>) -> Result<i32> {
                         }
                         item.read_bytes = item.read_bytes.saturating_add(dr);
                         item.write_bytes = item.write_bytes.saturating_add(dw);
-                        item.max_io_rate_bps = item.max_io_rate_bps.max((dr + dw) as f64 / elapsed);
+                        item.max_io_rate_bps =
+                            item.max_io_rate_bps.max(int_as_f64!((dr + dw)) / elapsed);
                     }
                 }
 
@@ -342,9 +349,9 @@ pub(crate) fn run_continuous(args: ContinuousNoiseArgs<'_>) -> Result<i32> {
 
             total_read = total_read.saturating_add(interval_read);
             total_write = total_write.saturating_add(interval_write);
-            max_io_rate = max_io_rate.max((interval_read + interval_write) as f64 / elapsed);
-            max_cpu_percent =
-                max_cpu_percent.max(100.0 * (interval_cpu_ticks as f64 / ticks as f64) / elapsed);
+            max_io_rate = max_io_rate.max(int_as_f64!((interval_read + interval_write)) / elapsed);
+            max_cpu_percent = max_cpu_percent
+                .max(100.0 * (int_as_f64!(interval_cpu_ticks) / int_as_f64!(ticks)) / elapsed);
             samples = samples.saturating_add(1);
             io_prev = io_now;
             cpu_prev = meta
@@ -365,7 +372,7 @@ pub(crate) fn run_continuous(args: ContinuousNoiseArgs<'_>) -> Result<i32> {
             .into_iter()
             .filter_map(|((pid, proc_start), item)| {
                 let io_bytes = item.read_bytes.saturating_add(item.write_bytes);
-                let cpu_seconds = item.cpu_ticks as f64 / ticks as f64;
+                let cpu_seconds = int_as_f64!(item.cpu_ticks) / int_as_f64!(ticks);
                 if io_bytes == 0 && cpu_seconds == 0.0 {
                     return None;
                 }
@@ -401,7 +408,7 @@ pub(crate) fn run_continuous(args: ContinuousNoiseArgs<'_>) -> Result<i32> {
 
         let total_io = total_read.saturating_add(total_write);
         let reasons = contamination_reasons(
-            total_io as f64 / duration,
+            int_as_f64!(total_io) / duration,
             max_io_rate,
             max_cpu_percent,
             args.max_foreign_io_average_mib_s,
@@ -425,10 +432,10 @@ pub(crate) fn run_continuous(args: ContinuousNoiseArgs<'_>) -> Result<i32> {
             "foreign_read_bytes": total_read,
             "foreign_write_bytes": total_write,
             "foreign_io_bytes": total_io,
-            "foreign_io_average_mib_s": total_io as f64 / duration / (1024.0 * 1024.0),
+            "foreign_io_average_mib_s": int_as_f64!(total_io) / duration / (1024.0 * 1024.0),
             "peak_foreign_io_rate_mib_s": max_io_rate / (1024.0 * 1024.0),
             "peak_foreign_cpu_percent": max_cpu_percent,
-            "system_io_full_psi_fraction": psi_delta_us as f64 / 1e6 / duration,
+            "system_io_full_psi_fraction": int_as_f64!(psi_delta_us) / 1e6 / duration,
             "contaminated": !reasons.is_empty(),
             "contamination_reasons": reasons,
             "top_foreign_processes": top,

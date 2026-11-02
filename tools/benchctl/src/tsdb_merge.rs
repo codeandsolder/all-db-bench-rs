@@ -15,8 +15,8 @@ const COUNTERS: [&str; 10] = [
     "cancelled_write_bytes",
 ];
 
-#[derive(Debug)]
-pub(crate) struct TsdbMergeArgs<'a> {
+#[derive(Debug, Clone, Copy)]
+pub struct TsdbMergeArgs<'a> {
     pub(crate) client: &'a Path,
     pub(crate) server_before: &'a Path,
     pub(crate) server_after: &'a Path,
@@ -43,8 +43,11 @@ fn py_int(value: &Value) -> Option<i64> {
                 i64::try_from(value).ok()
             } else {
                 let value = number.as_f64()?;
-                if value.is_finite() && value >= i64::MIN as f64 && value <= i64::MAX as f64 {
-                    Some(value.trunc() as i64)
+                if value.is_finite()
+                    && value >= int_as_f64!(i64::MIN)
+                    && value <= int_as_f64!(i64::MAX)
+                {
+                    Some(f64_to_i64!(value.trunc()))
                 } else {
                     None
                 }
@@ -146,7 +149,7 @@ fn merge(args: TsdbMergeArgs<'_>) -> Result<Value> {
         number(if wall_ns == 0 {
             0.0
         } else {
-            cpu_runtime as f64 / wall_ns as f64
+            int_as_f64!(cpu_runtime) / int_as_f64!(wall_ns)
         })?,
     );
     server.insert(
@@ -154,7 +157,7 @@ fn merge(args: TsdbMergeArgs<'_>) -> Result<Value> {
         number(if wall_ns == 0 {
             0.0
         } else {
-            runqueue as f64 / wall_ns as f64
+            int_as_f64!(runqueue) / int_as_f64!(wall_ns)
         })?,
     );
     server.insert(
@@ -205,7 +208,7 @@ fn merge(args: TsdbMergeArgs<'_>) -> Result<Value> {
     Ok(result)
 }
 
-pub(crate) fn run(args: TsdbMergeArgs<'_>) -> Result<()> {
+pub fn run(args: TsdbMergeArgs<'_>) -> Result<()> {
     let output = args.output;
     let result = merge(args)?;
     fs::write(output, serde_json::to_string_pretty(&result)? + "\n")

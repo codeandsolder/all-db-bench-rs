@@ -7,7 +7,7 @@ use std::{
 const PERIOD_S: f64 = 0.020;
 
 fn duty_durations(duty_percent: f64) -> Result<(Duration, Duration)> {
-    if !duty_percent.is_finite() || !(0.0 < duty_percent && duty_percent <= 100.0) {
+    if !(duty_percent.is_finite() && 0.0 < duty_percent && duty_percent <= 100.0) {
         bail!("DUTY_PERCENT must be in (0, 100]");
     }
     let busy_s = PERIOD_S * duty_percent / 100.0;
@@ -18,7 +18,7 @@ fn duty_durations(duty_percent: f64) -> Result<(Duration, Duration)> {
     ))
 }
 
-pub(crate) fn run(duty_percent: f64) -> Result<()> {
+pub fn run(duty_percent: f64) -> Result<()> {
     let (busy, sleep) = duty_durations(duty_percent)?;
     loop {
         let deadline = Instant::now() + busy;
@@ -39,7 +39,7 @@ mod tests {
         for duty in [1.0, 25.0, 50.0, 75.0, 100.0] {
             let (busy, sleep) = duty_durations(duty)?;
             assert!((busy.as_secs_f64() + sleep.as_secs_f64() - PERIOD_S).abs() < 1e-12);
-            assert!((busy.as_secs_f64() / PERIOD_S * 100.0 - duty).abs() < 1e-9);
+            assert!((busy.as_secs_f64() / PERIOD_S).mul_add(100.0, -duty).abs() < 1e-9);
         }
         Ok(())
     }

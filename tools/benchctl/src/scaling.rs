@@ -79,8 +79,7 @@ fn parse_clients(value: &Value) -> Result<Vec<i64>> {
     }
     let raw = value
         .as_str()
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(|| value.to_string());
+        .map_or_else(|| value.to_string(), ToOwned::to_owned);
     raw.split_whitespace()
         .filter(|item| !item.trim().is_empty())
         .map(|item| {
@@ -162,12 +161,14 @@ fn optional_clone(row: &Value, key: &str) -> Value {
 }
 
 fn optional_number(row: Option<&Value>, key: &str) -> Result<Value> {
-    match row.and_then(|item| value_f64(item.get(key))) {
-        Some(value) => number(value),
-        None => Ok(Value::Null),
-    }
+    row.and_then(|item| value_f64(item.get(key)))
+        .map_or_else(|| Ok(Value::Null), number)
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
+)]
 fn build_report(
     summary: &Value,
     support: &Value,
@@ -189,17 +190,15 @@ fn build_report(
     let mut problems: Vec<String> = summary
         .get("problems")
         .and_then(Value::as_array)
-        .map(|items| {
+        .map_or_default(|items| {
             items
                 .iter()
                 .map(|item| {
                     item.as_str()
-                        .map(ToOwned::to_owned)
-                        .unwrap_or_else(|| item.to_string())
+                        .map_or_else(|| item.to_string(), ToOwned::to_owned)
                 })
                 .collect()
-        })
-        .unwrap_or_default();
+        });
     if !allow_incomplete {
         if observed_rows != expected_rows {
             problems.push(format!(
@@ -217,8 +216,7 @@ fn build_report(
     for row in summary
         .get("groups")
         .and_then(Value::as_array)
-        .map(Vec::as_slice)
-        .unwrap_or(&[])
+        .map_or(&[] as &[Value], Vec::as_slice)
     {
         if row.get("lane").and_then(Value::as_str) != Some(lane) {
             problems.push(format!(
@@ -254,12 +252,9 @@ fn build_report(
             .difference(&actual_set)
             .copied()
             .collect::<Vec<_>>();
-        let extra = actual_set
-            .difference(&expected_set)
-            .copied()
-            .collect::<Vec<_>>();
+        let has_extra = actual_set.difference(&expected_set).next().is_some();
         let duplicate = actual.len() != actual_set.len();
-        let complete = missing.is_empty() && extra.is_empty() && !duplicate;
+        let complete = missing.is_empty() && !has_extra && !duplicate;
         if !complete && !allow_incomplete {
             problems.push(format!(
                 "{}/{}/{}/{}: clients={actual:?}, expected={expected:?}",
@@ -416,12 +411,11 @@ fn render_markdown(report: &Value) -> Result<String> {
             .map(|value| value.to_string())
             .collect::<Vec<_>>()
             .join(",");
-        lines.push(format!(
-            "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
-            required_str(family, "scenario")?,
-            required_str(family, "workload")?,
-            required_str(family, "durability")?,
-            required_str(family, "engine")?,
+        let cells = [
+            required_str(family, "scenario")?.to_owned(),
+            required_str(family, "workload")?.to_owned(),
+            required_str(family, "durability")?.to_owned(),
+            required_str(family, "engine")?.to_owned(),
             clients,
             fmt(family.get("c1_ops_per_s"), 1),
             fmt(family.get("max_client_ops_per_s"), 1),
@@ -433,21 +427,24 @@ fn render_markdown(report: &Value) -> Result<String> {
             fmt(family.get("cpu_cores_at_max_clients"), 2),
             fmt(
                 family.get("conflict_retries_per_k_write_ops_at_max_clients"),
-                2
+                2,
             ),
-        ));
+        ];
+        let row = cells.join(" | ");
+        lines.push(format!("| {row} |"));
     }
     Ok(lines.join("\n") + "\n")
 }
 
-pub(crate) struct ScalingArgs<'a> {
+#[derive(Clone, Copy)]
+pub struct ScalingArgs<'a> {
     pub(crate) run_dir: &'a Path,
     pub(crate) json_out: Option<&'a Path>,
     pub(crate) markdown_out: Option<&'a Path>,
     pub(crate) allow_incomplete: bool,
 }
 
-pub(crate) fn run(args: ScalingArgs<'_>) -> Result<i32> {
+pub fn run(args: ScalingArgs<'_>) -> Result<i32> {
     let summary_path = args.run_dir.join("summary.json");
     let support_path = args.run_dir.join("support.json");
     if !summary_path.is_file() || !support_path.is_file() {
@@ -480,11 +477,7 @@ pub(crate) fn run(args: ScalingArgs<'_>) -> Result<i32> {
         .get("problems")
         .and_then(Value::as_array)
         .is_some_and(|items| !items.is_empty());
-    Ok(if has_problems && !args.allow_incomplete {
-        1
-    } else {
-        0
-    })
+    Ok(i32::from(has_problems && !args.allow_incomplete))
 }
 
 #[cfg(test)]
@@ -544,7 +537,7 @@ mod tests {
         });
         if let Some(speedup) = speedup {
             value["speedup_vs_c1"] = json!(speedup);
-            value["parallel_efficiency_vs_c1"] = json!(speedup / clients as f64);
+            value["parallel_efficiency_vs_c1"] = json!(speedup / int_as_f64!(clients));
         }
         value
     }

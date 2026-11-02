@@ -3,7 +3,7 @@ use anyhow::{Result, bail};
 use super::types::{Durability, EngineCompression, EngineKind};
 
 impl EngineKind {
-    pub(crate) fn version(self) -> &'static str {
+    pub(crate) const fn version(self) -> &'static str {
         match self {
             Self::Redb => "4.4.0",
             Self::Fjall => "3.1.12",
@@ -113,7 +113,7 @@ impl EngineKind {
     }
 }
 
-pub(crate) fn compression_override_supported(kind: EngineKind) -> bool {
+pub const fn compression_override_supported(kind: EngineKind) -> bool {
     match kind {
         EngineKind::Fjall | EngineKind::Surrealkv | EngineKind::Turbokv => true,
         #[cfg(feature = "kv-external")]
@@ -122,7 +122,7 @@ pub(crate) fn compression_override_supported(kind: EngineKind) -> bool {
     }
 }
 
-pub(crate) fn compression_mapping(
+pub fn compression_mapping(
     kind: EngineKind,
     compression: EngineCompression,
 ) -> Result<&'static str> {

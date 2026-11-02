@@ -7,8 +7,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-#[derive(Debug)]
-pub(crate) struct SustainedArgs<'a> {
+#[derive(Debug, Clone, Copy)]
+pub struct SustainedArgs<'a> {
     pub(crate) input: &'a Path,
     pub(crate) expect_trials: Option<usize>,
     pub(crate) json_out: Option<&'a Path>,
@@ -113,7 +113,7 @@ fn median(values: &mut [f64]) -> Option<f64> {
     values.sort_by(f64::total_cmp);
     let middle = values.len() / 2;
     Some(if values.len().is_multiple_of(2) {
-        (values[middle - 1] + values[middle]) / 2.0
+        f64::midpoint(values[middle - 1], values[middle])
     } else {
         values[middle]
     })
@@ -128,14 +128,14 @@ fn quantile(values: &[f64], q: f64) -> Option<f64> {
     if sorted.len() == 1 {
         return sorted.first().copied();
     }
-    let position = q * (sorted.len() - 1) as f64;
-    let low = position.floor() as usize;
-    let high = position.ceil() as usize;
+    let position = q * int_as_f64!((sorted.len() - 1));
+    let low = numeric_to_usize!(position.floor());
+    let high = numeric_to_usize!(position.ceil());
     if low == high {
         Some(sorted[low])
     } else {
-        let fraction = position - low as f64;
-        Some(sorted[low] * (1.0 - fraction) + sorted[high] * fraction)
+        let fraction = position - int_as_f64!(low);
+        Some(sorted[high].mul_add(fraction, sorted[low] * (1.0 - fraction)))
     }
 }
 
@@ -174,6 +174,10 @@ fn object_or_empty(value: Option<&Value>) -> Value {
         .unwrap_or_else(|| json!({}))
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
+)]
 fn summarize_case(raw: &Value) -> Result<Value> {
     let windows = raw
         .get("windows")
@@ -211,26 +215,26 @@ fn summarize_case(raw: &Value) -> Result<Value> {
     let tail_count = rates.len().min(3);
     let mut tail_rates = rates[rates.len() - tail_count..].to_vec();
     let tail_rate = median(&mut tail_rates).context("empty sustained tail")?;
-    let mean_rate = rates.iter().sum::<f64>() / rates.len() as f64;
+    let mean_rate = rates.iter().sum::<f64>() / int_as_f64!(rates.len());
     let throughput_cv = if rates.len() > 1 && mean_rate > 0.0 {
         let variance = rates
             .iter()
             .map(|rate| (*rate - mean_rate).powi(2))
             .sum::<f64>()
-            / rates.len() as f64;
+            / int_as_f64!(rates.len());
         variance.sqrt() / mean_rate
     } else {
         0.0
     };
     let normalized_slope = if rates.len() > 1 {
-        let x_mean = (rates.len() - 1) as f64 / 2.0;
+        let x_mean = int_as_f64!((rates.len() - 1)) / 2.0;
         let denominator = (0..rates.len())
-            .map(|index| (index as f64 - x_mean).powi(2))
+            .map(|index| (int_as_f64!(index) - x_mean).powi(2))
             .sum::<f64>();
         let slope = rates
             .iter()
             .enumerate()
-            .map(|(index, rate)| (index as f64 - x_mean) * (*rate - mean_rate))
+            .map(|(index, rate)| (int_as_f64!(index) - x_mean) * (*rate - mean_rate))
             .sum::<f64>()
             / denominator;
         slope / baseline_rate
@@ -250,7 +254,7 @@ fn summarize_case(raw: &Value) -> Result<Value> {
         .map(|value| *value < 0.25)
         .collect::<Vec<_>>();
     let first50 = below50.iter().position(|flag| *flag);
-    let (recovered90, max_after_first50) = if let Some(first) = first50 {
+    let (recovered90, max_after_first50) = first50.map_or((None, None), |first| {
         let later = &rate_ratio[first + 1..];
         let recovered = later
             .iter()
@@ -258,9 +262,7 @@ fn summarize_case(raw: &Value) -> Result<Value> {
             .map(|index| first + 1 + index);
         let max_after = later.iter().copied().reduce(f64::max);
         (recovered, max_after)
-    } else {
-        (None, None)
-    };
+    });
 
     let mut cpu_ns_per_op = Vec::new();
     let mut write_amp = Vec::new();
@@ -268,8 +270,8 @@ fn summarize_case(raw: &Value) -> Result<Value> {
     let mut cpu_psi = Vec::new();
     let mut io_psi_full = Vec::new();
     for window in windows {
-        let ops = as_i64(window.get("ops_completed"), 0)?.max(1) as f64;
-        let logical = as_i64(window.get("logical_mutated_bytes"), 0)?.max(1) as f64;
+        let ops = int_as_f64!(as_i64(window.get("ops_completed"), 0)?.max(1));
+        let logical = int_as_f64!(as_i64(window.get("logical_mutated_bytes"), 0)?.max(1));
         let process = object_or_empty(window.get("process"));
         let system = object_or_empty(window.get("system"));
         cpu_ns_per_op.push(as_f64(process.get("cpu_runtime_ns"), 0.0)? / ops);
@@ -297,8 +299,8 @@ fn summarize_case(raw: &Value) -> Result<Value> {
     };
 
     let measured_process = object_or_empty(raw.get("measured_process"));
-    let completed = as_i64(raw.get("ops_completed"), 0)?.max(1) as f64;
-    let logical = as_i64(raw.get("logical_mutated_bytes"), 0)?.max(1) as f64;
+    let completed = int_as_f64!(as_i64(raw.get("ops_completed"), 0)?.max(1));
+    let logical = int_as_f64!(as_i64(raw.get("logical_mutated_bytes"), 0)?.max(1));
     let mut case = Map::new();
     for field in [
         "format_version",
@@ -534,6 +536,10 @@ fn group_key(case: &Value) -> Vec<Value> {
         .collect()
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
+)]
 fn aggregate(cases: &[Value]) -> Result<Vec<Value>> {
     let mut groups = HashMap::<String, (Vec<String>, Vec<&Value>)>::new();
     for case in cases {
@@ -606,7 +612,7 @@ fn aggregate(cases: &[Value]) -> Result<Vec<Value>> {
             .filter_map(Value::as_f64)
             .collect::<Vec<_>>();
         group.insert("trials_with_50pct_cliff".to_owned(), json!(cliffs.len()));
-        let mut cliff_copy = cliffs.clone();
+        let mut cliff_copy = cliffs;
         group.insert(
             "first_below_50pct_window_median_when_present".to_owned(),
             match median(&mut cliff_copy) {
@@ -707,7 +713,7 @@ fn fmt(value: Option<&Value>, digits: usize) -> String {
     py_string(value)
 }
 
-fn render_markdown(groups: &[Value]) -> Result<String> {
+fn render_markdown(groups: &[Value]) -> String {
     let mut lines = vec![
         "# Sustained-write / compaction summary".to_owned(),
         String::new(),
@@ -753,10 +759,10 @@ fn render_markdown(groups: &[Value]) -> Result<String> {
             settle.map_or_else(|| "—".to_owned(), |value| format!("{value:.3}")),
         ));
     }
-    Ok(lines.join("\n") + "\n")
+    lines.join("\n") + "\n"
 }
 
-pub(crate) fn run(args: SustainedArgs<'_>) -> Result<i32> {
+pub fn run(args: SustainedArgs<'_>) -> Result<i32> {
     let raw = read_input(args.input)?;
     let raw = raw
         .into_iter()
@@ -825,7 +831,7 @@ pub(crate) fn run(args: SustainedArgs<'_>) -> Result<i32> {
         }
         fs::write(
             path,
-            render_markdown(result["groups"].as_array().context("groups missing")?)?,
+            render_markdown(result["groups"].as_array().context("groups missing")?),
         )?;
     }
     Ok(i32::from(
@@ -892,16 +898,16 @@ mod tests {
             "active_ops_per_s": 90.0,
             "instrumentation_fraction_of_wall": instrumentation,
             "logical_mutated_bytes": 10000,
-            "measured_process": {"cpu_runtime_ns": 100000, "write_bytes": 20000},
+            "measured_process": {"cpu_runtime_ns": 100_000, "write_bytes": 20000},
             "db_bytes_before": 1000,
             "db_bytes_after_foreground": 2000,
             "db_bytes_final": 2200,
             "windows": [
-                {"ops_start":0,"ops_completed":100,"ops_per_s":100.0,"logical_mutated_bytes":1000,"transaction_latency":{"p99_us":10.0},"process":{"cpu_runtime_ns":1000,"write_bytes":2000,"runqueue_wait_fraction_of_wall":0.1},"system":{"accounting_wall_ns":1000000,"psi_cpu_some_us":10,"psi_io_full_us":5}},
-                {"ops_start":100,"ops_completed":100,"ops_per_s":100.0,"logical_mutated_bytes":1000,"transaction_latency":{"p99_us":12.0},"process":{"cpu_runtime_ns":1100,"write_bytes":2100,"runqueue_wait_fraction_of_wall":0.2},"system":{"accounting_wall_ns":1000000,"psi_cpu_some_us":20,"psi_io_full_us":6}},
-                {"ops_start":200,"ops_completed":100,"ops_per_s":100.0,"logical_mutated_bytes":1000,"transaction_latency":{"p99_us":11.0},"process":{"cpu_runtime_ns":1200,"write_bytes":2200,"runqueue_wait_fraction_of_wall":0.3},"system":{"accounting_wall_ns":1000000,"psi_cpu_some_us":30,"psi_io_full_us":7}},
-                {"ops_start":300,"ops_completed":100,"ops_per_s":40.0,"logical_mutated_bytes":1000,"transaction_latency":{"p99_us":30.0},"process":{"cpu_runtime_ns":1300,"write_bytes":2300,"runqueue_wait_fraction_of_wall":0.4},"system":{"accounting_wall_ns":1000000,"psi_cpu_some_us":40,"psi_io_full_us":8}},
-                {"ops_start":400,"ops_completed":100,"ops_per_s":95.0,"logical_mutated_bytes":1000,"transaction_latency":{"p99_us":15.0},"process":{"cpu_runtime_ns":1400,"write_bytes":2400,"runqueue_wait_fraction_of_wall":0.5},"system":{"accounting_wall_ns":1000000,"psi_cpu_some_us":50,"psi_io_full_us":9}}
+                {"ops_start":0,"ops_completed":100,"ops_per_s":100.0,"logical_mutated_bytes":1000,"transaction_latency":{"p99_us":10.0},"process":{"cpu_runtime_ns":1000,"write_bytes":2000,"runqueue_wait_fraction_of_wall":0.1},"system":{"accounting_wall_ns":1_000_000,"psi_cpu_some_us":10,"psi_io_full_us":5}},
+                {"ops_start":100,"ops_completed":100,"ops_per_s":100.0,"logical_mutated_bytes":1000,"transaction_latency":{"p99_us":12.0},"process":{"cpu_runtime_ns":1100,"write_bytes":2100,"runqueue_wait_fraction_of_wall":0.2},"system":{"accounting_wall_ns":1_000_000,"psi_cpu_some_us":20,"psi_io_full_us":6}},
+                {"ops_start":200,"ops_completed":100,"ops_per_s":100.0,"logical_mutated_bytes":1000,"transaction_latency":{"p99_us":11.0},"process":{"cpu_runtime_ns":1200,"write_bytes":2200,"runqueue_wait_fraction_of_wall":0.3},"system":{"accounting_wall_ns":1_000_000,"psi_cpu_some_us":30,"psi_io_full_us":7}},
+                {"ops_start":300,"ops_completed":100,"ops_per_s":40.0,"logical_mutated_bytes":1000,"transaction_latency":{"p99_us":30.0},"process":{"cpu_runtime_ns":1300,"write_bytes":2300,"runqueue_wait_fraction_of_wall":0.4},"system":{"accounting_wall_ns":1_000_000,"psi_cpu_some_us":40,"psi_io_full_us":8}},
+                {"ops_start":400,"ops_completed":100,"ops_per_s":95.0,"logical_mutated_bytes":1000,"transaction_latency":{"p99_us":15.0},"process":{"cpu_runtime_ns":1400,"write_bytes":2400,"runqueue_wait_fraction_of_wall":0.5},"system":{"accounting_wall_ns":1_000_000,"psi_cpu_some_us":50,"psi_io_full_us":9}}
             ],
             "post_workload_settle": {"elapsed_s":1.0,"process":{"cpu_runtime_ns":50,"write_bytes":500},"db_bytes_before":2000,"db_bytes_after":2100,"samples":[1,2]}
         })

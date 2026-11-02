@@ -48,7 +48,8 @@ const FINAL_CONFIRMATION_STRATEGIES: [&str; 5] = [
     "final-five-trial-common-work-v6",
 ];
 
-pub(crate) struct SelectArgs<'a> {
+#[derive(Clone, Copy)]
+pub struct SelectArgs<'a> {
     pub(crate) stock_results: &'a Path,
     pub(crate) audit: &'a Path,
     pub(crate) resize_root: &'a Path,
@@ -59,7 +60,8 @@ pub(crate) struct SelectArgs<'a> {
     pub(crate) allow_missing_resize: bool,
 }
 
-pub(crate) struct FinalizeLane<'a> {
+#[derive(Clone, Copy)]
+pub struct FinalizeLane<'a> {
     pub(crate) stock_results: &'a Path,
     pub(crate) audit: &'a Path,
     pub(crate) resize_prefix: &'a str,
@@ -139,7 +141,7 @@ fn slug(value: &str) -> String {
         .collect()
 }
 
-pub(crate) fn run_id(group: &Value, resize_prefix: &str) -> Result<String> {
+pub fn run_id(group: &Value, resize_prefix: &str) -> Result<String> {
     Ok(format!(
         "{resize_prefix}-{}-{}-{}-e{}-t{}",
         slug(&py_string(group.get("engine").unwrap_or(&Value::Null))),
@@ -230,7 +232,7 @@ fn median(values: &[f64]) -> Result<f64> {
     values.sort_by(f64::total_cmp);
     let mid = values.len() / 2;
     Ok(if values.len().is_multiple_of(2) {
-        (values[mid - 1] + values[mid]) / 2.0
+        f64::midpoint(values[mid - 1], values[mid])
     } else {
         values[mid]
     })
@@ -240,7 +242,7 @@ fn sample_cv(values: &[f64]) -> f64 {
     if values.len() < 2 {
         return 0.0;
     }
-    let mean = values.iter().sum::<f64>() / values.len() as f64;
+    let mean = values.iter().sum::<f64>() / int_as_f64!(values.len());
     if mean == 0.0 {
         return 0.0;
     }
@@ -248,11 +250,11 @@ fn sample_cv(values: &[f64]) -> f64 {
         .iter()
         .map(|value| (value - mean).powi(2))
         .sum::<f64>()
-        / (values.len() - 1) as f64;
+        / int_as_f64!((values.len() - 1));
     variance.sqrt() / mean
 }
 
-pub(crate) fn final_quality(rows: &[Value], thresholds: &Value) -> Result<Value> {
+pub fn final_quality(rows: &[Value], thresholds: &Value) -> Result<Value> {
     let elapsed = rows
         .iter()
         .map(|row| value_f64(row.get("elapsed_s")))
@@ -278,8 +280,7 @@ pub(crate) fn final_quality(rows: &[Value], thresholds: &Value) -> Result<Value>
     let workload = rows
         .first()
         .and_then(|row| row.get("workload"))
-        .map(py_string)
-        .unwrap_or_else(|| "None".to_owned());
+        .map_or_else(|| "None".to_owned(), py_string);
     let read_only = thresholds
         .get("read_only_workloads")
         .and_then(Value::as_array)
@@ -309,6 +310,7 @@ pub(crate) fn final_quality(rows: &[Value], thresholds: &Value) -> Result<Value>
     }))
 }
 
+#[derive(Clone, Copy)]
 struct SourceSpec<'a> {
     source: &'a str,
     resize_strategy: Option<&'a str>,
@@ -360,7 +362,11 @@ fn source_manifest(first: &Value, spec: SourceSpec<'_>, quality: &Value) -> Resu
     Ok(Value::Object(object))
 }
 
-pub(crate) fn select_rows(
+#[expect(
+    clippy::too_many_lines,
+    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
+)]
+pub fn select_rows(
     stock_rows: &[Value],
     audit: &Value,
     resize_root: &Path,
@@ -443,7 +449,7 @@ pub(crate) fn select_rows(
                 audit_key(&group)
             };
             let encoded = encoded_key(&key)?;
-            if quality_groups.insert(encoded.clone(), group).is_some() {
+            if quality_groups.insert(encoded, group).is_some() {
                 bail!("duplicate quality-repair identity: {key:?}");
             }
         }
@@ -622,11 +628,10 @@ pub(crate) fn select_rows(
         )?);
     }
 
-    let expected_audit_groups = audit
-        .get("group_count")
-        .map_or(audit_groups.len() as i64, |value| {
-            value_i64(Some(value)).unwrap_or(-1)
-        });
+    let expected_audit_groups = audit.get("group_count").map_or_else(
+        || i64::try_from(audit_groups.len()).unwrap_or(i64::MAX),
+        |value| value_i64(Some(value)).unwrap_or(-1),
+    );
     let stock_group_count = ordered_stock_len(stock_rows)?;
     if stock_group_count != expected_audit_groups {
         bail!(
@@ -634,10 +639,13 @@ pub(crate) fn select_rows(
         );
     }
     let status_count = |status: &str| -> i64 {
-        sources
-            .iter()
-            .filter(|source| source.get("final_status").and_then(Value::as_str) == Some(status))
-            .count() as i64
+        i64::try_from(
+            sources
+                .iter()
+                .filter(|source| source.get("final_status").and_then(Value::as_str) == Some(status))
+                .count(),
+        )
+        .unwrap_or(i64::MAX)
     };
     let rejected_total = sources
         .iter()
@@ -676,7 +684,7 @@ fn ordered_stock_len(stock_rows: &[Value]) -> Result<i64> {
     for row in stock_rows {
         keys.insert(encoded_key(&identity(row))?);
     }
-    Ok(keys.len() as i64)
+    Ok(i64::try_from(keys.len()).unwrap_or(i64::MAX))
 }
 
 fn write_selection(
@@ -705,7 +713,7 @@ fn write_selection(
     Ok(())
 }
 
-pub(crate) fn run_select(args: SelectArgs<'_>) -> Result<()> {
+pub fn run_select(args: SelectArgs<'_>) -> Result<()> {
     let stock_rows = read_ndjson(args.stock_results)?;
     let audit = read_json(args.audit)?;
     let quality = args.quality_repair_plan.map(read_json).transpose()?;
@@ -756,7 +764,7 @@ pub(crate) fn run_select(args: SelectArgs<'_>) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn finalize_one(repo: &Path, lane: FinalizeLane<'_>) -> Result<()> {
+pub fn finalize_one(repo: &Path, lane: FinalizeLane<'_>) -> Result<()> {
     fs::create_dir_all(lane.out_dir)
         .with_context(|| format!("failed to create {}", lane.out_dir.display()))?;
     let ndjson = lane.out_dir.join("results.ndjson");
@@ -843,7 +851,7 @@ mod tests {
         })
     }
 
-    fn audit(groups: Vec<Value>) -> Value {
+    fn audit(groups: &[Value]) -> Value {
         json!({
             "sizing_policy_version":2,"group_count":groups.len(),
             "thresholds":{"expect_trials":3,"max_cv":0.10,"max_relative_spread":0.25,
@@ -920,7 +928,7 @@ mod tests {
             Some(5),
             Some("more-trials"),
         );
-        let plan = audit(vec![
+        let plan = audit(&[
             audit_group("a", "point-read", 100, "accepted", None, None, None),
             target.clone(),
         ]);
@@ -962,7 +970,7 @@ mod tests {
             Some(3),
             Some("more-ops"),
         );
-        let plan = audit(vec![target.clone()]);
+        let plan = audit(std::slice::from_ref(&target));
         let mut confirmation = target;
         confirmation["suggested_effective_ops"] = json!(200);
         confirmation["suggested_trials"] = json!(5);
@@ -971,7 +979,7 @@ mod tests {
         let run = root.join(run_id(&confirmation, "final")?);
         fs::create_dir_all(&run)?;
         let repaired = (1..=5)
-            .map(|t| row("sqlite", "point-read", t, 200, 1.0, 200.0 + t as f64))
+            .map(|t| row("sqlite", "point-read", t, 200, 1.0, 200.0 + int_as_f64!(t)))
             .collect::<Vec<_>>();
         fs::write(
             run.join("results.ndjson"),

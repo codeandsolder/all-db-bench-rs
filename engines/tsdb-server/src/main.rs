@@ -8,11 +8,13 @@ use serde::Serialize;
 use serde_json::Value;
 use snap::raw::Encoder as SnappyEncoder;
 use std::{
+    fmt::Write as _,
     fs,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 const HIST_MAX_NS: u64 = 120_000_000_000;
+const F64_EXACT_INT_MAX: u64 = 1 << 53;
 const METRIC_NAME: &str = "bench_metric";
 const INFLUX_DATABASE: &str = "bench";
 
@@ -26,7 +28,7 @@ enum EngineKind {
 }
 
 impl EngineKind {
-    fn transport(self) -> &'static str {
+    const fn transport(self) -> &'static str {
         match self {
             Self::Greptimedb | Self::Victoriametrics | Self::Prometheus => {
                 "prometheus-remote-write-v1-snappy-protobuf"
@@ -35,7 +37,7 @@ impl EngineKind {
         }
     }
 
-    fn query_language(self) -> &'static str {
+    const fn query_language(self) -> &'static str {
         match self {
             Self::Greptimedb | Self::Victoriametrics | Self::Prometheus => "promql",
             Self::Influxdb3 => "sql",
@@ -163,15 +165,30 @@ struct Measurement {
     system: SystemDelta,
 }
 
-fn quantiles(hist: &Histogram<u64>) -> Quantiles {
-    Quantiles {
-        count: hist.len(),
-        p50_us: hist.value_at_quantile(0.50) as f64 / 1_000.0,
-        p95_us: hist.value_at_quantile(0.95) as f64 / 1_000.0,
-        p99_us: hist.value_at_quantile(0.99) as f64 / 1_000.0,
-        p999_us: hist.value_at_quantile(0.999) as f64 / 1_000.0,
-        max_us: hist.max() as f64 / 1_000.0,
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "values are rejected above 2^53, so the integer-to-f64 conversion is exact"
+)]
+fn exact_u64_to_f64(value: u64, what: &str) -> Result<f64> {
+    if value > F64_EXACT_INT_MAX {
+        bail!("{what} exceeds the largest integer exactly representable as f64: {value}");
     }
+    Ok(value as f64)
+}
+
+fn exact_usize_to_f64(value: usize, what: &str) -> Result<f64> {
+    exact_u64_to_f64(u64::try_from(value).context("usize exceeds u64")?, what)
+}
+
+fn quantiles(hist: &Histogram<u64>) -> Result<Quantiles> {
+    Ok(Quantiles {
+        count: hist.len(),
+        p50_us: exact_u64_to_f64(hist.value_at_quantile(0.50), "p50 latency")? / 1_000.0,
+        p95_us: exact_u64_to_f64(hist.value_at_quantile(0.95), "p95 latency")? / 1_000.0,
+        p99_us: exact_u64_to_f64(hist.value_at_quantile(0.99), "p99 latency")? / 1_000.0,
+        p999_us: exact_u64_to_f64(hist.value_at_quantile(0.999), "p99.9 latency")? / 1_000.0,
+        max_us: exact_u64_to_f64(hist.max(), "maximum latency")? / 1_000.0,
+    })
 }
 
 fn record_duration(hist: &mut Histogram<u64>, elapsed: Duration) -> Result<()> {
@@ -198,12 +215,14 @@ fn prometheus_seconds(millis: i64) -> String {
     )
 }
 
-fn align_timestamp_to_step(timestamp_ms: i64, step_ms: i64) -> i64 {
+const fn align_timestamp_to_step(timestamp_ms: i64, step_ms: i64) -> i64 {
     timestamp_ms.div_euclid(step_ms) * step_ms
 }
 
-fn deterministic_value(series: usize, sample: usize) -> f64 {
-    sample as f64 + series as f64 / 1_000.0
+fn deterministic_value(series: usize, sample: usize) -> Result<f64> {
+    let sample = exact_usize_to_f64(sample, "sample index")?;
+    let series = exact_usize_to_f64(series, "series index")?;
+    Ok(sample + series / 1_000.0)
 }
 
 fn host_label(series: usize) -> String {
@@ -228,7 +247,7 @@ fn remote_write_body(
         for sample in start_sample..end_sample {
             let sample_i64 = i64::try_from(sample).context("sample index overflow")?;
             samples.push(Sample {
-                value: deterministic_value(series, sample),
+                value: deterministic_value(series, sample)?,
                 timestamp: start_ms + sample_i64 * step_ms,
             });
         }
@@ -276,8 +295,7 @@ fn influx_body(
     for series in start_series..end_series {
         for sample in 0..samples_per_series {
             let sample_i64 = i64::try_from(sample).context("sample index overflow")?;
-            let timestamp_ms = start_ms + sample_i64 * step_ms;
-            let timestamp_ns = timestamp_ms
+            let sample_time_ns = (start_ms + sample_i64 * step_ms)
                 .checked_mul(1_000_000)
                 .context("timestamp nanosecond overflow")?;
             body.push_str(METRIC_NAME);
@@ -286,9 +304,10 @@ fn influx_body(
             body.push_str(",region=");
             body.push_str(&region_label(series));
             body.push_str(" value=");
-            body.push_str(&format!("{:.6}", deterministic_value(series, sample)));
+            write!(&mut body, "{:.6}", deterministic_value(series, sample)?)
+                .context("format InfluxDB line value")?;
             body.push(' ');
-            body.push_str(&timestamp_ns.to_string());
+            body.push_str(&sample_time_ns.to_string());
             body.push('\n');
         }
     }
@@ -314,6 +333,68 @@ fn setup_engine(client: &Client, args: &Args) -> Result<()> {
         bail!("create InfluxDB benchmark database returned HTTP {status}: {body}");
     }
     Ok(())
+}
+
+fn encode_ingest_batch(
+    args: &Args,
+    start_series: usize,
+    end_series: usize,
+    start_sample: usize,
+    end_sample: usize,
+    start_ms: i64,
+) -> Result<Vec<u8>> {
+    match args.engine {
+        EngineKind::Influxdb3 => influx_body(
+            start_series,
+            end_series,
+            args.samples_per_series,
+            start_ms,
+            args.step_ms,
+        ),
+        EngineKind::Greptimedb | EngineKind::Victoriametrics | EngineKind::Prometheus => {
+            remote_write_body(
+                start_series,
+                end_series,
+                start_sample,
+                end_sample,
+                start_ms,
+                args.step_ms,
+            )
+        }
+    }
+}
+
+fn post_ingest_batch(client: &Client, args: &Args, body: Vec<u8>) -> reqwest::Result<Response> {
+    match args.engine {
+        EngineKind::Greptimedb => client
+            .post(format!(
+                "{}/v1/prometheus/write?db=public",
+                args.endpoint.trim_end_matches('/')
+            ))
+            .header("Content-Encoding", "snappy")
+            .header("Content-Type", "application/x-protobuf")
+            .header("X-Prometheus-Remote-Write-Version", "0.1.0")
+            .body(body)
+            .send(),
+        EngineKind::Victoriametrics | EngineKind::Prometheus => client
+            .post(format!(
+                "{}/api/v1/write",
+                args.endpoint.trim_end_matches('/')
+            ))
+            .header("Content-Encoding", "snappy")
+            .header("Content-Type", "application/x-protobuf")
+            .header("X-Prometheus-Remote-Write-Version", "0.1.0")
+            .body(body)
+            .send(),
+        EngineKind::Influxdb3 => client
+            .post(format!(
+                "{}/api/v3/write_lp?db={INFLUX_DATABASE}&precision=nanosecond&accept_partial=false",
+                args.endpoint.trim_end_matches('/')
+            ))
+            .header("Content-Type", "text/plain; charset=utf-8")
+            .body(body)
+            .send(),
+    }
 }
 
 fn ingest(client: &Client, args: &Args, start_ms: i64) -> Result<IngestMeasurement> {
@@ -345,61 +426,20 @@ fn ingest(client: &Client, args: &Args, start_ms: i64) -> Result<IngestMeasureme
         for start_series in (0..args.series).step_by(args.batch_series) {
             let end_series = (start_series + args.batch_series).min(args.series);
             let encode_started = Instant::now();
-            let body = match args.engine {
-                EngineKind::Influxdb3 => influx_body(
-                    start_series,
-                    end_series,
-                    args.samples_per_series,
-                    start_ms,
-                    args.step_ms,
-                )?,
-                EngineKind::Greptimedb | EngineKind::Victoriametrics | EngineKind::Prometheus => {
-                    remote_write_body(
-                        start_series,
-                        end_series,
-                        start_sample,
-                        end_sample,
-                        start_ms,
-                        args.step_ms,
-                    )?
-                }
-            };
+            let body = encode_ingest_batch(
+                args,
+                start_series,
+                end_series,
+                start_sample,
+                end_sample,
+                start_ms,
+            )?;
             encode_elapsed += encode_started.elapsed();
             payload_bytes =
                 payload_bytes.saturating_add(u64::try_from(body.len()).unwrap_or(u64::MAX));
 
             let request_started = Instant::now();
-            let response = match args.engine {
-                EngineKind::Greptimedb => client
-                    .post(format!(
-                        "{}/v1/prometheus/write?db=public",
-                        args.endpoint.trim_end_matches('/')
-                    ))
-                    .header("Content-Encoding", "snappy")
-                    .header("Content-Type", "application/x-protobuf")
-                    .header("X-Prometheus-Remote-Write-Version", "0.1.0")
-                    .body(body)
-                    .send(),
-                EngineKind::Victoriametrics | EngineKind::Prometheus => client
-                    .post(format!(
-                        "{}/api/v1/write",
-                        args.endpoint.trim_end_matches('/')
-                    ))
-                    .header("Content-Encoding", "snappy")
-                    .header("Content-Type", "application/x-protobuf")
-                    .header("X-Prometheus-Remote-Write-Version", "0.1.0")
-                    .body(body)
-                    .send(),
-                EngineKind::Influxdb3 => client
-                    .post(format!(
-                        "{}/api/v3/write_lp?db={INFLUX_DATABASE}&precision=nanosecond&accept_partial=false",
-                        args.endpoint.trim_end_matches('/')
-                    ))
-                    .header("Content-Type", "text/plain; charset=utf-8")
-                    .body(body)
-                    .send(),
-            }
-            .with_context(|| {
+            let response = post_ingest_batch(client, args, body).with_context(|| {
                 format!(
                     "send ingestion request for series {start_series}..{end_series}, samples {start_sample}..{end_sample}"
                 )
@@ -427,8 +467,9 @@ fn ingest(client: &Client, args: &Args, start_ms: i64) -> Result<IngestMeasureme
         elapsed_s: elapsed.as_secs_f64(),
         request_elapsed_s: request_elapsed.as_secs_f64(),
         encode_elapsed_s: encode_elapsed.as_secs_f64(),
-        samples_per_s: total_samples as f64 / elapsed.as_secs_f64(),
-        request_latency: quantiles(&hist),
+        samples_per_s: exact_u64_to_f64(total_samples, "total sample count")?
+            / elapsed.as_secs_f64(),
+        request_latency: quantiles(&hist)?,
     })
 }
 
@@ -451,21 +492,21 @@ fn prom_query(
     if matches!(args.engine, EngineKind::Greptimedb) {
         request = request.query(&[("db", "public")]);
     }
-    let end_s = prometheus_seconds(end_ms);
-    let start_s = prometheus_seconds(start_ms);
-    let step_s = prometheus_seconds(args.step_ms);
+    let prometheus_end = prometheus_seconds(end_ms);
+    let prometheus_start = prometheus_seconds(start_ms);
+    let prometheus_step = prometheus_seconds(args.step_ms);
     let response = if range {
         request
             .form(&[
                 ("query", query.to_string()),
-                ("start", start_s),
-                ("end", end_s),
-                ("step", step_s),
+                ("start", prometheus_start),
+                ("end", prometheus_end),
+                ("step", prometheus_step),
             ])
             .send()
     } else {
         request
-            .form(&[("query", query.to_string()), ("time", end_s)])
+            .form(&[("query", query.to_string()), ("time", prometheus_end)])
             .send()
     }
     .context("send PromQL query")?;
@@ -591,7 +632,7 @@ fn wait_until_visible(client: &Client, args: &Args, start_ms: i64, end_ms: i64) 
         match point_query(client, args, start_ms, end_ms) {
             Ok(1) => return Ok(()),
             Ok(_) | Err(_) if Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(100))
+                std::thread::sleep(Duration::from_millis(100));
             }
             Ok(rows) => bail!("point query remained invalid after ingest: {rows} rows"),
             Err(error) => {
@@ -620,7 +661,7 @@ where
     Ok(QueryMeasurement {
         iterations,
         validated_rows,
-        latency: quantiles(&hist),
+        latency: quantiles(&hist)?,
     })
 }
 
@@ -748,12 +789,10 @@ mod tests {
     }
 
     #[test]
-    fn remote_write_chunk_preserves_global_sample_indices() {
-        let compressed = remote_write_body(2, 3, 5, 8, 1_000, 10).expect("encode chunk");
-        let protobuf = SnappyDecoder::new()
-            .decompress_vec(&compressed)
-            .expect("decompress chunk");
-        let request = WriteRequest::decode(protobuf.as_slice()).expect("decode protobuf");
+    fn remote_write_chunk_preserves_global_sample_indices() -> anyhow::Result<()> {
+        let compressed = remote_write_body(2, 3, 5, 8, 1_000, 10)?;
+        let protobuf = SnappyDecoder::new().decompress_vec(&compressed)?;
+        let request = WriteRequest::decode(protobuf.as_slice())?;
         assert_eq!(request.timeseries.len(), 1);
         let series = &request.timeseries[0];
         assert_eq!(series.samples.len(), 3);
@@ -761,6 +800,7 @@ mod tests {
         assert_eq!(series.samples[1].timestamp, 1_060);
         assert_eq!(series.samples[2].timestamp, 1_070);
         assert!((series.samples[0].value - 5.002).abs() < f64::EPSILON);
+        Ok(())
     }
 
     #[test]
