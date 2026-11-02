@@ -1,4 +1,4 @@
-use crate::file_hash::sha256;
+use crate::file_hash::{lower_hex, sha256};
 use crate::json_io::read_json;
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value, json};
@@ -19,7 +19,7 @@ pub(crate) struct ImportArgs<'a> {
 fn importer_sha256() -> String {
     let mut digest = Sha256::new();
     digest.update(IMPORTER_SOURCE.as_bytes());
-    format!("{:x}", digest.finalize())
+    lower_hex(&digest.finalize())
 }
 
 fn require_quiet(path: &Path) -> Result<()> {
