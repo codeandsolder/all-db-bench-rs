@@ -5,13 +5,13 @@ use std::path::PathBuf;
 #[derive(Debug, Parser)]
 #[command(name = "all-db-benchctl")]
 #[command(about = "Native support tooling for all-db-bench-rs")]
-pub(crate) struct Cli {
+pub struct Cli {
     #[command(subcommand)]
     pub(crate) command: Command,
 }
 
 #[derive(Debug, Subcommand)]
-pub(crate) enum Command {
+pub enum Command {
     BaselineGeneration {
         #[arg(long)]
         repo: PathBuf,

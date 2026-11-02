@@ -592,8 +592,8 @@ pub async fn run() -> Result<()> {
     .await?;
     let warmup_s = warmup_started.elapsed().as_secs_f64();
 
-    let mut read_hist = hist();
-    let mut write_hist = hist();
+    let mut read_hist = hist()?;
+    let mut write_hist = hist()?;
     let system_before = SystemSnapshot::capture();
     let process_before = ProcSnapshot::capture();
     let started = Instant::now();

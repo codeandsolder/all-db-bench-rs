@@ -19,8 +19,8 @@ const BASE_REQUIRED: [&str; 8] = [
 ];
 const STATE_FIELDS: [&str; 3] = ["state_evolution", "write_pattern", "bounded_churn_slots"];
 
-#[derive(Debug)]
-pub(crate) struct KvMaterializeArgs<'a> {
+#[derive(Debug, Clone, Copy)]
+pub struct KvMaterializeArgs<'a> {
     pub(crate) plan: &'a Path,
     pub(crate) tsv_out: &'a Path,
     pub(crate) meta_out: &'a Path,
@@ -59,8 +59,11 @@ fn py_int(value: &Value) -> Option<i64> {
                 i64::try_from(value).ok()
             } else {
                 let value = number.as_f64()?;
-                if value.is_finite() && value >= i64::MIN as f64 && value <= i64::MAX as f64 {
-                    Some(value.trunc() as i64)
+                if value.is_finite()
+                    && value >= int_as_f64!(i64::MIN)
+                    && value <= int_as_f64!(i64::MAX)
+                {
+                    Some(f64_to_i64!(value.trunc()))
                 } else {
                     None
                 }
@@ -102,6 +105,10 @@ fn python_list_repr(values: &[String]) -> String {
     format!("[{body}]")
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
+)]
 fn materialize(plan: &Value) -> Result<(Vec<Vec<String>>, Value)> {
     let version = plan
         .get("concurrency_probe_plan_version")
@@ -221,12 +228,8 @@ fn materialize(plan: &Value) -> Result<(Vec<Vec<String>>, Value)> {
         client_trials.entry(client).or_default().insert(trial);
         if let Some(previous) = families.get(&family) {
             if *previous != (records, ops) {
-                bail!(
-                    "family total-work mismatch: {:?}: {:?} != {:?}",
-                    family,
-                    previous,
-                    (records, ops)
-                );
+                let observed = (records, ops);
+                bail!("family total-work mismatch: {family:?}: {previous:?} != {observed:?}");
             }
         } else {
             families.insert(family, (records, ops));
@@ -251,10 +254,7 @@ fn materialize(plan: &Value) -> Result<(Vec<Vec<String>>, Value)> {
     for (client, trials) in client_trials {
         let observed = i64::try_from(trials.len()).context("trial count overflow")?;
         if observed != expect_trials {
-            bail!(
-                "client group {:?} has {observed} trials, expected {expect_trials}",
-                client
-            );
+            bail!("client group {client:?} has {observed} trials, expected {expect_trials}");
         }
     }
     if !rows.is_empty() {
@@ -274,7 +274,7 @@ fn materialize(plan: &Value) -> Result<(Vec<Vec<String>>, Value)> {
     ))
 }
 
-pub(crate) fn run_materialize(args: KvMaterializeArgs<'_>) -> Result<()> {
+pub fn run_materialize(args: KvMaterializeArgs<'_>) -> Result<()> {
     let plan: Value = serde_json::from_str(
         &fs::read_to_string(args.plan)
             .with_context(|| format!("failed to read {}", args.plan.display()))?,

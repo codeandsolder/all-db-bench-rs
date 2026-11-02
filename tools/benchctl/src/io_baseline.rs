@@ -6,7 +6,8 @@ use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value, json};
 use std::{collections::BTreeSet, fs, path::Path};
 
-pub(crate) struct IoBaselineArgs<'a> {
+#[derive(Clone, Copy)]
+pub struct IoBaselineArgs<'a> {
     pub(crate) run_dir: &'a Path,
     pub(crate) json_out: Option<&'a Path>,
     pub(crate) markdown_out: Option<&'a Path>,
@@ -51,6 +52,10 @@ fn fmt(value: Option<&Value>, digits: usize) -> String {
     value.to_string()
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
+)]
 fn summarize_one(
     run: &Path,
     filename: &str,
@@ -256,7 +261,11 @@ fn markdown(rows: &[Value]) -> String {
     lines.join("\n") + "\n"
 }
 
-pub(crate) fn run(args: IoBaselineArgs<'_>) -> Result<i32> {
+#[expect(
+    clippy::too_many_lines,
+    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
+)]
+pub fn run(args: IoBaselineArgs<'_>) -> Result<i32> {
     let run = args.run_dir;
     let support = read_json(&run.join("support.json"))?;
     if as_i64(support.get("calibration_protocol_version"), 0) != 4 {
@@ -357,7 +366,7 @@ pub(crate) fn run(args: IoBaselineArgs<'_>) -> Result<i32> {
         ) {
             Ok(value) => composite = Some(value),
             Err(error) => {
-                problems.push(format!("invalid directional calibration capacity: {error}"))
+                problems.push(format!("invalid directional calibration capacity: {error}"));
             }
         }
     }
@@ -393,17 +402,12 @@ pub(crate) fn run(args: IoBaselineArgs<'_>) -> Result<i32> {
         fs::write(path, markdown(report_rows))
             .with_context(|| format!("failed to write {}", path.display()))?;
     }
-    Ok(
-        if result
+    Ok(i32::from(
+        !result
             .get("problems")
             .and_then(Value::as_array)
-            .is_some_and(Vec::is_empty)
-        {
-            0
-        } else {
-            1
-        },
-    )
+            .is_some_and(Vec::is_empty),
+    ))
 }
 
 #[cfg(test)]

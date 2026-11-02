@@ -298,8 +298,8 @@ fn run_clients<C: ClientOps>(
     };
 
     client_runs.sort_by_key(|r| r.client);
-    let mut read_hist = hist();
-    let mut write_hist = hist();
+    let mut read_hist = hist()?;
+    let mut write_hist = hist()?;
     let mut completed = 0u64;
     let mut reads = 0u64;
     let mut writes = 0u64;

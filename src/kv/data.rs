@@ -175,10 +175,7 @@ mod tests {
             value(42, 4096, 7, ValuePattern::PseudoRandom),
             value(42, 4096, 7, ValuePattern::StructuredBinary)
         );
-        assert!(
-            String::from_utf8(value(42, 4096, 7, ValuePattern::StructuredText))
-                .expect("structured text pattern must be UTF-8")
-                .contains("dbbench")
-        );
+        let structured = String::from_utf8(value(42, 4096, 7, ValuePattern::StructuredText));
+        assert!(structured.is_ok_and(|text| text.contains("dbbench")));
     }
 }

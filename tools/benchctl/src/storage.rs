@@ -59,13 +59,11 @@ fn command_text(program: &str, args: &[&str]) -> String {
 
 fn zfs_value(source: &str, property: &str) -> Value {
     let raw = command_text("zfs", &["get", "-Hp", "-o", "value", property, source]);
-    match raw.parse::<u64>() {
-        Ok(value) => json!(value),
-        Err(_) => json!(raw),
-    }
+    raw.parse::<u64>()
+        .map_or_else(|_| json!(raw), |value| json!(value))
 }
 
-pub(crate) fn footprint(root: &Path) -> Result<Value> {
+pub fn footprint(root: &Path) -> Result<Value> {
     if !root.exists() {
         bail!("path does not exist: {}", root.display());
     }
@@ -128,7 +126,7 @@ pub(crate) fn footprint(root: &Path) -> Result<Value> {
     Ok(Value::Object(payload))
 }
 
-pub(crate) fn print_footprint(root: &Path) -> Result<()> {
+pub fn print_footprint(root: &Path) -> Result<()> {
     println!("{}", serde_json::to_string(&footprint(root)?)?);
     Ok(())
 }

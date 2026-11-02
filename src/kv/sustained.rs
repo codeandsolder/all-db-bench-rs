@@ -227,7 +227,7 @@ pub async fn run() -> Result<()> {
     let mut deletes_total = 0u64;
     let mut txn_total = 0u64;
     let mut logical_bytes_total = 0u64;
-    let mut total_hist = hist();
+    let mut total_hist = hist()?;
     let mut windows = Vec::new();
     let mut active_elapsed = Duration::ZERO;
 
@@ -237,7 +237,7 @@ pub async fn run() -> Result<()> {
         let window_proc_before = ProcSnapshot::capture();
         let window_sys_before = SystemSnapshot::capture();
         let window_started = Instant::now();
-        let mut window_hist = hist();
+        let mut window_hist = hist()?;
         let mut window_puts = 0u64;
         let mut window_deletes = 0u64;
         let mut window_txns = 0u64;

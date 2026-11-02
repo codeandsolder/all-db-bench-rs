@@ -177,7 +177,8 @@ fn read_cases(run_dir: &Path) -> Result<Vec<Value>> {
     Ok(rows)
 }
 
-pub(crate) struct AuditArgs<'a> {
+#[derive(Clone, Copy)]
+pub struct AuditArgs<'a> {
     pub(crate) repo: &'a Path,
     pub(crate) run_dir: &'a Path,
     pub(crate) additional_runs: &'a [PathBuf],
@@ -187,6 +188,10 @@ pub(crate) struct AuditArgs<'a> {
     pub(crate) expected_admission_policy: Option<&'a str>,
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
+)]
 fn audit(
     repo: &Path,
     run_dir: &Path,
@@ -311,7 +316,7 @@ fn audit(
     let mut client_groups = Vec::new();
     let mut missing_probe_cases = Vec::new();
     for (ck, template) in &planned_groups {
-        let samples = observed.get(ck).map(Vec::as_slice).unwrap_or(&[]);
+        let samples = observed.get(ck).map_or(&[] as &[Value], Vec::as_slice);
         let mut entry = object(template)?.clone();
         entry.remove("trial");
         let mut observed_trials: Vec<i64> = samples
@@ -364,7 +369,9 @@ fn audit(
     let mut families = Vec::new();
     let mut counts: BTreeMap<String, i64> = BTreeMap::new();
     for (fk, clients) in &planned_families {
-        let observed_groups = by_family_observed.get(fk).map(Vec::as_slice).unwrap_or(&[]);
+        let observed_groups = by_family_observed
+            .get(fk)
+            .map_or(&[] as &[Value], Vec::as_slice);
         let observed_clients: BTreeSet<i64> = observed_groups
             .iter()
             .map(|item| get_i64(item, "clients"))
@@ -440,15 +447,15 @@ fn audit(
                         "suggested_ops".to_owned(),
                         json!(current_ops.max(suggested)),
                     );
-                    entry.insert("suggested_trials".to_owned(), json!(trials));
                 } else {
                     entry.insert("status".to_owned(), json!("sized"));
                     entry.insert("recommendation".to_owned(), json!("keep-stock"));
                     entry.insert("suggested_ops".to_owned(), json!(current_ops));
-                    entry.insert("suggested_trials".to_owned(), json!(trials));
                 }
+                entry.insert("suggested_trials".to_owned(), json!(trials));
             } else {
-                let needed_trials = trials.max((TARGET_SECONDS / fastest_elapsed).ceil() as i64);
+                let needed_trials =
+                    trials.max(f64_to_i64!((TARGET_SECONDS / fastest_elapsed).ceil()));
                 entry.insert("suggested_ops".to_owned(), json!(current_ops));
                 entry.insert("suggested_trials".to_owned(), json!(needed_trials));
                 if fastest_elapsed >= FLOOR_SECONDS {
@@ -473,7 +480,7 @@ fn audit(
                 .get("fastest_observed_median_elapsed_s")
                 .and_then(Value::as_f64)
                 .context("missing fastest elapsed")?;
-            let provisional_trials = trials.max((TARGET_SECONDS / fastest).ceil() as i64);
+            let provisional_trials = trials.max(f64_to_i64!((TARGET_SECONDS / fastest).ceil()));
             entry.insert(
                 "provisional_stateful_trials_needed".to_owned(),
                 json!(provisional_trials),
@@ -598,7 +605,7 @@ fn markdown(report: &Value) -> Result<String> {
     Ok(lines.join("\n") + "\n")
 }
 
-pub(crate) fn run_concurrency_sizing_audit(args: AuditArgs<'_>) -> Result<()> {
+pub fn run_concurrency_sizing_audit(args: AuditArgs<'_>) -> Result<()> {
     let report = audit(
         args.repo,
         args.run_dir,

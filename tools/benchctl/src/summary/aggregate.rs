@@ -14,7 +14,7 @@ fn median(mut values: Vec<f64>) -> Option<f64> {
     values.sort_by(f64::total_cmp);
     let middle = values.len() / 2;
     if values.len().is_multiple_of(2) {
-        Some((values[middle - 1] + values[middle]) / 2.0)
+        Some(f64::midpoint(values[middle - 1], values[middle]))
     } else {
         Some(values[middle])
     }
@@ -33,13 +33,16 @@ fn quantile(mut values: Vec<f64>, q: f64) -> Result<f64> {
     if values.len() == 1 {
         return Ok(values[0]);
     }
-    let position = (values.len() - 1) as f64 * q;
-    let low = position.floor() as usize;
-    let high = position.ceil() as usize;
+    let position = int_as_f64!((values.len() - 1)) * q;
+    let low = numeric_to_usize!(position.floor());
+    let high = numeric_to_usize!(position.ceil());
     if low == high {
         Ok(values[low])
     } else {
-        Ok(values[low] * (high as f64 - position) + values[high] * (position - low as f64))
+        Ok(values[high].mul_add(
+            position - int_as_f64!(low),
+            values[low] * (int_as_f64!(high) - position),
+        ))
     }
 }
 
@@ -90,6 +93,10 @@ fn nonempty_object(row: &Value, key: &str) -> bool {
         .is_some_and(|object| !object.is_empty())
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
+)]
 fn summarize_group(key: &GroupKey, rows: &[&Value]) -> Result<SummaryGroup> {
     let rates = rows
         .iter()
@@ -101,7 +108,8 @@ fn summarize_group(key: &GroupKey, rows: &[&Value]) -> Result<SummaryGroup> {
         .collect::<Result<BTreeSet<_>>>()?
         .into_iter()
         .collect::<Vec<_>>();
-    let completed = |row: &Value| required_u64(row, "ops_completed").unwrap_or(1).max(1) as f64;
+    let completed =
+        |row: &Value| int_as_f64!(required_u64(row, "ops_completed").unwrap_or(1).max(1));
 
     let engine_compression_mapping = rows
         .iter()
@@ -176,14 +184,14 @@ fn summarize_group(key: &GroupKey, rows: &[&Value]) -> Result<SummaryGroup> {
         ),
         db_bytes_median: required_median(
             rows.iter()
-                .map(|row| required_u64(row, "db_bytes").map(|value| value as f64))
+                .map(|row| required_u64(row, "db_bytes").map(|value| int_as_f64!(value)))
                 .collect::<Result<Vec<_>>>()?,
             "db_bytes",
         )?,
         peak_rss_kib_median: filtered_metric(
             rows,
             |row| row.get("peak_rss_kib").is_some(),
-            |row| row.get("peak_rss_kib").and_then(Value::as_u64).unwrap_or(0) as f64,
+            |row| int_as_f64!(row.get("peak_rss_kib").and_then(Value::as_u64).unwrap_or(0)),
         ),
         open_s_median: filtered_metric(
             rows,
@@ -233,22 +241,25 @@ fn summarize_group(key: &GroupKey, rows: &[&Value]) -> Result<SummaryGroup> {
             rows,
             |row| row.get("write_conflict_retries").is_some(),
             |row| {
-                row.get("write_conflict_retries")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0) as f64
+                int_as_f64!(
+                    row.get("write_conflict_retries")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0)
+                )
             },
         ),
         write_conflict_retries_per_k_write_ops_median: optional_metric(
             rows,
             |row| row.get("write_conflict_retries").is_some(),
             |row| {
-                let retries = row
-                    .get("write_conflict_retries")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0) as f64;
+                let retries = int_as_f64!(
+                    row.get("write_conflict_retries")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0)
+                );
                 let writes = row.get("writes").and_then(Value::as_u64).unwrap_or(0);
                 let deletes = row.get("deletes").and_then(Value::as_u64).unwrap_or(0);
-                1000.0 * retries / writes.saturating_add(deletes).max(1) as f64
+                1000.0 * retries / int_as_f64!(writes.saturating_add(deletes).max(1))
             },
         ),
         runqueue_wait_fraction_median: optional_metric(
@@ -294,10 +305,10 @@ fn summarize_group(key: &GroupKey, rows: &[&Value]) -> Result<SummaryGroup> {
                 let fallback =
                     row.get("elapsed_s").and_then(Value::as_f64).unwrap_or(0.0) * 1_000_000.0;
                 micros
-                    / if accounting != 0.0 {
-                        accounting
-                    } else {
+                    / if accounting == 0.0 {
                         fallback
+                    } else {
+                        accounting
                     }
                     .max(1.0)
             },
@@ -314,10 +325,10 @@ fn summarize_group(key: &GroupKey, rows: &[&Value]) -> Result<SummaryGroup> {
                 let fallback =
                     row.get("elapsed_s").and_then(Value::as_f64).unwrap_or(0.0) * 1_000_000.0;
                 micros
-                    / if accounting != 0.0 {
-                        accounting
-                    } else {
+                    / if accounting == 0.0 {
                         fallback
+                    } else {
+                        accounting
                     }
                     .max(1.0)
             },
@@ -326,11 +337,13 @@ fn summarize_group(key: &GroupKey, rows: &[&Value]) -> Result<SummaryGroup> {
             rows,
             |row| row.get("measured_system_delta").is_some(),
             |row| {
-                nested_u64(row, &["measured_system_delta", "pswpin"])
-                    .unwrap_or(0)
-                    .saturating_add(
-                        nested_u64(row, &["measured_system_delta", "pswpout"]).unwrap_or(0),
-                    ) as f64
+                int_as_f64!(
+                    nested_u64(row, &["measured_system_delta", "pswpin"])
+                        .unwrap_or(0)
+                        .saturating_add(
+                            nested_u64(row, &["measured_system_delta", "pswpout"]).unwrap_or(0),
+                        )
+                )
             },
         ),
         settle_cpu_ns_median: filtered_metric(
@@ -380,14 +393,13 @@ pub(super) fn summarize_rows(
         if let Some(expected) = expect_trials
             && group.trials.len() != expected
         {
+            let lane = &group.lane;
+            let engine = &group.engine;
+            let durability = &group.durability;
+            let workload = &group.workload;
+            let observed = group.trials.len();
             problems.push(format!(
-                "{}/{}/{}/{}: {} trials, expected {}",
-                group.lane,
-                group.engine,
-                group.durability,
-                group.workload,
-                group.trials.len(),
-                expected
+                "{lane}/{engine}/{durability}/{workload}: {observed} trials, expected {expected}"
             ));
         }
         summary.push(group);
@@ -412,7 +424,7 @@ pub(super) fn summarize_rows(
         if base.ops_per_s_median > 0.0 {
             let speedup = group.ops_per_s_median / base.ops_per_s_median;
             group.speedup_vs_c1 = Some(speedup);
-            group.parallel_efficiency_vs_c1 = Some(speedup / group.clients.max(1) as f64);
+            group.parallel_efficiency_vs_c1 = Some(speedup / int_as_f64!(group.clients.max(1)));
         }
 
         let (base_read, current_read) = if group.lane == "record-concurrency" {

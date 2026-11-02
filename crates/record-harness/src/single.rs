@@ -15,7 +15,7 @@ use std::{
 
 use crate::{
     Durability, Quantiles, READ_MATERIALIZATION, RecordData, WRITE_MATERIALIZATION, Workload,
-    backend::RecordBackend, dir_size, hist, peak_rss_kib, quantiles, record,
+    backend::RecordBackend, count_as_f64, dir_size, hist, peak_rss_kib, quantiles, record,
 };
 
 #[derive(Clone, Debug, ClapArgs)]
@@ -63,6 +63,10 @@ pub struct SingleArgs {
 }
 
 #[derive(Debug, Serialize)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "verification_ok is an established serialized result field and is clearer at the schema boundary"
+)]
 struct Verification {
     expected_prefix_records: u64,
     checked_prefix_records: u64,
@@ -141,13 +145,17 @@ async fn prefill<B: RecordBackend>(engine: &B, args: &SingleArgs) -> Result<()> 
     Ok(())
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the workload state machine is clearer as one exhaustive workload match"
+)]
 async fn run_workload<B: RecordBackend>(
     engine: &B,
     args: &SingleArgs,
     op_hist: &mut Histogram<u64>,
     tx_hist: &mut Histogram<u64>,
 ) -> Result<u64> {
-    let mut rng = SmallRng::seed_from_u64(args.seed ^ args.trial as u64);
+    let mut rng = SmallRng::seed_from_u64(args.seed ^ u64::from(args.trial));
     let mut done = 0u64;
     let mut next_id = args.records;
 
@@ -235,7 +243,9 @@ async fn run_workload<B: RecordBackend>(
         Workload::WriteBurst => {
             let batch = args.txn_size.max(1);
             while done < args.ops {
-                let n = (args.ops - done).min(batch as u64) as usize;
+                let n = usize::try_from(args.ops - done)
+                    .unwrap_or(usize::MAX)
+                    .min(batch);
                 let mut rows = Vec::with_capacity(n);
                 for _ in 0..n {
                     let id = next_id;
@@ -256,7 +266,7 @@ async fn run_workload<B: RecordBackend>(
                 let t = Instant::now();
                 engine.upsert_batch(&rows).await?;
                 record(tx_hist, t.elapsed());
-                done += n as u64;
+                done = done.saturating_add(u64::try_from(n).unwrap_or(u64::MAX));
                 if let Some(progress_file) = &args.progress_file {
                     fs::write(progress_file, format!("{done}\n"))
                         .context("write record recovery progress marker")?;
@@ -334,6 +344,18 @@ async fn verify_recovery<B: RecordBackend>(
     })
 }
 
+/// Run the shared single-client record benchmark harness.
+///
+/// # Errors
+/// Returns an error for invalid benchmark arguments, backend failures, or result I/O failures.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the top-level harness intentionally keeps benchmark phase ordering visible in one linear orchestration"
+)]
+#[expect(
+    clippy::uninlined_format_args,
+    reason = "the run identifier formats fields directly from the argument structure for schema clarity"
+)]
 pub async fn run<B: RecordBackend>(engine_kind: B::Kind, args: SingleArgs) -> Result<()> {
     if args.records == 0 {
         bail!("--records must be greater than zero");
@@ -406,8 +428,8 @@ pub async fn run<B: RecordBackend>(engine_kind: B::Kind, args: SingleArgs) -> Re
     }
     let warmup_s = warmup_started.elapsed().as_secs_f64();
 
-    let mut op_hist = hist();
-    let mut tx_hist = hist();
+    let mut op_hist = hist()?;
+    let mut tx_hist = hist()?;
     let system_before = SystemSnapshot::capture();
     let process_before = ProcSnapshot::capture();
     let started = Instant::now();
@@ -443,7 +465,7 @@ pub async fn run<B: RecordBackend>(engine_kind: B::Kind, args: SingleArgs) -> Re
         prefill_s,
         warmup_s,
         elapsed_s: elapsed.as_secs_f64(),
-        ops_per_s: completed as f64 / elapsed.as_secs_f64(),
+        ops_per_s: count_as_f64(completed) / elapsed.as_secs_f64(),
         operation_latency: quantiles(&op_hist),
         transaction_latency: quantiles(&tx_hist),
         db_bytes,

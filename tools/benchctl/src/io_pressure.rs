@@ -5,7 +5,8 @@ use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value, json};
 use std::{collections::BTreeMap, fs, path::Path};
 
-pub(crate) struct IoPressureArgs<'a> {
+#[derive(Clone, Copy)]
+pub struct IoPressureArgs<'a> {
     pub(crate) run_dir: &'a Path,
     pub(crate) expect_trials: Option<usize>,
     pub(crate) json_out: Option<&'a Path>,
@@ -96,7 +97,7 @@ fn fio_job_rw(job: &Value) -> Option<&str> {
 }
 
 #[derive(Clone, Copy)]
-pub(crate) struct PressureCalibration {
+pub struct PressureCalibration {
     pub(crate) baseline_iops: f64,
     pub(crate) expected_bs: i64,
     pub(crate) baseline_read_iops: f64,
@@ -105,7 +106,11 @@ pub(crate) struct PressureCalibration {
     pub(crate) write_fraction: f64,
 }
 
-pub(crate) fn load_case(
+#[expect(
+    clippy::too_many_lines,
+    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
+)]
+pub fn load_case(
     case_path: &Path,
     pressure_path: &Path,
     calibration: PressureCalibration,
@@ -270,7 +275,7 @@ pub(crate) fn load_case(
         "db_ops_per_s": as_f64(db.get("ops_per_s"), 0.0),
         "db_read_p99_us": as_f64(db.get("read_latency").and_then(|value| value.get("p99_us")), 0.0),
         "db_write_p99_us": as_f64(db.get("write_txn_latency").and_then(|value| value.get("p99_us")), 0.0),
-        "db_cpu_ns_per_op": as_f64(proc.get("cpu_runtime_ns"), 0.0) / ops_completed as f64,
+        "db_cpu_ns_per_op": as_f64(proc.get("cpu_runtime_ns"), 0.0) / int_as_f64!(ops_completed),
         "db_runqueue_wait_fraction": as_f64(proc.get("runqueue_wait_fraction_of_wall"), 0.0),
         "db_io_psi_full_fraction": as_f64(system.get("psi_io_full_us"), 0.0) * 1000.0 / system_wall_ns,
     }))
@@ -323,17 +328,13 @@ fn enrich_ratios(cases: &mut [Value], problems: &mut Vec<String>) -> Result<()> 
             problems.push(format!(
                 "missing zero-pressure baseline for {} {} {} trial={}",
                 case.get("engine")
-                    .map(py_string)
-                    .unwrap_or_else(|| "None".to_owned()),
+                    .map_or_else(|| "None".to_owned(), py_string),
                 case.get("durability")
-                    .map(py_string)
-                    .unwrap_or_else(|| "None".to_owned()),
+                    .map_or_else(|| "None".to_owned(), py_string),
                 case.get("workload")
-                    .map(py_string)
-                    .unwrap_or_else(|| "None".to_owned()),
+                    .map_or_else(|| "None".to_owned(), py_string),
                 case.get("trial")
-                    .map(py_string)
-                    .unwrap_or_else(|| "None".to_owned()),
+                    .map_or_else(|| "None".to_owned(), py_string),
             ));
             if let Some(object) = case.as_object_mut() {
                 object.insert("db_throughput_ratio_vs_zero".to_owned(), Value::Null);
@@ -385,7 +386,7 @@ fn median(mut values: Vec<f64>) -> Option<f64> {
     values.sort_by(f64::total_cmp);
     let mid = values.len() / 2;
     if values.len().is_multiple_of(2) {
-        Some((values[mid - 1] + values[mid]) / 2.0)
+        Some(f64::midpoint(values[mid - 1], values[mid]))
     } else {
         Some(values[mid])
     }
@@ -504,11 +505,11 @@ fn markdown(groups: &[Value]) -> String {
         lines.push(format!(
             "| {} {} | {} | {} | {}% | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
             group.get("engine").and_then(Value::as_str).unwrap_or(""),
-            group.get("engine_version").map(py_string).unwrap_or_default(),
+            group.get("engine_version").map_or_default(py_string),
             group.get("durability").and_then(Value::as_str).unwrap_or(""),
             group.get("workload").and_then(Value::as_str).unwrap_or(""),
-            group.get("pressure_percent").map(py_string).unwrap_or_default(),
-            group.get("trials").map(py_string).unwrap_or_default(),
+            group.get("pressure_percent").map_or_default(py_string),
+            group.get("trials").map_or_default(py_string),
             fmt(group.get("pressure_delivered_iops_median"), 3),
             fmt(group.get("pressure_delivered_vs_target_median"), 3),
             fmt(group.get("pressure_delivered_read_vs_target_median"), 3),
@@ -566,7 +567,11 @@ fn merge_object(target: &mut Value, source: &Value) {
     }
 }
 
-pub(crate) fn run(args: IoPressureArgs<'_>) -> Result<i32> {
+#[expect(
+    clippy::too_many_lines,
+    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
+)]
+pub fn run(args: IoPressureArgs<'_>) -> Result<i32> {
     let run_dir = args.run_dir;
     let support = read_json(&run_dir.join("support.json"))?;
     let protocol = as_i64(support.get("calibration_protocol_version"), 0);
@@ -768,17 +773,15 @@ pub(crate) fn run(args: IoPressureArgs<'_>) -> Result<i32> {
     let groups = aggregate(&cases)?;
     if let Some(expected) = args.expect_trials {
         for group in &groups {
-            let trials = group.get("trials").and_then(Value::as_u64).unwrap_or(0) as usize;
+            let trials = usize::try_from(group.get("trials").and_then(Value::as_u64).unwrap_or(0))
+                .unwrap_or(usize::MAX);
             if trials != expected {
                 problems.push(format!(
                     "{} {} {} pressure={}%: {trials} trials, expected {expected}",
-                    group.get("engine").map(py_string).unwrap_or_default(),
-                    group.get("durability").map(py_string).unwrap_or_default(),
-                    group.get("workload").map(py_string).unwrap_or_default(),
-                    group
-                        .get("pressure_percent")
-                        .map(py_string)
-                        .unwrap_or_default(),
+                    group.get("engine").map_or_default(py_string),
+                    group.get("durability").map_or_default(py_string),
+                    group.get("workload").map_or_default(py_string),
+                    group.get("pressure_percent").map_or_default(py_string),
                 ));
             }
         }
@@ -814,17 +817,12 @@ pub(crate) fn run(args: IoPressureArgs<'_>) -> Result<i32> {
         fs::write(path, markdown(report_groups))
             .with_context(|| format!("failed to write {}", path.display()))?;
     }
-    Ok(
-        if result
+    Ok(i32::from(
+        !result
             .get("problems")
             .and_then(Value::as_array)
-            .is_some_and(Vec::is_empty)
-        {
-            0
-        } else {
-            1
-        },
-    )
+            .is_some_and(Vec::is_empty),
+    ))
 }
 
 #[cfg(test)]
@@ -890,7 +888,7 @@ mod tests {
                 "baseline_write_iops":300,
                 "read_fraction":0.7,
                 "write_fraction":0.3,
-                "bs_bytes":131072,
+                "bs_bytes":131_072,
                 "jobs":[
                     {
                         "error":0,
@@ -912,7 +910,7 @@ mod tests {
             &pressure,
             PressureCalibration {
                 baseline_iops: 1000.0,
-                expected_bs: 131072,
+                expected_bs: 131_072,
                 baseline_read_iops: 700.0,
                 baseline_write_iops: 300.0,
                 read_fraction: 0.7,
@@ -947,7 +945,7 @@ mod tests {
                 "baseline_write_iops":300,
                 "read_fraction":0.7,
                 "write_fraction":0.3,
-                "bs_bytes":131072,
+                "bs_bytes":131_072,
                 "jobs":[{"error":0,"job options":{"rw":"randrw"}}]
             }))?,
         )?;
@@ -956,7 +954,7 @@ mod tests {
             &pressure,
             PressureCalibration {
                 baseline_iops: 1000.0,
-                expected_bs: 131072,
+                expected_bs: 131_072,
                 baseline_read_iops: 700.0,
                 baseline_write_iops: 300.0,
                 read_fraction: 0.7,

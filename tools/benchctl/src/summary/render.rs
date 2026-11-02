@@ -40,11 +40,11 @@ pub(super) fn markdown(summary: &[SummaryGroup], problems: &[String]) -> String 
         lines.push(String::new());
     }
 
-    let lanes = summary
+    let lane_names = summary
         .iter()
         .map(|group| group.lane.as_str())
         .collect::<BTreeSet<_>>();
-    for lane in lanes {
+    for lane in lane_names {
         lines.extend([format!("# {lane} lane"), String::new()]);
         let durabilities = summary
             .iter()

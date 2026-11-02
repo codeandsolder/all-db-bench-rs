@@ -9,7 +9,7 @@ use std::{
     process::Command,
 };
 
-pub(crate) const CONTINUOUS_ADMISSION: &str = "pre-io+pre/continuous/post-external-v3";
+pub const CONTINUOUS_ADMISSION: &str = "pre-io+pre/continuous/post-external-v3";
 const EXPECTED_CONTINUOUS: [(&str, f64); 4] = [
     ("continuous_noise_sample_ms", 250.0),
     ("continuous_noise_max_cpu_percent", 50.0),
@@ -60,7 +60,7 @@ fn is_lower_hex(value: &str, length: usize) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-pub(crate) fn git_head(repo: &Path) -> Result<String> {
+pub fn git_head(repo: &Path) -> Result<String> {
     let output = Command::new("git")
         .args(["rev-parse", "HEAD"])
         .current_dir(repo)
@@ -105,7 +105,11 @@ fn insert_positive(
     Ok(())
 }
 
-pub(crate) fn support_identity(
+#[expect(
+    clippy::too_many_lines,
+    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
+)]
+pub fn support_identity(
     support: &Value,
     expected_lane: &str,
     repo: Option<&Path>,
@@ -313,7 +317,7 @@ pub(crate) fn support_identity(
     Ok(Value::Object(identity))
 }
 
-pub(crate) fn canonical_identity_sha256(identity: &Value) -> Result<String> {
+pub fn canonical_identity_sha256(identity: &Value) -> Result<String> {
     let encoded = serde_json::to_vec(identity)?;
     let mut digest = Sha256::new();
     digest.update(encoded);
@@ -329,11 +333,7 @@ fn read_json(path: &str) -> Result<Value> {
     serde_json::from_str(&text).context("invalid JSON in -")
 }
 
-pub(crate) fn verify_plan_identity(
-    plan: &Value,
-    identity: &Value,
-    actual_digest: &str,
-) -> Result<()> {
+pub fn verify_plan_identity(plan: &Value, identity: &Value, actual_digest: &str) -> Result<()> {
     if let Some(expected) = plan.get("expected_measurement_identity")
         && !expected.is_null()
         && expected != identity
@@ -346,7 +346,7 @@ pub(crate) fn verify_plan_identity(
     Ok(())
 }
 
-pub(crate) fn run_support_identity(
+pub fn run_support_identity(
     support_path: &str,
     expected_lane: &str,
     repo: Option<&Path>,
@@ -512,7 +512,7 @@ mod tests {
         )?;
         let digest = canonical_identity_sha256(&identity)?;
         verify_plan_identity(
-            &json!({"expected_measurement_identity": identity.clone()}),
+            &json!({"expected_measurement_identity": identity}),
             &identity,
             &digest,
         )?;

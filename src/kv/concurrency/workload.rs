@@ -36,8 +36,8 @@ pub(super) async fn run_client<C: ClientOps>(
 ) -> Result<ClientRun> {
     let salt = mix_u64((client as u64).wrapping_add(0x636c_6965_6e74_0001));
     let mut rng = SmallRng::seed_from_u64(args.seed ^ u64::from(args.trial) ^ salt);
-    let mut read_hist = hist();
-    let mut write_hist = hist();
+    let mut read_hist = hist()?;
+    let mut write_hist = hist()?;
     let mut reads = 0u64;
     let mut writes = 0u64;
     let mut deletes = 0u64;

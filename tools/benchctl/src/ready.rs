@@ -10,9 +10,10 @@ use std::{
     process::Command,
 };
 
-pub(crate) const CONTINUOUS_ADMISSION_POLICY: &str = "pre-io+pre/continuous/post-external-v3";
+pub const CONTINUOUS_ADMISSION_POLICY: &str = "pre-io+pre/continuous/post-external-v3";
 
-pub(crate) struct ReadyArgs<'a> {
+#[derive(Clone, Copy)]
+pub struct ReadyArgs<'a> {
     pub(crate) selected: &'a Path,
     pub(crate) binary_manifest: &'a Path,
     pub(crate) expected_commit: &'a str,
@@ -122,7 +123,7 @@ fn selected_run_ids(manifest: &Value, stock_run_id: &str) -> Result<Vec<String>>
     let expected = (i64::from(selected_stock_groups > 0))
         + value_i64(manifest.get("selected_resize_groups")).unwrap_or(0)
         + value_i64(manifest.get("selected_quality_repair_groups")).unwrap_or(0);
-    if selected.len() as i64 != expected {
+    if i64::try_from(selected.len()).unwrap_or(i64::MAX) != expected {
         bail!(
             "selected source-run provenance mismatch: manifest={expected} runs={}",
             selected.len()
@@ -189,7 +190,11 @@ fn kv_source_identity(repo: &Path, support: &Value) -> Result<Value> {
     Ok(Value::Object(identity))
 }
 
-pub(crate) fn verify_kv(args: &ReadyArgs<'_>) -> Result<Value> {
+#[expect(
+    clippy::too_many_lines,
+    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
+)]
+pub fn verify_kv(args: &ReadyArgs<'_>) -> Result<Value> {
     let manifest_path = args.selected.join("manifest.json");
     let summary_path = args.selected.join("summary.json");
     let results_path = args.selected.join("results.ndjson");
@@ -217,8 +222,9 @@ pub(crate) fn verify_kv(args: &ReadyArgs<'_>) -> Result<Value> {
     if value_i64(summary.get("group_count"))? != 180 || json_truthy(summary.get("problems")) {
         bail!("KV summary is not a clean 180-group corpus");
     }
-    if value_i64(summary.get("row_count"))? != rows.len() as i64
-        || value_i64(manifest.get("selected_rows"))? != rows.len() as i64
+    if value_i64(summary.get("row_count"))? != i64::try_from(rows.len()).unwrap_or(i64::MAX)
+        || value_i64(manifest.get("selected_rows"))?
+            != i64::try_from(rows.len()).unwrap_or(i64::MAX)
     {
         bail!("KV row-count provenance mismatch");
     }
@@ -320,29 +326,29 @@ pub(crate) fn verify_kv(args: &ReadyArgs<'_>) -> Result<Value> {
         bail!("KV runner checkout commit does not match pinned binary commit");
     }
 
-    let mut ready = Map::new();
-    ready.insert("ready_version".to_owned(), json!(7));
-    ready.insert("repo_commit".to_owned(), json!(args.expected_commit));
-    ready.insert("binary_repo_commit".to_owned(), json!(args.expected_commit));
-    ready.insert("runner_repo_commit".to_owned(), json!(runner_repo_commit));
-    ready.insert(
+    let mut readiness = Map::new();
+    readiness.insert("ready_version".to_owned(), json!(7));
+    readiness.insert("repo_commit".to_owned(), json!(args.expected_commit));
+    readiness.insert("binary_repo_commit".to_owned(), json!(args.expected_commit));
+    readiness.insert("runner_repo_commit".to_owned(), json!(runner_repo_commit));
+    readiness.insert(
         "admission_policy".to_owned(),
         json!(args.expected_admission_policy),
     );
-    ready.insert("group_count".to_owned(), json!(180));
-    ready.insert("row_count".to_owned(), json!(rows.len()));
-    ready.insert("benchmark_binary_sha256".to_owned(), json!(binary_sha));
-    ready.insert(
+    readiness.insert("group_count".to_owned(), json!(180));
+    readiness.insert("row_count".to_owned(), json!(rows.len()));
+    readiness.insert("benchmark_binary_sha256".to_owned(), json!(binary_sha));
+    readiness.insert(
         "source_support_sha256".to_owned(),
         Value::Object(support_hashes),
     );
-    ready.insert("results_sha256".to_owned(), json!(sha256(&results_path)?));
-    ready.insert(
+    readiness.insert("results_sha256".to_owned(), json!(sha256(&results_path)?));
+    readiness.insert(
         "selection_manifest_sha256".to_owned(),
         json!(sha256(&manifest_path)?),
     );
-    ready.insert("summary_sha256".to_owned(), json!(sha256(&summary_path)?));
-    ready.insert(
+    readiness.insert("summary_sha256".to_owned(), json!(sha256(&summary_path)?));
+    readiness.insert(
         "binary_manifest_sha256".to_owned(),
         json!(sha256(args.binary_manifest)?),
     );
@@ -350,9 +356,9 @@ pub(crate) fn verify_kv(args: &ReadyArgs<'_>) -> Result<Value> {
         .as_object()
         .context("KV identity is not an object")?
     {
-        ready.insert(key.clone(), value.clone());
+        readiness.insert(key.clone(), value.clone());
     }
-    Ok(Value::Object(ready))
+    Ok(Value::Object(readiness))
 }
 
 struct RecordSupports {
@@ -449,7 +455,11 @@ fn load_record_supports(
     })
 }
 
-pub(crate) fn verify_record(args: &ReadyArgs<'_>) -> Result<Value> {
+#[expect(
+    clippy::too_many_lines,
+    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
+)]
+pub fn verify_record(args: &ReadyArgs<'_>) -> Result<Value> {
     let runner_repo_commit = checked_runner_commit(args.repo)?;
     let manifest_path = args.selected.join("manifest.json");
     let summary_path = args.selected.join("summary.json");
@@ -479,8 +489,9 @@ pub(crate) fn verify_record(args: &ReadyArgs<'_>) -> Result<Value> {
     if value_i64(summary.get("group_count"))? != 40 || json_truthy(summary.get("problems")) {
         bail!("record summary is not a clean 40-group corpus");
     }
-    if value_i64(summary.get("row_count"))? != rows.len() as i64
-        || value_i64(manifest.get("selected_rows"))? != rows.len() as i64
+    if value_i64(summary.get("row_count"))? != i64::try_from(rows.len()).unwrap_or(i64::MAX)
+        || value_i64(manifest.get("selected_rows"))?
+            != i64::try_from(rows.len()).unwrap_or(i64::MAX)
     {
         bail!("record row-count provenance mismatch");
     }
@@ -530,8 +541,8 @@ pub(crate) fn verify_record(args: &ReadyArgs<'_>) -> Result<Value> {
         }
     }
 
-    let mut ready = Map::new();
-    ready.insert(
+    let mut readiness = Map::new();
+    readiness.insert(
         "ready_version".to_owned(),
         json!(if supports.continuous_identity.is_some() {
             5
@@ -539,59 +550,59 @@ pub(crate) fn verify_record(args: &ReadyArgs<'_>) -> Result<Value> {
             4
         }),
     );
-    ready.insert("repo_commit".to_owned(), json!(args.expected_commit));
-    ready.insert("binary_repo_commit".to_owned(), json!(args.expected_commit));
-    ready.insert("runner_repo_commit".to_owned(), json!(runner_repo_commit));
-    ready.insert(
+    readiness.insert("repo_commit".to_owned(), json!(args.expected_commit));
+    readiness.insert("binary_repo_commit".to_owned(), json!(args.expected_commit));
+    readiness.insert("runner_repo_commit".to_owned(), json!(runner_repo_commit));
+    readiness.insert(
         "admission_policy".to_owned(),
         json!(args.expected_admission_policy),
     );
-    ready.insert(
+    readiness.insert(
         "source_support_sha256".to_owned(),
         Value::Object(supports.hashes),
     );
-    ready.insert(
+    readiness.insert(
         "selected_noise_guard_sha256".to_owned(),
         json!(supports.selected_noise_guard_sha256),
     );
-    ready.insert("group_count".to_owned(), json!(40));
-    ready.insert("row_count".to_owned(), json!(rows.len()));
-    ready.insert("read_materialization".to_owned(), json!("full-record-v1"));
-    ready.insert("write_materialization".to_owned(), json!("no-return-v1"));
-    ready.insert("results_sha256".to_owned(), json!(sha256(&results_path)?));
-    ready.insert(
+    readiness.insert("group_count".to_owned(), json!(40));
+    readiness.insert("row_count".to_owned(), json!(rows.len()));
+    readiness.insert("read_materialization".to_owned(), json!("full-record-v1"));
+    readiness.insert("write_materialization".to_owned(), json!("no-return-v1"));
+    readiness.insert("results_sha256".to_owned(), json!(sha256(&results_path)?));
+    readiness.insert(
         "selection_manifest_sha256".to_owned(),
         json!(sha256(&manifest_path)?),
     );
-    ready.insert("summary_sha256".to_owned(), json!(sha256(&summary_path)?));
-    ready.insert(
+    readiness.insert("summary_sha256".to_owned(), json!(sha256(&summary_path)?));
+    readiness.insert(
         "binary_manifest_sha256".to_owned(),
         json!(sha256(args.binary_manifest)?),
     );
     if let Some(identity) = supports.continuous_identity {
-        ready.insert(
+        readiness.insert(
             "selected_continuous_noise_guard_sha256".to_owned(),
             identity.get("guard_sha256").cloned().unwrap_or(Value::Null),
         );
-        ready.insert(
+        readiness.insert(
             "continuous_noise_sample_ms".to_owned(),
             identity.get("sample_ms").cloned().unwrap_or(Value::Null),
         );
-        ready.insert(
+        readiness.insert(
             "continuous_noise_max_cpu_percent".to_owned(),
             identity
                 .get("max_cpu_percent")
                 .cloned()
                 .unwrap_or(Value::Null),
         );
-        ready.insert(
+        readiness.insert(
             "continuous_noise_max_io_average_mib_s".to_owned(),
             identity
                 .get("max_io_average_mib_s")
                 .cloned()
                 .unwrap_or(Value::Null),
         );
-        ready.insert(
+        readiness.insert(
             "continuous_noise_max_io_rate_mib_s".to_owned(),
             identity
                 .get("max_io_rate_mib_s")
@@ -599,15 +610,15 @@ pub(crate) fn verify_record(args: &ReadyArgs<'_>) -> Result<Value> {
                 .unwrap_or(Value::Null),
         );
     }
-    Ok(Value::Object(ready))
+    Ok(Value::Object(readiness))
 }
 
-pub(crate) fn run_kv(args: ReadyArgs<'_>) -> Result<()> {
+pub fn run_kv(args: ReadyArgs<'_>) -> Result<()> {
     let ready = verify_kv(&args)?;
     write_ready(args.out, &ready)
 }
 
-pub(crate) fn run_record(args: ReadyArgs<'_>) -> Result<()> {
+pub fn run_record(args: ReadyArgs<'_>) -> Result<()> {
     let ready = verify_record(&args)?;
     write_ready(args.out, &ready)
 }

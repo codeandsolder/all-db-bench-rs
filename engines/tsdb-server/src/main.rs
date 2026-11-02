@@ -748,12 +748,10 @@ mod tests {
     }
 
     #[test]
-    fn remote_write_chunk_preserves_global_sample_indices() {
-        let compressed = remote_write_body(2, 3, 5, 8, 1_000, 10).expect("encode chunk");
-        let protobuf = SnappyDecoder::new()
-            .decompress_vec(&compressed)
-            .expect("decompress chunk");
-        let request = WriteRequest::decode(protobuf.as_slice()).expect("decode protobuf");
+    fn remote_write_chunk_preserves_global_sample_indices() -> Result<()> {
+        let compressed = remote_write_body(2, 3, 5, 8, 1_000, 10)?;
+        let protobuf = SnappyDecoder::new().decompress_vec(&compressed)?;
+        let request = WriteRequest::decode(protobuf.as_slice())?;
         assert_eq!(request.timeseries.len(), 1);
         let series = &request.timeseries[0];
         assert_eq!(series.samples.len(), 3);
@@ -761,6 +759,7 @@ mod tests {
         assert_eq!(series.samples[1].timestamp, 1_060);
         assert_eq!(series.samples[2].timestamp, 1_070);
         assert!((series.samples[0].value - 5.002).abs() < f64::EPSILON);
+        Ok(())
     }
 
     #[test]

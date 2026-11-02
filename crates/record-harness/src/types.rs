@@ -35,7 +35,7 @@ pub struct ReadDigest {
 
 impl ReadDigest {
     #[must_use]
-    pub fn new(bucket: u32, payload_len: usize) -> Self {
+    pub const fn new(bucket: u32, payload_len: usize) -> Self {
         Self {
             bucket,
             payload_len,

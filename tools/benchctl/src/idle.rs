@@ -52,7 +52,8 @@ impl Lane {
     }
 }
 
-pub(crate) struct IdleArgs<'a> {
+#[derive(Clone, Copy)]
+pub struct IdleArgs<'a> {
     pub(crate) lane: &'a str,
     pub(crate) repo: &'a Path,
     pub(crate) plan: &'a Path,
@@ -66,7 +67,7 @@ pub(crate) struct IdleArgs<'a> {
     pub(crate) busy_sleep_s: f64,
 }
 
-pub(crate) fn verify_binary(path: &Path, expected_sha256: &str) -> Result<()> {
+pub fn verify_binary(path: &Path, expected_sha256: &str) -> Result<()> {
     let metadata = fs::metadata(path)
         .with_context(|| format!("pinned binary is not accessible: {}", path.display()))?;
     if !metadata.is_file() || metadata.permissions().mode() & 0o111 == 0 {
@@ -79,7 +80,7 @@ pub(crate) fn verify_binary(path: &Path, expected_sha256: &str) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn acquire_lock(path: &Path) -> Result<Option<File>> {
+pub fn acquire_lock(path: &Path) -> Result<Option<File>> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create lock directory {}", parent.display()))?;
@@ -133,7 +134,7 @@ fn status_tmp_path(path: &Path) -> Result<PathBuf> {
     Ok(path.with_file_name(format!("{name}.tmp")))
 }
 
-pub(crate) fn write_status(path: &Path, mut fields: Map<String, Value>) -> Result<bool> {
+pub fn write_status(path: &Path, mut fields: Map<String, Value>) -> Result<bool> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create status directory {}", parent.display()))?;
@@ -195,7 +196,7 @@ fn status_failure(
     Ok(())
 }
 
-pub(crate) fn minimum_free_bytes(raw: &str) -> Result<u64> {
+pub fn minimum_free_bytes(raw: &str) -> Result<u64> {
     let gib = raw
         .parse::<f64>()
         .with_context(|| format!("invalid PERFORMANCE_MIN_FREE_GIB={raw:?}"))?;
@@ -203,13 +204,13 @@ pub(crate) fn minimum_free_bytes(raw: &str) -> Result<u64> {
         bail!("PERFORMANCE_MIN_FREE_GIB must be non-negative");
     }
     let bytes = gib * 1024_f64.powi(3);
-    if bytes > u64::MAX as f64 {
+    if bytes > int_as_f64!(u64::MAX) {
         bail!("PERFORMANCE_MIN_FREE_GIB is too large");
     }
-    Ok(bytes as u64)
+    Ok(f64_to_u64!(bytes))
 }
 
-pub(crate) fn available_bytes(path: &Path) -> Result<u64> {
+pub fn available_bytes(path: &Path) -> Result<u64> {
     let output = Command::new("df")
         .args(["-B1", "--output=avail", "--"])
         .arg(path)
@@ -233,10 +234,8 @@ pub(crate) fn available_bytes(path: &Path) -> Result<u64> {
         .with_context(|| format!("invalid df available-byte value {raw:?}"))
 }
 
-pub(crate) fn storage_preflight(repo: &Path) -> i32 {
-    let root = env::var_os("DBBENCH_STORAGE_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| repo.to_owned());
+pub fn storage_preflight(repo: &Path) -> i32 {
+    let root = env::var_os("DBBENCH_STORAGE_ROOT").map_or_else(|| repo.to_owned(), PathBuf::from);
     let raw_min =
         env::var("PERFORMANCE_MIN_FREE_GIB").unwrap_or_else(|_| DEFAULT_MIN_FREE_GIB.to_string());
     let Ok(required) = minimum_free_bytes(&raw_min) else {
@@ -248,7 +247,7 @@ pub(crate) fn storage_preflight(repo: &Path) -> i32 {
     if free < required { 75 } else { 0 }
 }
 
-pub(crate) fn parse_io_full_avg10(raw: &str) -> Result<f64> {
+pub fn parse_io_full_avg10(raw: &str) -> Result<f64> {
     for line in raw.lines() {
         let mut fields = line.split_whitespace();
         if fields.next() != Some("full") {
@@ -265,7 +264,7 @@ pub(crate) fn parse_io_full_avg10(raw: &str) -> Result<f64> {
     bail!("/proc/pressure/io did not contain full avg10")
 }
 
-pub(crate) fn io_pressure_preflight(max_io_full_avg10: f64, pressure_path: &Path) -> i32 {
+pub fn io_pressure_preflight(max_io_full_avg10: f64, pressure_path: &Path) -> i32 {
     if env::var("DBBENCH_STORAGE_PROFILE_MODE").as_deref() == Ok("bounded") {
         return 0;
     }
@@ -418,7 +417,11 @@ fn run_runner(lane: Lane, args: &IdleArgs<'_>, version: Option<i64>) -> Result<i
     Ok(command_code(status))
 }
 
-pub(crate) fn run(args: IdleArgs<'_>) -> Result<i32> {
+#[expect(
+    clippy::too_many_lines,
+    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
+)]
+pub fn run(args: IdleArgs<'_>) -> Result<i32> {
     let lane = Lane::parse(args.lane)?;
     if !args.busy_sleep_s.is_finite() {
         bail!("--busy-sleep must be finite");
