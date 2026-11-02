@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
 use std::{fs::File, io::Read, path::Path};
 
-pub(crate) fn lower_hex(bytes: &[u8]) -> String {
+pub fn lower_hex(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
 
     let mut encoded = String::with_capacity(bytes.len() * 2);
