@@ -59,7 +59,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 
-redb = "=4.4.0"
+redb = "=4.5.0"
 fjall = "=3.1.13"
 surrealkv = { version = "=1.2.0", default-features = false }
 heed = "=0.23.1"
