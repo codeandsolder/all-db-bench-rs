@@ -61,7 +61,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 
 redb = "=4.4.0"
 fjall = "=3.1.13"
-surrealkv = { version = "=1.2.0", default-features = false }
+surrealkv = { version = "=1.3.0", default-features = false }
 heed = "=0.23.1"
 sled = "=1.0.0-alpha.124"
 lkv = "=0.2.1"
