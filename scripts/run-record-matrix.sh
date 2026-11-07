@@ -40,7 +40,7 @@ CONTINUOUS_NOISE_SAMPLE_MS=${CONTINUOUS_NOISE_SAMPLE_MS:-250}
 CONTINUOUS_NOISE_MAX_CPU_PERCENT=${CONTINUOUS_NOISE_MAX_CPU_PERCENT:-50}
 CONTINUOUS_NOISE_MAX_IO_AVERAGE_MIB_S=${CONTINUOUS_NOISE_MAX_IO_AVERAGE_MIB_S:-2}
 CONTINUOUS_NOISE_MAX_IO_RATE_MIB_S=${CONTINUOUS_NOISE_MAX_IO_RATE_MIB_S:-8}
-HOST_NAME=$(hostname); MACHINE_ID_SHA256=$(sha256sum /etc/machine-id | awk '{print $1}'); FILESYSTEM=$(findmnt -n -o FSTYPE --target "$DATA_DIR"); SOURCE=$(findmnt -n -o SOURCE --target "$DATA_DIR")
+HOST_NAME=$(hostname); MACHINE_ID_SHA256=$("$ROOT/scripts/host-machine-id-sha256.sh"); FILESYSTEM=$(findmnt -n -o FSTYPE --target "$DATA_DIR"); SOURCE=$(findmnt -n -o SOURCE --target "$DATA_DIR")
 READ_MATERIALIZATION=full-record-v1
 WRITE_MATERIALIZATION=no-return-v1
 ENGINES=(surrealdb turso sqlite surrealdb-rocksdb); WORKLOADS=(point-read indexed-read read-heavy tiny-txn write-burst); DURABILITIES=(relaxed sync)
