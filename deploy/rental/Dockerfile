@@ -7,7 +7,7 @@ RUN pacman -Syu --noconfirm --needed \
     useradd --create-home --uid 10001 bench && \
     mkdir -p /work/data /work/results /opt/all-db-bench && \
     chown -R bench:bench /work
-COPY --chown=bench:bench source/ /opt/all-db-bench/
+COPY --chown=bench:bench . /opt/all-db-bench/
 RUN ln -s /work/results /opt/all-db-bench/results
 USER bench
 WORKDIR /opt/all-db-bench
