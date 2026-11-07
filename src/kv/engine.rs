@@ -850,10 +850,9 @@ mod shutdown_tests {
     }
 
     #[tokio::test]
-    async fn surrealkv_explicit_close_releases_lock_before_handle_drop() {
+    async fn surrealkv_explicit_close_releases_lock_before_handle_drop() -> anyhow::Result<()> {
         let id = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .expect("clock before Unix epoch")
+            .duration_since(SystemTime::UNIX_EPOCH)?
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
             "dbbench-surrealkv-close-{}-{id}",
@@ -861,18 +860,15 @@ mod shutdown_tests {
         ));
         let _cleanup = RemoveOnDrop(path.clone());
 
-        let mut first = Engine::open(EngineKind::Surrealkv, Durability::Sync, &path)
-            .await
-            .expect("open first SurrealKV tree");
-        first.close().await.expect("close first tree");
+        let mut first = Engine::open(EngineKind::Surrealkv, Durability::Sync, &path).await?;
+        first.close().await?;
         // A purely async Drop cannot promise that the file lock has been
         // released before the next operation; explicit close must.
-        let mut reopened = Engine::open(EngineKind::Surrealkv, Durability::Sync, &path)
-            .await
-            .expect("reopen without dropping the closed handle");
-        reopened.close().await.expect("close reopened tree");
+        let mut reopened = Engine::open(EngineKind::Surrealkv, Durability::Sync, &path).await?;
+        reopened.close().await?;
         drop(reopened);
         drop(first);
-        fs::remove_dir_all(&path).expect("clean closed SurrealKV directory");
+        fs::remove_dir_all(&path)?;
+        Ok(())
     }
 }
