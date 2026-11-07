@@ -3,7 +3,7 @@
 FROM archlinux:base
 RUN pacman -Syu --noconfirm --needed \
     bash ca-certificates coreutils curl file findutils fio gawk gcc-libs git \
-    grep jq procps-ng tar util-linux zstd && \
+    grep inetutils jq procps-ng shadow tar util-linux zstd && \
     useradd --create-home --uid 10001 bench && \
     mkdir -p /work/data /work/results /opt/all-db-bench && \
     chown -R bench:bench /work
