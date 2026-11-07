@@ -80,7 +80,7 @@ COMMON_SHA=$(sha256sum "$ROOT/scripts/performance-runner-common.sh" | awk '{prin
 NOISE_SHA=$(sha256sum "$ROOT/tools/benchctl/src/noise.rs" | awk '{print $1}')
 CONTINUOUS_NOISE_SHA=$(sha256sum "$ROOT/tools/benchctl/src/noise.rs" | awk '{print $1}')
 CONTINUOUS_NOISE_COMMON_SHA=$(sha256sum "$ROOT/scripts/continuous-noise-runner-common.sh" | awk '{print $1}')
-HOST_NAME=$(hostname); MACHINE_ID_SHA256=$(sha256sum /etc/machine-id | awk '{print $1}')
+HOST_NAME=$(hostname); MACHINE_ID_SHA256=$("$ROOT/scripts/host-machine-id-sha256.sh")
 FILESYSTEM=$(findmnt -n -o FSTYPE --target "$DATA_DIR"); SOURCE=$(findmnt -n -o SOURCE --target "$DATA_DIR")
 
 ENGINES=(surrealdb surrealdb-rocksdb turso sqlite)
@@ -123,7 +123,7 @@ if [[ "${MATRIX_PLAN_ONLY:-0}" == 1 ]]; then
   echo "plan-only run=$RUN_ID total=$TOTAL jobs=$RUN_DIR/jobs.txt support=$RUN_DIR/support.json"
   exit 0
 fi
-"$ROOT/scripts/ensure-sqlite-3.54.0.sh" || exit $?
+[[ "${DBBENCH_PINNED_SQLITE_PREBUILT:-0}" == 1 ]] || "$ROOT/scripts/ensure-sqlite-3.54.0.sh" || exit $?
 
 INDEX=0
 for job in "${ORDERED[@]}"; do
