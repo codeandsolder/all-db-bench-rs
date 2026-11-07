@@ -145,8 +145,15 @@ upload_results() {
   local temp archive
   temp=$(mktemp -d "$WORK_ROOT/.rental-upload.XXXXXXXX")
   archive="$temp/results.tar.zst"
-  # Only measurement metadata/results, never the large transient DB files.
-  tar -C "$WORK_ROOT" --exclude='*.new.*' -cf - results | zstd -q -T1 -3 -o "$archive" || { rm -rf -- "$temp"; return 1; }
+  # Export only this rental's results. A reused persistent volume can contain
+  # unrelated historical runs and must never leak them into this object.
+  local -a paths=("results/rental/$RUN_BASE")
+  local lane path
+  for lane in "${SELECTED[@]}"; do
+    path="results/runs/$RUN_BASE-$lane-$PROFILE"
+    [[ ! -d "$WORK_ROOT/$path" ]] || paths+=("$path")
+  done
+  tar -C "$WORK_ROOT" --exclude='*.new.*' -cf - "${paths[@]}" | zstd -q -T1 -3 -o "$archive" || { rm -rf -- "$temp"; return 1; }
   local rc=0
   curl --fail --silent --show-error --retry 3 --retry-all-errors --connect-timeout 15 --max-time 900 \
     --request PUT --upload-file "$archive" "$RENTAL_RESULTS_PUT_URL" --output /dev/null || rc=$?

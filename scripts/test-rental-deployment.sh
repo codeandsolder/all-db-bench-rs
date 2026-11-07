@@ -74,4 +74,29 @@ wait "$runner_pid" || rc=$?
 test "$rc" -eq 143
 jq -e '.phase=="interrupted" and .exit_code==143' \
   "$work/results/rental/cancelled-fixture/status.json" >/dev/null
+# Result upload must export only this run, not arbitrary data from a reused volume.
+mkdir -p "$scratch/mockbin" "$work/results/runs/unrelated"
+printf 'must-never-upload\n' > "$work/results/runs/unrelated/private.txt"
+cat > "$scratch/mockbin/curl" <<'MOCK_CURL'
+#!/usr/bin/env bash
+set -euo pipefail
+source_file=''
+while (($#)); do
+  case "$1" in
+    --upload-file) source_file=$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[[ -s "$source_file" ]]
+cp -- "$source_file" "$RENTAL_CAPTURE_FILE"
+MOCK_CURL
+chmod +x "$scratch/mockbin/curl"
+PATH="$scratch/mockbin:$PATH" RENTAL_CAPTURE_FILE="$scratch/upload.tar.zst" \
+  RENTAL_WORK_ROOT="$work" RENTAL_RESULTS_PUT_URL=https://example.invalid/fixture \
+  "$runner" --profile smoke --lanes kv --run-id upload-fixture > "$scratch/upload.log"
+zstd -dc "$scratch/upload.tar.zst" | tar -tf - > "$scratch/upload.paths"
+tar_paths=$(cat "$scratch/upload.paths")
+[[ "$tar_paths" == *"results/rental/upload-fixture/status.json"* ]]
+[[ "$tar_paths" == *"results/runs/upload-fixture-kv-smoke/results.ndjson"* ]]
+[[ "$tar_paths" != *"unrelated"* ]]
 echo "rental deployment contract tests passed"
