@@ -24,8 +24,9 @@ jq -n --arg sha "$sha" --arg hash "$binsha" \
 runner="$testroot/deploy/rental/run.sh"
 env RENTAL_WORK_ROOT="$work" "$runner" --preflight-only --profile smoke --lanes kv,record
 env RENTAL_WORK_ROOT="$work" "$runner" --dry-run --profile quick --lanes kv,record --run-id fixture-one > "$scratch/dry.log"
-rg -q 'would run RUN_ID=fixture-one-kv-quick' "$scratch/dry.log"
-rg -q 'would run RUN_ID=fixture-one-record-quick' "$scratch/dry.log"
+dry_text=$(cat "$scratch/dry.log")
+[[ "$dry_text" == *"would run RUN_ID=fixture-one-kv-quick"* ]]
+[[ "$dry_text" == *"would run RUN_ID=fixture-one-record-quick"* ]]
 jq -e '.phase=="complete" and .source_commit != null' "$work/results/rental/fixture-one/status.json" >/dev/null
 if env RENTAL_WORK_ROOT="$work" "$runner" --preflight-only --lanes bogus >/dev/null 2>&1; then
   echo "invalid lane unexpectedly accepted" >&2; exit 1
