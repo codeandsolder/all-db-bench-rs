@@ -182,7 +182,7 @@ Fresh baseline publication is orchestrated by `scripts/benchctl.sh baseline-gene
 
 ## Vast / SaladCloud rental containers
 
-A portable, sccache-built x86-64-v2 runtime bundle and rootless OCI
+A portable, sccache-built x86-64-v2+aes runtime bundle and rootless OCI
 entrypoint are provided under `deploy/rental/`. They execute the
 existing KV, record and optional external-TSDB baseline matrices with
 a pinned executable manifest, instance identity, deadline, and results

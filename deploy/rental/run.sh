@@ -61,6 +61,12 @@ for tool in jq sha256sum findmnt df timeout tar zstd date hostname awk; do
   command -v "$tool" >/dev/null 2>&1 || die "missing required runtime tool: $tool"
 done
 [[ -r "$MANIFEST" ]] || die "missing rental manifest: $MANIFEST"
+ISA=$(jq -er '.compile_target' "$MANIFEST") || die "missing compiled ISA target"
+[[ "$ISA" == "x86-64-v2+aes" ]] || die "unsupported compiled ISA target: $ISA"
+cpu_flags=$(awk '/^flags[[:space:]]*:/ {sub(/^[^:]*:[[:space:]]*/, "");print;exit}' /proc/cpuinfo)
+for feature in aes pni ssse3 sse4_1 sse4_2 popcnt cx16 lahf_lm; do
+  [[ " $cpu_flags " == *" $feature "* ]] || die "rental CPU lacks required x86-64-v2+aes feature: $feature"
+done
 SOURCE_SHA=$(jq -er '.source_commit | select(type=="string" and test("^[0-9a-f]{40}$"))' "$MANIFEST") || die "invalid manifest source commit"
 CURRENT_SHA=$(git -C "$ROOT" rev-parse HEAD 2>/dev/null) || die "source bundle must preserve its pinned git checkout"
 [[ "$SOURCE_SHA" == "$CURRENT_SHA" ]] || die "source commit differs from manifest: $CURRENT_SHA != $SOURCE_SHA"

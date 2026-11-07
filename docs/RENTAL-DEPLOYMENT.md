@@ -28,7 +28,7 @@ No build path silently bypasses sccache.
     docker build -f deploy/rental/Dockerfile -t all-db-bench:COMMIT target/rental-bundle
 
 Use `--with-tsdb` for both build and packaging when TSDB is included.
-The build uses an explicitly portable `x86-64-v2` target for Rust,
+The build uses a common `x86-64-v2+aes` target (AES-NI is required by gxhash) for Rust,
 C and C++; it does not ship Acer's `target-cpu=native` binaries to
 unrelated machines. It strips debug symbols but does not change benchmark
 logic. Never merge results built for different ISA policies into the same

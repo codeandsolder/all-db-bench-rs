@@ -51,7 +51,7 @@ if ((WITH_TSDB)); then
   cp -a -- "$src/." "$temp/source/.deps/tsdb/"
 fi
 glibc=$(ldd --version | sed -n '1p')
-jq -n --arg sha "$source_sha" --arg glibc "$glibc" --arg target "x86-64-v2" \
+jq -n --arg sha "$source_sha" --arg glibc "$glibc" --arg target "x86-64-v2+aes" \
   --argjson binaries "$hashes" '{format_version:1,source_commit:$sha,compile_target:$target,build_libc:$glibc,binaries:$binaries}' \
   > "$temp/source/.rental/manifest.json"
 git -C "$temp/source" status --short --untracked-files=no | while IFS= read -r line; do
