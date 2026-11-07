@@ -34,6 +34,8 @@ unrelated machines. It strips debug symbols but does not change benchmark
 logic. Never merge results built for different ISA policies into the same
 comparison without explicitly recording the build variant.
 
+The record binary is linked against verified SQLite 3.54.0 at build time; the rental manifest records its static linkage and the record runner does not attempt to rebuild SQLite inside the image. This is only enabled after validating the image's pinned manifest.
+
 The package contains a pinned, clean Git checkout, release executables
 and a SHA-256 manifest. The image starts no Cargo compilation, runs
 as an unprivileged user and stores DB data in `/work/data/runs/`,

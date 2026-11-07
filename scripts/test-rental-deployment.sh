@@ -19,7 +19,7 @@ cp "$testroot/.rental/bin/all-db-benchctl" "$testroot/.rental/bin/surrealdb-rock
 chmod +x "$testroot/.rental/bin/"*
 binsha=$(sha256sum "$testroot/.rental/bin/kvbench" | awk '{print $1}')
 jq -n --arg sha "$sha" --arg hash "$binsha" \
-  '{format_version:1,compile_target:"x86-64-v2+aes",source_commit:$sha,binaries:{"all-db-benchctl":$hash,"kvbench":$hash,"recordbench":$hash,"surrealdb-rocksdb-recordbench":$hash}}' \
+  '{format_version:1,compile_target:"x86-64-v2+aes",record_sqlite_version:"3.54.0",record_sqlite_linkage:"static",source_commit:$sha,binaries:{"all-db-benchctl":$hash,"kvbench":$hash,"recordbench":$hash,"surrealdb-rocksdb-recordbench":$hash}}' \
   > "$testroot/.rental/manifest.json"
 runner="$testroot/deploy/rental/run.sh"
 env RENTAL_WORK_ROOT="$work" "$runner" --preflight-only --profile smoke --lanes kv,record
@@ -30,6 +30,13 @@ if env RENTAL_WORK_ROOT="$work" "$runner" --preflight-only --profile smoke --lan
 fi
 jq '.compile_target="x86-64-v2+aes"' "$testroot/.rental/manifest.json" > "$scratch/valid-isa.json"
 mv "$scratch/valid-isa.json" "$testroot/.rental/manifest.json"
+jq 'del(.record_sqlite_version)' "$testroot/.rental/manifest.json" > "$scratch/invalid-sqlite.json"
+mv "$scratch/invalid-sqlite.json" "$testroot/.rental/manifest.json"
+if env RENTAL_WORK_ROOT="$work" "$runner" --preflight-only --profile smoke --lanes record >/dev/null 2>&1; then
+  echo "missing pinned SQLite unexpectedly accepted" >&2; exit 1
+fi
+jq '.record_sqlite_version="3.54.0"' "$testroot/.rental/manifest.json" > "$scratch/valid-sqlite.json"
+mv "$scratch/valid-sqlite.json" "$testroot/.rental/manifest.json"
 env RENTAL_WORK_ROOT="$work" "$runner" --dry-run --profile quick --lanes kv,record --run-id fixture-one > "$scratch/dry.log"
 dry_text=$(cat "$scratch/dry.log")
 [[ "$dry_text" == *"would run RUN_ID=fixture-one-kv-quick"* ]]

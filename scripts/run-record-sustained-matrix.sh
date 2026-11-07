@@ -123,7 +123,7 @@ if [[ "${MATRIX_PLAN_ONLY:-0}" == 1 ]]; then
   echo "plan-only run=$RUN_ID total=$TOTAL jobs=$RUN_DIR/jobs.txt support=$RUN_DIR/support.json"
   exit 0
 fi
-"$ROOT/scripts/ensure-sqlite-3.54.0.sh" || exit $?
+[[ "${DBBENCH_PINNED_SQLITE_PREBUILT:-0}" == 1 ]] || "$ROOT/scripts/ensure-sqlite-3.54.0.sh" || exit $?
 
 INDEX=0
 for job in "${ORDERED[@]}"; do

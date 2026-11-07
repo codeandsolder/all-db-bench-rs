@@ -68,6 +68,9 @@ for feature in aes pni ssse3 sse4_1 sse4_2 popcnt cx16 lahf_lm; do
   [[ " $cpu_flags " == *" $feature "* ]] || die "rental CPU lacks required x86-64-v2+aes feature: $feature"
 done
 SOURCE_SHA=$(jq -er '.source_commit | select(type=="string" and test("^[0-9a-f]{40}$"))' "$MANIFEST") || die "invalid manifest source commit"
+if [[ -n "${SEEN[record]:-}" ]]; then
+  jq -e '.record_sqlite_version == "3.54.0" and .record_sqlite_linkage == "static"' "$MANIFEST" >/dev/null || die "record image lacks pinned static SQLite 3.54.0 identity"
+fi
 CURRENT_SHA=$(git -C "$ROOT" rev-parse HEAD 2>/dev/null) || die "source bundle must preserve its pinned git checkout"
 [[ "$SOURCE_SHA" == "$CURRENT_SHA" ]] || die "source commit differs from manifest: $CURRENT_SHA != $SOURCE_SHA"
 [[ -z "$(git -C "$ROOT" status --porcelain --untracked-files=no)" ]] || die "tracked source tree is modified"
@@ -90,6 +93,9 @@ for name in "${required[@]}"; do
     if [[ "$linkage" == *"not found"* || "$linkage" == *"version \`GLIBC_"* ]]; then
       echo "$linkage" >&2
       die "$name cannot load with the rental image libraries"
+    fi
+    if [[ "$name" == recordbench && "$linkage" == *libsqlite3* ]]; then
+      die "recordbench is dynamically linked to libsqlite3; pinned static linkage required"
     fi
   fi
 done
@@ -208,7 +214,7 @@ for lane in "${SELECTED[@]}"; do
   write_status running "$lane" 0
   case "$lane" in
     kv) export BENCH_BIN="$BIN_DIR/kvbench"; unset ROCKS_BENCH_BIN || true ;;
-    record) export BENCH_BIN="$BIN_DIR/recordbench" ROCKS_BENCH_BIN="$BIN_DIR/surrealdb-rocksdb-recordbench" ;;
+    record) export BENCH_BIN="$BIN_DIR/recordbench" ROCKS_BENCH_BIN="$BIN_DIR/surrealdb-rocksdb-recordbench" DBBENCH_PINNED_SQLITE_PREBUILT=1 ;;
     tsdb) export TSDB_BENCH_BIN="$BIN_DIR/tsdb-server-bench"; unset BENCH_BIN ROCKS_BENCH_BIN || true ;;
   esac
   export RUN_ID="$RUN_BASE-$lane-$PROFILE"

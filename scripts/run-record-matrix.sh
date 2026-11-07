@@ -23,7 +23,7 @@ RUN_DIR="$ROOT/results/runs/$RUN_ID"; DATA_DIR="${DBBENCH_STORAGE_ROOT:-$ROOT}/d
 mkdir -p "$RUN_DIR"/{cases,stderr,noise} "$DATA_DIR"
 free_bytes=$(df -B1 --output=avail "$DATA_DIR" | tail -n1 | tr -d ' '); min_free_bytes=$((MIN_FREE_GIB * 1024 * 1024 * 1024))
 (( free_bytes >= min_free_bytes )) || { echo "refusing record run: free=$free_bytes required=$min_free_bytes" >&2; exit 75; }
-[[ "${MATRIX_PLAN_ONLY:-0}" == 1 ]] || "$ROOT/scripts/ensure-sqlite-3.54.0.sh"
+[[ "${MATRIX_PLAN_ONLY:-0}" == 1 || "${DBBENCH_PINNED_SQLITE_PREBUILT:-0}" == 1 ]] || "$ROOT/scripts/ensure-sqlite-3.54.0.sh"
 [[ -s "$RUN_DIR/host-start.txt" ]] || "$ROOT/scripts/capture-host-metadata.sh" "$RUN_DIR/host-start.txt" "$ROOT"
 TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target}
 if [[ -n "${BENCH_BIN:-}" ]]; then BIN="$BENCH_BIN"; BUILD_PROFILE=external; [[ -x "$BIN" ]] || exit 2

@@ -52,7 +52,7 @@ if ((WITH_TSDB)); then
 fi
 glibc=$(ldd --version | sed -n '1p')
 jq -n --arg sha "$source_sha" --arg glibc "$glibc" --arg target "x86-64-v2+aes" \
-  --argjson binaries "$hashes" '{format_version:1,source_commit:$sha,compile_target:$target,build_libc:$glibc,binaries:$binaries}' \
+  --argjson binaries "$hashes" '{format_version:1,source_commit:$sha,compile_target:$target,build_libc:$glibc,record_sqlite_version:"3.54.0",record_sqlite_linkage:"static",binaries:$binaries}' \
   > "$temp/source/.rental/manifest.json"
 git -C "$temp/source" status --short --untracked-files=no | while IFS= read -r line; do
   [[ -z "$line" ]] || { echo "unexpected source mutation during package: $line" >&2; exit 2; }
