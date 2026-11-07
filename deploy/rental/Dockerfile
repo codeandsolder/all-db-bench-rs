@@ -2,7 +2,7 @@
 # Binaries are prebuilt using Rust 1.99.1 through the mandatory sccache path.
 FROM archlinux:base
 RUN pacman -Syu --noconfirm --needed \
-    bash ca-certificates coreutils curl file findutils fio gawk gcc-libs git \
+    bash ca-certificates coreutils curl diffutils file findutils fio gawk gcc-libs git \
     grep inetutils jq procps-ng shadow tar util-linux zstd && \
     useradd --create-home --uid 10001 bench && \
     mkdir -p /work/data /work/results /opt/all-db-bench && \

@@ -6,7 +6,9 @@ mkdir -p "$(dirname "$OUT")"
 STORAGE_ROOT=${DBBENCH_STORAGE_ROOT:-$ROOT}
 PROFILE_SIDECAR="$(dirname "$OUT")/storage-profile.json"
 PROFILE_SIDECAR_NEW="$PROFILE_SIDECAR.new.$$"
-command -v jq >/dev/null 2>&1 || { echo "required tool not found: jq" >&2; exit 127; }
+for tool in jq cmp; do
+  command -v "$tool" >/dev/null 2>&1 || { echo "required tool not found: $tool" >&2; exit 127; }
+done
 jq -n \
   --arg id "${DBBENCH_STORAGE_PROFILE_ID:-}" \
   --arg mode "${DBBENCH_STORAGE_PROFILE_MODE:-}" \
@@ -43,9 +45,17 @@ fi
   cat /proc/version
   echo
   echo "## toolchain"
-  RUSTC_REAL=$(rustup which rustc --toolchain 1.99.1 2>/dev/null || true)
-  [[ -x "$RUSTC_REAL" ]] && "$RUSTC_REAL" --version --verbose || true
-  "$ROOT/scripts/cargo-local-1.99.sh" --version || true
+  if command -v rustup >/dev/null 2>&1 && command -v cargo >/dev/null 2>&1; then
+    RUSTC_REAL=$(rustup which rustc --toolchain 1.99.1 2>/dev/null || true)
+    [[ -x "$RUSTC_REAL" ]] && "$RUSTC_REAL" --version --verbose || true
+    "$ROOT/scripts/cargo-local-1.99.sh" --version || true
+  else
+    echo "runtime_toolchain=prebuilt-binaries"
+  fi
+  if [[ -r "$ROOT/.rental/manifest.json" ]]; then
+    echo "sealed_manifest_sha256=$(sha256sum "$ROOT/.rental/manifest.json" | awk '{print $1}')"
+    jq -r '"sealed_source_commit=\(.source_commit)\nsealed_compile_target=\(.compile_target)\nsealed_builder_libc=\(.build_libc)\nsealed_sqlite_version=\(.record_sqlite_version // "unknown")"' "$ROOT/.rental/manifest.json"
+  fi
   echo "benchmark_cargo_home=${DB_BENCH_CARGO_HOME:-${CARGO_HOME:-$HOME/.cargo}}"
   echo "storage_profile_id=${DBBENCH_STORAGE_PROFILE_ID:-}"
   echo "storage_profile_mode=${DBBENCH_STORAGE_PROFILE_MODE:-}"

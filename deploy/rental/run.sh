@@ -57,7 +57,7 @@ for lane in "${SELECTED[@]}"; do
   [[ -z "${SEEN[$lane]:-}" ]] || die "duplicate lane: $lane"
   SEEN[$lane]=1
 done
-for tool in jq sha256sum findmnt df timeout tar zstd date hostname awk; do
+for tool in jq cmp sha256sum findmnt df timeout tar zstd date hostname awk; do
   command -v "$tool" >/dev/null 2>&1 || die "missing required runtime tool: $tool"
 done
 [[ -r "$MANIFEST" ]] || die "missing rental manifest: $MANIFEST"
