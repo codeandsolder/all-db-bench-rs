@@ -14,6 +14,12 @@ CARGO_TARGET_DIR="$ROOT/target/rental-release"
 ROCKS_TARGET_DIR="$ROOT/target/rental-rocks"
 export CARGO_TARGET_DIR
 mkdir -p "$CARGO_TARGET_DIR" "$ROCKS_TARGET_DIR"
+# Record comparisons require the verified SQLite implementation, not a
+# distribution-dependent system libsqlite build. Compile it through sccache.
+SQLITE_BUILD_ROOT="$ROOT/target/rental-sqlite-build" \
+  SQLITE_BUILD_CFLAGS="-O2 -g0 -march=x86-64-v2" \
+  CC="$ROOT/scripts/sccache-native-cc.sh" \
+  "$ROOT/scripts/ensure-sqlite-3.54.0.sh"
 "$ROOT/scripts/cargo-local-1.99.sh" build --release --locked --features kv-all --bin kvbench
 "$ROOT/scripts/cargo-local-1.99.sh" build --release --locked --features record --bin recordbench
 "$ROOT/scripts/cargo-local-1.99.sh" build --release --locked \

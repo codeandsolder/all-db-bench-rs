@@ -52,7 +52,7 @@ SRC="$BUILD_ROOT/sqlite-autoconf-${AUTOCONF}"
 
 rm -rf "$PREFIX"
 cd "$SRC"
-./configure --prefix="$PREFIX" --disable-shared --enable-static CFLAGS="-O2 -g0"
+./configure --prefix="$PREFIX" --disable-shared --enable-static CFLAGS="${SQLITE_BUILD_CFLAGS:--O2 -g0}"
 make -j"$JOBS"
 make install
 
