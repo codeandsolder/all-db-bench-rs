@@ -120,19 +120,37 @@ set `ALLOW_BUSY=1` or `ALLOW_EXTERNAL_NOISE=1` to make benchmark
 numbers appear on a noisy rented machine. A container's PID namespace
 may hide host work, so an accepted case is not proof of single tenancy.
 
+## Validated local OCI baseline
+
+On 2026-11-07, the sealed image built on Asus using Rust 1.99.1 and managed
+sccache passed a single-container smoke of all baseline lanes: **180/180
+raw-KV cases, 40/40 record cases and 4/4 external TSDB server cases**.
+The run used the actual engine executables, complete start/end provenance,
+and a real HTTP PUT receiver. Its compressed result archive contained only
+the selected run and reported completed status. The SurrealKV background
+shutdown race revealed by a separate combined run was fixed with explicit
+async close; its 24-case targeted regression and the final complete
+combined smoke passed. These results establish functional container
+execution, not reproducible performance or provider compatibility.
+
 ## Remaining rollout gates
 
-1. Successfully build the generic full release set through sccache.
-2. Build and run the actual OCI image against packaged binaries;
-   a shell test alone does not prove image compatibility.
-3. Run KV + record + TSDB smoke on a real rental, inspect summaries
-   and verify the durable upload.
-4. Exercise TERM, upload failure, provider expiry/cleanup and
-   same-instance per-case resume.
-5. Define storage and privilege contracts before including the other
-   matrices in the rental entrypoint; full exhaustive campaigns could
-   take weeks. Integrate the image with the existing Vast vtest broker
-   or a SaladCloud group controller for actual provisioning.
+1. Publish the tested image to a registry under an **immutable digest**;
+   preserve the exact source commit, executable hashes, and runtime image
+   digest for each allocation. A moving image tag is not a benchmark identity.
+2. Run the image on one actual Vast and one SaladCloud allocation; confirm
+   resource limits, network egress, instance IDs, performance admission,
+   and result delivery to an external durable object store.
+3. Exercise provider-level termination/reallocation, hard deadline
+   enforcement, failed-upload recovery, and the separate lease cleanup
+   controller. In-container timeout alone cannot prevent orphan rental charges.
+4. Calibrate CPU, memory and storage variability per allocation and
+   test at least one admitted **quick** case in each baseline lane. Smoke runs
+   do not establish measurement validity on shared rental hosts.
+5. Add specialty matrices only with explicit binary/privilege/storage
+   contracts. Cold-cache and dm-log-writes campaigns remain host-only.
+   Integrate the existing Vast vtest broker or a SaladCloud group controller
+   rather than putting account provisioning inside the benchmark image.
 
 Upstream references:
 - Vast execution: https://docs.vast.ai/guides/instances/docker-environment
