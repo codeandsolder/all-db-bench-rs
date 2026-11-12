@@ -1,4 +1,4 @@
-use std::{env, error::Error, fs, path::PathBuf};
+use std::{env, error::Error, fmt::Write as _, fs, path::PathBuf};
 
 const ENGINE_DEPENDENCIES: &[(&str, &str, Option<&str>)] = &[
     ("REDB", "redb", None),
@@ -37,9 +37,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                 format!("{dependency} must use an exact version pin, found {requirement}")
             })?;
         if let Some(feature) = feature {
-            generated.push_str(&format!("#[cfg(feature = {feature:?})]\n"));
+            writeln!(generated, "#[cfg(feature = {feature:?})]")?;
         }
-        generated.push_str(&format!("pub const {constant}: &str = {version:?};\n"));
+        writeln!(generated, "pub const {constant}: &str = {version:?};")?;
     }
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").ok_or("missing OUT_DIR")?);
     fs::write(out_dir.join("engine_versions.rs"), generated)?;
