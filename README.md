@@ -179,3 +179,12 @@ The record lane includes SurrealDB 3.3.4 on its internal SurrealKV 0.21.4 backen
 Final benchmark binaries use rustc 1.99.1 with `target-cpu=native` through `scripts/cargo-local-1.99.sh`. The wrapper requires a managed native-safe sccache daemon and refuses uncached fallback. Non-root builds use the same-owner `/run/sccache-<user>/sccache.sock`; root builds retain the dedicated root daemon on port 4237. Our sccache fork resolves the requesting host native CPU/features, hashes that profile into the cache key, and rewrites distributed Rust native codegen to a proven-equivalent explicit CPU/feature set; unresolved native requests are not guessed. The native lane therefore shares the ordinary scheduler and Garage cache safely.
 
 Fresh baseline publication is orchestrated by `scripts/benchctl.sh baseline-generation`: one generation ID/root names the KV and record stock runs, sizing and short-pressure repair plans, follow-up prefixes, selected corpora and readiness certificates. All measurement stages use the same pinned source commit/binary manifests and continuous-v3 admission; historical publication generations remain immutable rather than being resumed under new binaries.
+
+## Vast / SaladCloud rental containers
+
+A portable, sccache-built x86-64-v2+aes runtime bundle and rootless OCI
+entrypoint are provided under `deploy/rental/`. They execute the
+existing KV, record and optional external-TSDB baseline matrices with
+a pinned executable manifest, instance identity, deadline, and results
+handoff. See [rental deployment guide](docs/RENTAL-DEPLOYMENT.md) for
+commands, limitations and validation gates.

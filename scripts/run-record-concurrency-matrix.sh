@@ -40,7 +40,7 @@ mkdir -p "$RUN_DIR"/{cases,stderr,noise} "$DATA_DIR"
 free_bytes=$(df -B1 --output=avail "$DATA_DIR" | tail -n1 | tr -d ' ')
 min_free_bytes=$((MIN_FREE_GIB * 1024 * 1024 * 1024))
 (( free_bytes >= min_free_bytes )) || { echo "refusing record concurrency run: free=$free_bytes required=$min_free_bytes" >&2; exit 75; }
-[[ "${MATRIX_PLAN_ONLY:-0}" == 1 ]] || "$ROOT/scripts/ensure-sqlite-3.54.0.sh"
+[[ "${MATRIX_PLAN_ONLY:-0}" == 1 || "${DBBENCH_PINNED_SQLITE_PREBUILT:-0}" == 1 ]] || "$ROOT/scripts/ensure-sqlite-3.54.0.sh"
 [[ -s "$RUN_DIR/host-start.txt" ]] || "$ROOT/scripts/capture-host-metadata.sh" "$RUN_DIR/host-start.txt" "$ROOT"
 
 TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target}
@@ -73,7 +73,7 @@ NOISE_SHA=$(sha256sum "$ROOT/tools/benchctl/src/noise.rs" | awk '{print $1}')
 CONTINUOUS_NOISE_SHA=$(sha256sum "$ROOT/tools/benchctl/src/noise.rs" | awk '{print $1}')
 CONCURRENCY_RUNNER_COMMON_SHA=$(sha256sum "$ROOT/scripts/concurrency-runner-common.sh" | awk '{print $1}')
 CONTINUOUS_NOISE_COMMON_SHA=$(sha256sum "$ROOT/scripts/continuous-noise-runner-common.sh" | awk '{print $1}')
-HOST_NAME=$(hostname); MACHINE_ID_SHA256=$(sha256sum /etc/machine-id | awk '{print $1}')
+HOST_NAME=$(hostname); MACHINE_ID_SHA256=$("$ROOT/scripts/host-machine-id-sha256.sh")
 FILESYSTEM=$(findmnt -n -o FSTYPE --target "$DATA_DIR"); SOURCE=$(findmnt -n -o SOURCE --target "$DATA_DIR")
 
 ENGINES=(surrealdb turso sqlite surrealdb-rocksdb)

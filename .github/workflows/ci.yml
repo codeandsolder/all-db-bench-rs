@@ -24,7 +24,8 @@ jobs:
       command: |
         cargo +1.99.1 fmt --all -- --check
         cargo +1.99.1 fmt --manifest-path engines/surrealdb-rocksdb/Cargo.toml -- --check
-        bash -n scripts/*.sh
+        bash -n scripts/*.sh deploy/rental/*.sh
+        ./scripts/test-rental-deployment.sh
         ./scripts/test-record-semantics.sh
         ./scripts/test-no-python-tooling.sh
 

@@ -823,11 +823,52 @@ impl Engine {
     }
 
     pub(crate) async fn close(&mut self) -> Result<()> {
-        if let Self::Turbokv(slot) = self
-            && let Some(db) = slot.take()
-        {
-            db.close().await?;
+        match self {
+            Self::Surrealkv(tree) => tree.close().await?,
+            Self::Turbokv(slot) => {
+                if let Some(db) = slot.take() {
+                    db.close().await?;
+                }
+            }
+            _ => {}
         }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod shutdown_tests {
+    use super::{Durability, Engine, EngineKind};
+    use std::{fs, path::PathBuf, time::SystemTime};
+
+    struct RemoveOnDrop(PathBuf);
+
+    impl Drop for RemoveOnDrop {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[tokio::test]
+    async fn surrealkv_explicit_close_releases_lock_before_handle_drop() -> anyhow::Result<()> {
+        let id = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)?
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "dbbench-surrealkv-close-{}-{id}",
+            std::process::id()
+        ));
+        let _cleanup = RemoveOnDrop(path.clone());
+
+        let mut first = Engine::open(EngineKind::Surrealkv, Durability::Sync, &path).await?;
+        first.close().await?;
+        // A purely async Drop cannot promise that the file lock has been
+        // released before the next operation; explicit close must.
+        let mut reopened = Engine::open(EngineKind::Surrealkv, Durability::Sync, &path).await?;
+        reopened.close().await?;
+        drop(reopened);
+        drop(first);
+        fs::remove_dir_all(&path)?;
         Ok(())
     }
 }
