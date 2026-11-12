@@ -2,30 +2,34 @@ use anyhow::{Result, bail};
 
 use super::types::{Durability, EngineCompression, EngineKind};
 
+mod declared_engine_versions {
+    include!(concat!(env!("OUT_DIR"), "/engine_versions.rs"));
+}
+
 impl EngineKind {
     pub(crate) const fn version(self) -> &'static str {
         match self {
-            Self::Redb => "4.4.0",
-            Self::Fjall => "3.1.13",
-            Self::Surrealkv => "1.2.0",
-            Self::Heed => "0.23.1",
-            Self::Sled => "1.0.0-alpha.124",
-            Self::Lkv => "0.2.1",
-            Self::Manifold | Self::ManifoldWal => "3.1.0",
-            Self::Turbokv => "0.6.0",
-            Self::ParitydbHash | Self::ParitydbBtree => "0.5.7",
+            Self::Redb => declared_engine_versions::REDB,
+            Self::Fjall => declared_engine_versions::FJALL,
+            Self::Surrealkv => declared_engine_versions::SURREALKV,
+            Self::Heed => declared_engine_versions::HEED,
+            Self::Sled => declared_engine_versions::SLED,
+            Self::Lkv => declared_engine_versions::LKV,
+            Self::Manifold | Self::ManifoldWal => declared_engine_versions::MANIFOLD,
+            Self::Turbokv => declared_engine_versions::TURBOKV,
+            Self::ParitydbHash | Self::ParitydbBtree => declared_engine_versions::PARITYDB,
             #[cfg(feature = "kv-external")]
-            Self::Rocksdb => "0.25.0",
+            Self::Rocksdb => declared_engine_versions::ROCKSDB,
             #[cfg(feature = "kv-external")]
-            Self::Mdbx => "0.9.0",
+            Self::Mdbx => declared_engine_versions::MDBX,
             #[cfg(feature = "kv-external")]
-            Self::Persy => "1.8.1",
+            Self::Persy => declared_engine_versions::PERSY,
             #[cfg(feature = "kv-experimental")]
-            Self::Roughdb => "0.11.1",
+            Self::Roughdb => declared_engine_versions::ROUGHDB,
             #[cfg(feature = "kv-experimental")]
-            Self::Jammdb => "0.11.0",
+            Self::Jammdb => declared_engine_versions::JAMMDB,
             #[cfg(feature = "kv-experimental")]
-            Self::Lsmdb => "1.1.0",
+            Self::Lsmdb => declared_engine_versions::LSMDB,
         }
     }
 

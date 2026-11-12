@@ -86,3 +86,6 @@ codegen-units = 1
 
 [lints]
 workspace = true
+
+[build-dependencies]
+toml_edit = "=0.25.17"
