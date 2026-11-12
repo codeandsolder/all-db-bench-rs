@@ -88,4 +88,4 @@ codegen-units = 1
 workspace = true
 
 [build-dependencies]
-toml_edit = "=0.25.17"
+toml_edit = "=0.25.19"
