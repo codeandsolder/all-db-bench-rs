@@ -14,7 +14,7 @@ jobs:
     name: Rust validation (shared sccache)
     permissions:
       contents: read
-    uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@f16f383530338d3fdfc1bc531b6eb610e9d551b7 # main
+    uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@835efeff3a1e617d8ecd40ed70b402a298d2481f # main
     with:
       rust-toolchain: "1.99.1"
       rust-components: "rustfmt clippy"
