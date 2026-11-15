@@ -2,5 +2,20 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
     "github>codeandsolder/ci-workflows:renovate-fleet"
+  ],
+  "packageRules": [
+    {
+      "description": "SurrealDB 4 removed its RocksDB engine entirely. This is an explicit comparison of SurrealDB on actual RocksDB, not SurrealKV; preserve the 3.x RocksDB benchmark until that engine is deliberately retired.",
+      "matchManagers": [
+        "cargo"
+      ],
+      "matchFileNames": [
+        "engines/surrealdb-rocksdb/Cargo.toml"
+      ],
+      "matchPackageNames": [
+        "surrealdb"
+      ],
+      "allowedVersions": "<4"
+    }
   ]
 }

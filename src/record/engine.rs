@@ -42,7 +42,7 @@ pub(crate) enum Engine {
 impl EngineKind {
     pub(crate) fn version(self) -> &'static str {
         match self {
-            Self::Surrealdb => "3.3.4 / SurrealKV 0.21.4",
+            Self::Surrealdb => "SurrealDB 4.0.1 / SurrealKV embedded",
             Self::Turso => "0.8.3",
             Self::Sqlite => "rusqlite 0.40.2 / SQLite 3.54.0",
         }
