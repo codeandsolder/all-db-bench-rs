@@ -1,5 +1,9 @@
 use crate::{
-    baseline_generation, baseline_selection, baseline_sizing, baseline_supervisor, cli::Command,
+    baseline_generation, baseline_selection, baseline_sizing, baseline_supervisor,
+    cli::{
+        BaselineCommand, Command, PlanningCommand, QualityCommand, ReadinessCommand,
+        UtilitiesCommand,
+    },
     compression, cpu_pressure, idle, import_concurrency, io_baseline, io_pressure, noise, planning,
     process_tree, ready, record_smoke, recovery, scaling, short_pressure, storage, summary,
     support, sustained, tsdb, tsdb_merge,
@@ -14,13 +18,23 @@ fn finish(code: i32) -> Result<()> {
     }
 }
 
+pub fn run(command: Command) -> Result<()> {
+    match command {
+        Command::Baseline(command) => run_baseline(command),
+        Command::Quality(command) => run_quality(command),
+        Command::Readiness(command) => run_readiness(command),
+        Command::Utilities(command) => run_utilities(command),
+        Command::Planning(command) => run_planning(command),
+    }
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
 )]
-pub fn run(command: Command) -> Result<()> {
+fn run_baseline(command: BaselineCommand) -> Result<()> {
     match command {
-        Command::BaselineGeneration {
+        BaselineCommand::BaselineGeneration {
             repo,
             generation_root,
             generation_id,
@@ -44,7 +58,7 @@ pub fn run(command: Command) -> Result<()> {
             })?;
             finish(code)
         }
-        Command::BaselineQuickIdle {
+        BaselineCommand::BaselineQuickIdle {
             lane,
             repo,
             bench_bin,
@@ -78,7 +92,7 @@ pub fn run(command: Command) -> Result<()> {
             })?;
             finish(code)
         }
-        Command::BaselineSizingFollowups {
+        BaselineCommand::BaselineSizingFollowups {
             lane,
             repo,
             plan,
@@ -126,7 +140,7 @@ pub fn run(command: Command) -> Result<()> {
             })?;
             finish(code)
         }
-        Command::AuditBaselineSizing {
+        BaselineCommand::AuditBaselineSizing {
             results,
             expect_trials,
             read_only_min_seconds,
@@ -156,7 +170,12 @@ pub fn run(command: Command) -> Result<()> {
             })?;
             finish(code)
         }
-        Command::RefineStockQualityRepairs {
+    }
+}
+
+fn run_quality(command: QualityCommand) -> Result<()> {
+    match command {
+        QualityCommand::RefineStockQualityRepairs {
             quality_plan,
             sizing_audit,
             resize_root,
@@ -171,7 +190,7 @@ pub fn run(command: Command) -> Result<()> {
             json_out: &json_out,
             markdown_out: markdown_out.as_deref(),
         }),
-        Command::ScrubShortTrialPressure {
+        QualityCommand::ScrubShortTrialPressure {
             run_dir,
             max_elapsed_s,
             max_runqueue_fraction,
@@ -197,7 +216,7 @@ pub fn run(command: Command) -> Result<()> {
                 },
             },
         ),
-        Command::AuditStockShortPressure {
+        QualityCommand::AuditStockShortPressure {
             run_dir,
             sizing_audit,
             lane,
@@ -210,7 +229,7 @@ pub fn run(command: Command) -> Result<()> {
             json_out: &json_out,
             markdown_out: markdown_out.as_deref(),
         }),
-        Command::SelectBaselineSizingResults {
+        QualityCommand::SelectBaselineSizingResults {
             stock_results,
             audit,
             resize_root,
@@ -229,7 +248,16 @@ pub fn run(command: Command) -> Result<()> {
             quality_repair_plan: quality_repair_plan.as_deref(),
             allow_missing_resize,
         }),
-        Command::FinalizeBaselineSizing {
+    }
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
+)]
+fn run_readiness(command: ReadinessCommand) -> Result<()> {
+    match command {
+        ReadinessCommand::FinalizeBaselineSizing {
             repo,
             kv_only,
             record_only,
@@ -300,7 +328,7 @@ pub fn run(command: Command) -> Result<()> {
             println!("final baseline corpora validated: {}", lanes.join(" "));
             Ok(())
         }
-        Command::VerifyKvReady {
+        ReadinessCommand::VerifyKvReady {
             selected,
             binary_manifest,
             expected_commit,
@@ -317,7 +345,7 @@ pub fn run(command: Command) -> Result<()> {
             expected_admission_policy: &expected_admission_policy,
             out: &out,
         }),
-        Command::VerifyRecordReady {
+        ReadinessCommand::VerifyRecordReady {
             selected,
             binary_manifest,
             expected_commit,
@@ -334,8 +362,17 @@ pub fn run(command: Command) -> Result<()> {
             expected_admission_policy: &expected_admission_policy,
             out: &out,
         }),
-        Command::CpuPressureWorker { duty_percent } => cpu_pressure::run(duty_percent),
-        Command::SmokeRecordBinaries {
+    }
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
+)]
+fn run_utilities(command: UtilitiesCommand) -> Result<()> {
+    match command {
+        UtilitiesCommand::CpuPressureWorker { duty_percent } => cpu_pressure::run(duty_percent),
+        UtilitiesCommand::SmokeRecordBinaries {
             bench_bin,
             concurrency_bin,
             sustained_bin,
@@ -350,7 +387,7 @@ pub fn run(command: Command) -> Result<()> {
             rocks_concurrency_bin: &rocks_concurrency_bin,
             rocks_sustained_bin: &rocks_sustained_bin,
         }),
-        Command::CheckExternalNoise {
+        UtilitiesCommand::CheckExternalNoise {
             ignore_nice_at_least,
             json_out,
             exclude_pid,
@@ -366,7 +403,7 @@ pub fn run(command: Command) -> Result<()> {
             })?;
             finish(code)
         }
-        Command::RunWithContinuousNoise {
+        UtilitiesCommand::RunWithContinuousNoise {
             json_out,
             sample_ms,
             ignore_cpu_nice_at_least,
@@ -388,8 +425,8 @@ pub fn run(command: Command) -> Result<()> {
             })?;
             finish(code)
         }
-        Command::StorageFootprint { path } => storage::print_footprint(&path),
-        Command::Summarize {
+        UtilitiesCommand::StorageFootprint { path } => storage::print_footprint(&path),
+        UtilitiesCommand::Summarize {
             input,
             json_out,
             markdown_out,
@@ -400,19 +437,19 @@ pub fn run(command: Command) -> Result<()> {
             markdown_out.as_deref(),
             expect_trials,
         ),
-        Command::SummarizeCompression {
+        UtilitiesCommand::SummarizeCompression {
             input,
             json_out,
             markdown_out,
         } => compression::summarize_file(&input, &json_out, &markdown_out),
-        Command::CaptureProcessTree { pid, output } => {
+        UtilitiesCommand::CaptureProcessTree { pid, output } => {
             let code = process_tree::run(process_tree::ProcessTreeArgs {
                 pid,
                 output: output.as_deref(),
             })?;
             finish(code)
         }
-        Command::MergeTsdbResult {
+        UtilitiesCommand::MergeTsdbResult {
             client,
             server_before,
             server_after,
@@ -429,7 +466,7 @@ pub fn run(command: Command) -> Result<()> {
             server_log: server_log.as_deref(),
             output: &output,
         }),
-        Command::SummarizeTsdb {
+        UtilitiesCommand::SummarizeTsdb {
             run_dir,
             expect_trials,
             json_out,
@@ -443,7 +480,7 @@ pub fn run(command: Command) -> Result<()> {
             })?;
             finish(code)
         }
-        Command::SummarizeSustained {
+        UtilitiesCommand::SummarizeSustained {
             input,
             expect_trials,
             json_out,
@@ -457,7 +494,7 @@ pub fn run(command: Command) -> Result<()> {
             })?;
             finish(code)
         }
-        Command::SummarizeRecovery {
+        UtilitiesCommand::SummarizeRecovery {
             run_dir,
             json_out,
             markdown_out,
@@ -466,7 +503,7 @@ pub fn run(command: Command) -> Result<()> {
             json_out: json_out.as_deref(),
             markdown_out: markdown_out.as_deref(),
         }),
-        Command::SummarizeIoBaseline {
+        UtilitiesCommand::SummarizeIoBaseline {
             run_dir,
             json_out,
             markdown_out,
@@ -478,7 +515,7 @@ pub fn run(command: Command) -> Result<()> {
             })?;
             finish(code)
         }
-        Command::SummarizeIoPressure {
+        UtilitiesCommand::SummarizeIoPressure {
             run_dir,
             expect_trials,
             json_out,
@@ -492,7 +529,16 @@ pub fn run(command: Command) -> Result<()> {
             })?;
             finish(code)
         }
-        Command::ImportConcurrencyResults {
+    }
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
+)]
+fn run_planning(command: PlanningCommand) -> Result<()> {
+    match command {
+        PlanningCommand::ImportConcurrencyResults {
             source,
             dest,
             exclude_engine,
@@ -503,7 +549,7 @@ pub fn run(command: Command) -> Result<()> {
             excluded_engines: &exclude_engine,
             verify_run: verify_run.as_deref(),
         }),
-        Command::ConcurrencySizingAudit {
+        PlanningCommand::ConcurrencySizingAudit {
             repo,
             run_dir,
             additional_run,
@@ -520,13 +566,13 @@ pub fn run(command: Command) -> Result<()> {
             probe_plan_out: probe_plan_out.as_deref(),
             expected_admission_policy: expected_admission_policy.as_deref(),
         }),
-        Command::KvConcurrencyPlanCalibration { sizing_audit, out } => {
+        PlanningCommand::KvConcurrencyPlanCalibration { sizing_audit, out } => {
             planning::run_kv_calibration(planning::KvCalibrationArgs {
                 sizing_audit: &sizing_audit,
                 out: &out,
             })
         }
-        Command::KvConcurrencyPlanMaterialize {
+        PlanningCommand::KvConcurrencyPlanMaterialize {
             plan,
             tsv_out,
             meta_out,
@@ -535,7 +581,7 @@ pub fn run(command: Command) -> Result<()> {
             tsv_out: &tsv_out,
             meta_out: &meta_out,
         }),
-        Command::KvConcurrencyPlanFinal {
+        PlanningCommand::KvConcurrencyPlanFinal {
             repo,
             sizing_audit,
             calibration_plan,
@@ -552,13 +598,13 @@ pub fn run(command: Command) -> Result<()> {
             delete_out: &delete_out,
             trials,
         }),
-        Command::RecordConcurrencyPlanCalibration { repo, out } => {
+        PlanningCommand::RecordConcurrencyPlanCalibration { repo, out } => {
             planning::run_record_calibration(planning::RecordCalibrationArgs {
                 repo: &repo,
                 out: &out,
             })
         }
-        Command::RecordConcurrencyPlanMaterialize {
+        PlanningCommand::RecordConcurrencyPlanMaterialize {
             plan,
             tsv_out,
             meta_out,
@@ -567,7 +613,7 @@ pub fn run(command: Command) -> Result<()> {
             tsv_out: tsv_out.as_deref(),
             meta_out: meta_out.as_deref(),
         }),
-        Command::ConcurrencyScalingSummary {
+        PlanningCommand::ConcurrencyScalingSummary {
             run_dir,
             json_out,
             markdown_out,
@@ -581,7 +627,7 @@ pub fn run(command: Command) -> Result<()> {
             })?;
             finish(code)
         }
-        Command::RecordConcurrencyPlanFinal {
+        PlanningCommand::RecordConcurrencyPlanFinal {
             repo,
             calibration_plan,
             calibration_run,
@@ -594,7 +640,7 @@ pub fn run(command: Command) -> Result<()> {
             out: &out,
             trials,
         }),
-        Command::ConcurrencyPlanIdle {
+        PlanningCommand::ConcurrencyPlanIdle {
             lane,
             repo,
             plan,
@@ -622,7 +668,7 @@ pub fn run(command: Command) -> Result<()> {
             })?;
             finish(code)
         }
-        Command::SupportIdentity {
+        PlanningCommand::SupportIdentity {
             support,
             expected_lane,
             repo,

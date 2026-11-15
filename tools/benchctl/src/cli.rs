@@ -10,8 +10,23 @@ pub struct Cli {
     pub(crate) command: Command,
 }
 
+/// Keep the CLI flat while splitting the derive codegen into bounded parse groups.
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    #[command(flatten)]
+    Baseline(BaselineCommand),
+    #[command(flatten)]
+    Quality(QualityCommand),
+    #[command(flatten)]
+    Readiness(ReadinessCommand),
+    #[command(flatten)]
+    Utilities(UtilitiesCommand),
+    #[command(flatten)]
+    Planning(PlanningCommand),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum BaselineCommand {
     BaselineGeneration {
         #[arg(long)]
         repo: PathBuf,
@@ -127,6 +142,10 @@ pub enum Command {
         #[arg(long)]
         markdown_out: Option<PathBuf>,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum QualityCommand {
     RefineStockQualityRepairs {
         quality_plan: PathBuf,
         sizing_audit: PathBuf,
@@ -180,6 +199,10 @@ pub enum Command {
         #[arg(long)]
         allow_missing_resize: bool,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ReadinessCommand {
     FinalizeBaselineSizing {
         #[arg(long)]
         repo: PathBuf,
@@ -244,6 +267,10 @@ pub enum Command {
         #[arg(long)]
         out: PathBuf,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum UtilitiesCommand {
     CpuPressureWorker {
         duty_percent: f64,
     },
@@ -373,6 +400,10 @@ pub enum Command {
         #[arg(long)]
         markdown_out: Option<PathBuf>,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum PlanningCommand {
     ImportConcurrencyResults {
         source: Option<PathBuf>,
         dest: Option<PathBuf>,
@@ -486,4 +517,102 @@ pub enum Command {
         #[arg(long)]
         plan: Option<PathBuf>,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BaselineCommand, Cli, Command, PlanningCommand, UtilitiesCommand};
+    use clap::{CommandFactory, Parser};
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn flattened_subcommands_preserve_original_cli_names() {
+        let command = Cli::command();
+        let actual: BTreeSet<_> = command
+            .get_subcommands()
+            .map(|cmd| cmd.get_name())
+            .collect();
+        let expected = BTreeSet::from([
+            "baseline-generation",
+            "baseline-quick-idle",
+            "baseline-sizing-followups",
+            "audit-baseline-sizing",
+            "refine-stock-quality-repairs",
+            "scrub-short-trial-pressure",
+            "audit-stock-short-pressure",
+            "select-baseline-sizing-results",
+            "finalize-baseline-sizing",
+            "verify-kv-ready",
+            "verify-record-ready",
+            "cpu-pressure-worker",
+            "smoke-record-binaries",
+            "check-external-noise",
+            "run-with-continuous-noise",
+            "storage-footprint",
+            "summarize",
+            "summarize-compression",
+            "capture-process-tree",
+            "merge-tsdb-result",
+            "summarize-tsdb",
+            "summarize-sustained",
+            "summarize-recovery",
+            "summarize-io-baseline",
+            "summarize-io-pressure",
+            "import-concurrency-results",
+            "concurrency-sizing-audit",
+            "kv-concurrency-plan-calibration",
+            "kv-concurrency-plan-materialize",
+            "kv-concurrency-plan-final",
+            "record-concurrency-plan-calibration",
+            "record-concurrency-plan-materialize",
+            "concurrency-scaling-summary",
+            "record-concurrency-plan-final",
+            "concurrency-plan-idle",
+            "support-identity",
+        ]);
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn flattened_subcommands_parse_across_all_groups() {
+        assert!(matches!(
+            Cli::try_parse_from([
+                "all-db-benchctl",
+                "baseline-generation",
+                "--repo",
+                "/tmp/bench",
+                "--generation-root",
+                "/tmp/builds",
+                "--generation-id",
+                "sample",
+                "--kv-binary-manifest",
+                "/tmp/kv.json",
+                "--record-binary-manifest",
+                "/tmp/records.json",
+            ]),
+            Ok(Cli {
+                command: Command::Baseline(BaselineCommand::BaselineGeneration { .. }),
+            })
+        ));
+
+        assert!(matches!(
+            Cli::try_parse_from(["all-db-benchctl", "cpu-pressure-worker", "47"]),
+            Ok(Cli {
+                command: Command::Utilities(UtilitiesCommand::CpuPressureWorker { .. }),
+            })
+        ));
+
+        assert!(matches!(
+            Cli::try_parse_from([
+                "all-db-benchctl",
+                "support-identity",
+                "sample",
+                "--expected-lane",
+                "kv",
+            ]),
+            Ok(Cli {
+                command: Command::Planning(PlanningCommand::SupportIdentity { .. }),
+            })
+        ));
+    }
 }
