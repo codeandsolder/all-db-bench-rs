@@ -1733,13 +1733,18 @@ dependencies = [
 
 [[package]]
 name = "error-forge"
-version = "1.0.2"
+version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d9f279869e65cf2ff3bcccd39f8e7089702e2e250e1e451cb9f1eeb9697f492"
+checksum = "e8a115883d21b08fb47a8cb8c7e927d6a4fe89ecb25029ff45d4058caa6eb0a2"
 dependencies = [
- "parking_lot",
- "pastey",
+ "error-forge-derive",
 ]
+
+[[package]]
+name = "error-forge-derive"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f4859e84508edb7c9a8431103d1632318e5b2d56eba1c3efce7acd2756a32045"
 
 [[package]]
 name = "event-listener"
@@ -3426,12 +3431,11 @@ checksum = "4050469837a6ff301cd14c1f8f24f88549e6d548f24f64e2148eb0f72cebc51f"
 
 [[package]]
 name = "lsm-db"
-version = "1.1.0"
+version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b16e22b4e688720226694f26fe7cd78c43680238f66875b725c6de0bfbfaf7a9"
+checksum = "89be8e749ea1707a30d46c4d883ac297deaaf587f9c9dd877547379623d0d871"
 dependencies = [
  "bloom-lib",
- "crc32c",
  "error-forge",
  "postcard",
  "wal-db",
@@ -4449,7 +4453,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ad9c5423459fa2f729b8d9235fab810aa29628b171467744fc86d21460ad70d"
 dependencies = [
  "anyhow",
- "itertools 0.12.1",
+ "itertools 0.15.0",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -4798,9 +4802,9 @@ dependencies = [
 
 [[package]]
 name = "redb"
-version = "4.4.0"
+version = "4.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "39178e0a867f9e3eaa6292a4ab1dd3613f2519c5b564341e1e7b29b270736cc4"
+checksum = "8b317ef681e18f6091efbfab532eaf924a135c492d9d0299d0fbfae07e92a39b"
 dependencies = [
  "libc",
 ]
@@ -6606,9 +6610,9 @@ dependencies = [
 
 [[package]]
 name = "surrealkv"
-version = "1.2.0"
+version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bb696686bd158ecdcccbcd6dcf7f2a5daf5d533c6d09603397946e2a15f8264e"
+checksum = "c536a326d1ef3e1395fdd78fbcbc2bc788170138652aaed1bb288ac51bb06416"
 dependencies = [
  "aes-gcm 0.11.1",
  "affinitypool",
@@ -6645,9 +6649,9 @@ dependencies = [
 
 [[package]]
 name = "surrealkv-compat-indxdb"
-version = "0.2.2"
+version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "04704b05260d80649dc1bce9fd091763f350ed8d2895c52b0682bf6364d118c0"
+checksum = "b1245d49eb5dc789c3c66610ea77108f010ce15dcb6fb5e7369e7499092216dd"
 dependencies = [
  "js-sys",
  "thiserror 2.0.21",
@@ -6658,9 +6662,9 @@ dependencies = [
 
 [[package]]
 name = "surrealkv-compat-rocksdb"
-version = "0.2.2"
+version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4dfec9149b38bdf635c03ea8f1cc3a7152619162fffe632723ea011d6a9b2813"
+checksum = "e1f8e135c3f3bbb6ca72795259487bd874be608a9f972155b31aa2599c6792dd"
 dependencies = [
  "lz4_flex 0.12.2",
  "rustix 1.1.6",
@@ -6672,9 +6676,9 @@ dependencies = [
 
 [[package]]
 name = "surrealkv-compat-v1"
-version = "0.2.2"
+version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d9fdbf48fbfd32103603501268231cc5883b6e8159d1482ae5d249dfc13aa8cf"
+checksum = "b2db17cd821f3a1d4c4029a29548e89f0b0f553f8d9ff9642dfac242c6507fc5"
 dependencies = [
  "crc32fast",
  "lz4_flex 0.12.2",
@@ -7654,13 +7658,11 @@ checksum = "051eb1abcf10076295e815102942cc58f9d5e3b4560e46e53c21e8ff6f3af7b1"
 
 [[package]]
 name = "wal-db"
-version = "1.0.0"
+version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "02fa2562897e6ee0612348f83c8dedbcf39bc393287011f62828f3b54f03e1f4"
+checksum = "c7117ecc25dfff5b3866cbe2ad4fc7c7b4425ad70a8b645a89cdd6e9c2c8401b"
 dependencies = [
- "crc32c",
  "error-forge",
- "libc",
  "loom",
 ]
 
