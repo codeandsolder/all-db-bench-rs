@@ -530,7 +530,7 @@ mod tests {
         let command = Cli::command();
         let actual: BTreeSet<_> = command
             .get_subcommands()
-            .map(|cmd| cmd.get_name())
+            .map(clap::Command::get_name)
             .collect();
         let expected = BTreeSet::from([
             "baseline-generation",
