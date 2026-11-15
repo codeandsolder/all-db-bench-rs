@@ -34,7 +34,7 @@ pub struct Engine(Surreal<SurrealLocalDb>);
 
 impl EngineKind {
     fn version(self) -> &'static str {
-        "SurrealDB 3.3.4 / surrealdb-kvs-rocksdb 3.3.4"
+        "SurrealDB 3.3.5 / surrealdb-kvs-rocksdb 3.3.5"
     }
 
     fn mapping(self, d: Durability) -> &'static str {
