@@ -639,9 +639,9 @@ dependencies = [
 
 [[package]]
 name = "bloom-lib"
-version = "1.0.0"
+version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eb2923b559de983fd62e056c162c8693ef18518c1c3a9070c926b51515bc3595"
+checksum = "2f7decfa307f9d0500a475408da827924bc1cecab1426a68c194e6c04cc955de"
 dependencies = [
  "libm",
  "serde",
@@ -3431,9 +3431,9 @@ checksum = "4050469837a6ff301cd14c1f8f24f88549e6d548f24f64e2148eb0f72cebc51f"
 
 [[package]]
 name = "lsm-db"
-version = "1.2.0"
+version = "1.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8c42cde9c8674b23e52aaeccbee6225bd3055938ff1d188e52793fe1efc91297"
+checksum = "07111401cc799158bf26adca45397ba256fba154479d20c752d0c8e0fb18404e"
 dependencies = [
  "bloom-lib",
  "error-forge",
@@ -4453,7 +4453,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ad9c5423459fa2f729b8d9235fab810aa29628b171467744fc86d21460ad70d"
 dependencies = [
  "anyhow",
- "itertools 0.13.0",
+ "itertools 0.15.0",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -4802,9 +4802,9 @@ dependencies = [
 
 [[package]]
 name = "redb"
-version = "4.5.0"
+version = "4.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8b317ef681e18f6091efbfab532eaf924a135c492d9d0299d0fbfae07e92a39b"
+checksum = "096b1dd5ec053c9c2a5a26a93aafeadf73ebcb710ea54dc3151f17a8e20535ef"
 dependencies = [
  "libc",
 ]
@@ -6610,9 +6610,9 @@ dependencies = [
 
 [[package]]
 name = "surrealkv"
-version = "1.3.0"
+version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9fef710a779aa23a7d631230b53c6ce61347ee0526f608a3030082bd36bdd0d9"
+checksum = "c536a326d1ef3e1395fdd78fbcbc2bc788170138652aaed1bb288ac51bb06416"
 dependencies = [
  "aes-gcm 0.11.1",
  "affinitypool",
