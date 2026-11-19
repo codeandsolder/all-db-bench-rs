@@ -39,7 +39,10 @@ done
 
 TARGET_DIR=${TSDB_CARGO_TARGET_DIR:-/tmp/rust-db-tsdb-target}
 TSDB_MANIFEST="$ROOT/engines/tsdb-server/Cargo.toml"
-if [[ "$PROFILE" == smoke ]]; then
+if [[ -n "${TSDB_BENCH_BIN:-}" ]]; then
+  BIN="$TSDB_BENCH_BIN"
+  [[ -x "$BIN" ]] || { echo "TSDB_BENCH_BIN is not executable: $BIN" >&2; exit 2; }
+elif [[ "$PROFILE" == smoke ]]; then
   BIN="$TARGET_DIR/debug/tsdb-server-bench"
   "$ROOT/scripts/cargo-local-1.99.sh" build --locked --manifest-path "$TSDB_MANIFEST" --target-dir "$TARGET_DIR"
 else
@@ -48,9 +51,14 @@ else
 fi
 BIN_SHA=$(sha256sum "$BIN" | awk '{print $1}')
 BENCHCTL_TARGET_DIR=${BENCHCTL_TARGET_DIR:-${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target}}
-BENCHCTL="$BENCHCTL_TARGET_DIR/debug/all-db-benchctl"
-CARGO_TARGET_DIR="$BENCHCTL_TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" build --locked \
-  --manifest-path "$ROOT/tools/benchctl/Cargo.toml" --bin all-db-benchctl
+if [[ -n "${BENCHCTL_BIN:-}" ]]; then
+  BENCHCTL="$BENCHCTL_BIN"
+  [[ -x "$BENCHCTL" ]] || { echo "BENCHCTL_BIN is not executable: $BENCHCTL" >&2; exit 2; }
+else
+  BENCHCTL="$BENCHCTL_TARGET_DIR/debug/all-db-benchctl"
+  CARGO_TARGET_DIR="$BENCHCTL_TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" build --locked \
+    --manifest-path "$ROOT/tools/benchctl/Cargo.toml" --bin all-db-benchctl
+fi
 BENCHCTL_SHA=$(sha256sum "$BENCHCTL" | awk '{print $1}')
 
 RUN_ID=${RUN_ID:-"$(date -u +%Y%m%dT%H%M%SZ)-tsdb-$PROFILE"}
@@ -63,7 +71,7 @@ RUN_DIR="$ROOT/results/runs/$RUN_ID"
 DATA_DIR="${DBBENCH_STORAGE_ROOT:-$ROOT}/data/runs/$RUN_ID"
 mkdir -p "$RUN_DIR"/{cases,client,server-before,server-after,stderr,server-logs,server-configs,noise} "$DATA_DIR"
 HOST_NAME=$(hostname)
-MACHINE_ID_SHA256=$(sha256sum /etc/machine-id | awk '{print $1}')
+MACHINE_ID_SHA256=$("$ROOT/scripts/host-machine-id-sha256.sh")
 FILESYSTEM=$(findmnt -T "$DATA_DIR" -n -o FSTYPE 2>/dev/null || true)
 SOURCE=$(findmnt -T "$DATA_DIR" -n -o SOURCE 2>/dev/null || true)
 "$ROOT/scripts/capture-host-metadata.sh" "$RUN_DIR/host-start.txt" "$ROOT"

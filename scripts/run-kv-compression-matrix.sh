@@ -80,7 +80,7 @@ SETTLE_SHA=$(sha256sum "$ROOT/scripts/settle-storage-path.sh" | awk '{print $1}'
 COMMON_SHA=$(sha256sum "$ROOT/scripts/performance-runner-common.sh" | awk '{print $1}')
 NOISE_SHA=$(sha256sum "$ROOT/tools/benchctl/src/noise.rs" | awk '{print $1}')
 HOST_NAME=$(hostname)
-MACHINE_ID_SHA256=$(sha256sum /etc/machine-id | awk '{print $1}')
+MACHINE_ID_SHA256=$("$ROOT/scripts/host-machine-id-sha256.sh")
 FILESYSTEM=$(findmnt -n -o FSTYPE --target "$DATA_DIR")
 SOURCE=$(findmnt -n -o SOURCE --target "$DATA_DIR")
 

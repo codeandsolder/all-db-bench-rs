@@ -118,7 +118,7 @@ esac
 
 ROOT=${ROOT:-$(cd -- "$(dirname -- "$0")/.." && pwd)}
 CURRENT_HOST_NAME=$(hostname)
-CURRENT_MACHINE_ID_SHA256=$(sha256sum /etc/machine-id | awk '{print $1}')
+CURRENT_MACHINE_ID_SHA256=$("$ROOT/scripts/host-machine-id-sha256.sh")
 if [[ -z "$BASELINE_HOST_NAME" || -z "$BASELINE_MACHINE_ID_SHA256" || -z "$BASELINE_FSTYPE" || -z "$BASELINE_SOURCE" ]]; then
   echo "baseline support.json lacks protocol-v4 host/filesystem provenance" >&2
   exit 2

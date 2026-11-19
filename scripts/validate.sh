@@ -15,7 +15,7 @@ fio --version
 "$ROOT/scripts/cargo-local-1.99.sh" fmt --all --check
 "$ROOT/scripts/cargo-local-1.99.sh" fmt \
   --manifest-path "$ROOT/engines/surrealdb-rocksdb/Cargo.toml" -- --check
-bash -n scripts/*.sh
+bash -n scripts/*.sh deploy/rental/*.sh
 for test_script in "$ROOT"/scripts/test-*.sh; do
   "$test_script"
 done

@@ -377,10 +377,13 @@ async fn dispatch(engine: Engine, args: &Args) -> Result<(&'static str, Aggregat
             "native Clone handles",
             run_clients_without_starving_runtime(FjallClient { db, keyspace }, args)?,
         )),
-        Engine::Surrealkv(tree) => Ok((
-            "native Clone handle",
-            run_clients_without_starving_runtime(SurrealClient(tree), args)?,
-        )),
+        Engine::Surrealkv(tree) => {
+            let run = run_clients_without_starving_runtime(SurrealClient(tree.clone()), args)?;
+            // The last handle's Drop schedules an asynchronous shutdown. Wait for
+            // it explicitly before the caller measures/removes the database files.
+            tree.close().await?;
+            Ok(("native Clone handle", run))
+        }
         Engine::Heed { env, db } => Ok((
             "native Clone Env/Database handles",
             run_clients_without_starving_runtime(HeedClient { env, db }, args)?,

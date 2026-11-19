@@ -75,7 +75,7 @@ fi
 
 "$ROOT/scripts/capture-host-metadata.sh" "$RUN_DIR/host-start.txt" "$ROOT" || exit $?
 HOST_NAME=$(hostname)
-MACHINE_ID_SHA256=$(sha256sum /etc/machine-id | awk '{print $1}')
+MACHINE_ID_SHA256=$("$ROOT/scripts/host-machine-id-sha256.sh")
 FIO_VERSION=$(fio --version)
 GIT_COMMIT=$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || printf unknown)
 FILE="$DATA_DIR/fio-baseline.bin"
