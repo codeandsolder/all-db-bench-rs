@@ -147,3 +147,33 @@ for runner in run-kv-concurrency-plan.sh run-record-concurrency-plan.sh; do
     exit 1
   }
 done
+
+# Device-scoped admission overrides the bounded-profile global-PSI shortcut.
+# Exercise the actual function without depending on unrelated free space.
+# shellcheck source=performance-runner-common.sh
+source "$ROOT/scripts/performance-runner-common.sh"
+performance_check_free_space() { return 0; }
+
+expect_device_admission_status() {
+  local expected=$1 actual
+  shift
+  if "$@"; then actual=0; else actual=$?; fi
+  if (( actual != expected )); then
+    printf 'expected admission status %s, got %s\n' "$expected" "$actual" >&2
+    return 1
+  fi
+}
+
+check_missing_device() (
+  export DBBENCH_STORAGE_PROFILE_MODE=$1
+  export ALLOW_BUSY=${2:-0}
+  export PERFORMANCE_IO_QUIET_DEVICE=dbbench-nonexistent-admission-test-device
+  performance_check_io_quiet quick regression >/dev/null 2>&1
+)
+
+expect_device_admission_status 2 check_missing_device bounded
+expect_device_admission_status 2 check_missing_device native
+expect_device_admission_status 0 check_missing_device bounded 1
+# Bounded mode without an explicit device still skips host-global PSI.
+expect_device_admission_status 0 bash -c 'source "$1"; performance_check_free_space() { return 0; }; unset PERFORMANCE_IO_QUIET_DEVICE; DBBENCH_STORAGE_PROFILE_MODE=bounded performance_check_io_quiet quick regression' _ "$ROOT/scripts/performance-runner-common.sh"
+echo performance-device-admission-ok

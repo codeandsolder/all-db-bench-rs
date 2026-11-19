@@ -8,10 +8,10 @@ A replacement for the earlier redb/Turso/Fjall growth-loop benchmark, designed a
 
 ## Build
 
-    CARGO_TARGET_DIR=/tmp/rust-db-realistic-bench-target ./scripts/cargo-local.sh build --release --locked --features kv-all --bin kvbench
-    CARGO_TARGET_DIR=/tmp/rust-db-realistic-bench-target ./scripts/cargo-local.sh build --release --locked --features record --bin recordbench
-    ./scripts/cargo-local.sh build --release --locked --manifest-path engines/surrealdb-rocksdb/Cargo.toml --target-dir /tmp/rust-db-surreal-rocks-target
-    ./scripts/cargo-local.sh build --release --locked --manifest-path engines/tsdb-server/Cargo.toml --target-dir /tmp/rust-db-tsdb-target
+    ./scripts/cargo-local.sh build --release --locked --features kv-all --bin kvbench
+    ./scripts/cargo-local.sh build --release --locked --features record --bin recordbench
+    ./scripts/cargo-local.sh build --release --locked --manifest-path engines/surrealdb-rocksdb/Cargo.toml --target-dir target/surrealdb-rocks
+    ./scripts/cargo-local.sh build --release --locked --manifest-path engines/tsdb-server/Cargo.toml
 
 ## Source layout
 

@@ -216,7 +216,7 @@ cp "$BASELINE_SUPPORT" "$RUN_DIR/baseline-support.json" || exit $?
 cp "$BASELINE_MANIFEST" "$RUN_DIR/baseline-calibration.json" || exit $?
 cp "$BASELINE_SUMMARY" "$RUN_DIR/baseline-summary.json" || exit $?
 
-TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target}
+TARGET_DIR=${CARGO_TARGET_DIR:-$ROOT/target}
 if [[ -n "${BENCH_BIN:-}" ]]; then
   BIN="$BENCH_BIN"
   BUILD_PROFILE="external"

@@ -33,10 +33,10 @@ RUN_DIR="$ROOT/results/runs/$RUN_ID"; DATA_DIR="${DBBENCH_STORAGE_ROOT:-$ROOT}/d
 mkdir -p "$RUN_DIR"/{cases,stderr} "$DATA_DIR"
 "$ROOT/scripts/ensure-sqlite-3.54.0.sh"
 "$ROOT/scripts/capture-host-metadata.sh" "$RUN_DIR/host-start.txt" "$ROOT"
-TARGET_DIR="${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target}"
+TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target}"
 BIN="$TARGET_DIR/release/recordbench"
 "$ROOT/scripts/cargo-local.sh" build --release --features record --bin recordbench
-ROCKS_TARGET_DIR="${SURREAL_ROCKS_TARGET_DIR:-/tmp/rust-db-surreal-rocks-target}"
+ROCKS_TARGET_DIR="${SURREAL_ROCKS_TARGET_DIR:-$ROOT/target/surrealdb-rocks}"
 "$ROOT/scripts/cargo-local.sh" build --release --manifest-path "$ROOT/engines/surrealdb-rocksdb/Cargo.toml" --target-dir "$ROCKS_TARGET_DIR"
 ROCKS_BIN="$ROCKS_TARGET_DIR/release/surrealdb-rocksdb-recordbench"
 READ_MATERIALIZATION=full-record-v1

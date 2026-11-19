@@ -65,7 +65,7 @@ cat > "$RUN_DIR/support.json" <<JSON
 }
 JSON
 
-TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target}
+TARGET_DIR=${CARGO_TARGET_DIR:-$ROOT/target}
 BENCHCTL_TARGET_DIR=${BENCHCTL_TARGET_DIR:-$TARGET_DIR}
 if [[ -n "${BENCHCTL_BIN:-}" ]]; then
   BENCHCTL="$BENCHCTL_BIN"

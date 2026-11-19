@@ -37,7 +37,7 @@ for binary in "$GREPTIME" "$VICTORIA" "$PROMETHEUS" "$INFLUXDB3"; do
   [[ -x "$binary" ]] || { echo "missing TSDB binary after install: $binary" >&2; exit 2; }
 done
 
-TARGET_DIR=${TSDB_CARGO_TARGET_DIR:-/tmp/rust-db-tsdb-target}
+TARGET_DIR=${TSDB_CARGO_TARGET_DIR:-$ROOT/target}
 TSDB_MANIFEST="$ROOT/engines/tsdb-server/Cargo.toml"
 if [[ -n "${TSDB_BENCH_BIN:-}" ]]; then
   BIN="$TSDB_BENCH_BIN"
@@ -50,7 +50,7 @@ else
   "$ROOT/scripts/cargo-local.sh" build --release --locked --manifest-path "$TSDB_MANIFEST" --target-dir "$TARGET_DIR"
 fi
 BIN_SHA=$(sha256sum "$BIN" | awk '{print $1}')
-BENCHCTL_TARGET_DIR=${BENCHCTL_TARGET_DIR:-${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target}}
+BENCHCTL_TARGET_DIR=${BENCHCTL_TARGET_DIR:-${CARGO_TARGET_DIR:-$ROOT/target}}
 if [[ -n "${BENCHCTL_BIN:-}" ]]; then
   BENCHCTL="$BENCHCTL_BIN"
   [[ -x "$BENCHCTL" ]] || { echo "BENCHCTL_BIN is not executable: $BENCHCTL" >&2; exit 2; }

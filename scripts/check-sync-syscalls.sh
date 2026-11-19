@@ -2,7 +2,7 @@
 set -euo pipefail
 ROOT=$(cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$ROOT"
-TARGET_DIR="${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target}"
+TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target}"
 BIN="$TARGET_DIR/release/kvbench"
 "$ROOT/scripts/cargo-local.sh" build --release --features kv-all --bin kvbench
 PROBE_ROOT="$ROOT/data/sync-syscall-probe"

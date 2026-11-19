@@ -4,8 +4,8 @@ set -euo pipefail
 ROOT=${ROOT:-"$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"}
 OUT=${1:-/srv/scratch/db-bench-work/concurrency-quick/bin}
 mkdir -p "$OUT"
-TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target}
-ROCKS_TARGET_DIR=${SURREAL_ROCKS_TARGET_DIR:-/tmp/rust-db-surreal-rocks-target}
+TARGET_DIR=${CARGO_TARGET_DIR:-$ROOT/target}
+ROCKS_TARGET_DIR=${SURREAL_ROCKS_TARGET_DIR:-$ROOT/target/surrealdb-rocks}
 
 CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local.sh" \
   build --release --locked --features kv-all --bin kvconcurrency

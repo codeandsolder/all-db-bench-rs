@@ -3,7 +3,7 @@ set -euo pipefail
 ROOT=${ROOT:-"$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"}
 OUT=${1:-/srv/scratch/db-bench-work/reopen-quick/bin}
 mkdir -p "$OUT"
-TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target}
+TARGET_DIR=${CARGO_TARGET_DIR:-$ROOT/target}
 CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local.sh" build --release --locked --features kv-all --bin kvbench
 commit=$(git -C "$ROOT" rev-parse HEAD)
 short=${commit:0:16}

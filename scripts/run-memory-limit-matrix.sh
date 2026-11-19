@@ -10,7 +10,7 @@ case "$PROFILE" in
 esac
 
 ROOT=${ROOT:-"$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"}
-TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target}
+TARGET_DIR=${CARGO_TARGET_DIR:-$ROOT/target}
 BIN="$TARGET_DIR/release/kvbench"
 if [[ ! -x "$BIN" ]]; then
   echo "build $BIN as the normal benchmark user before invoking this root-only runner" >&2

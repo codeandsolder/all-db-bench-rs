@@ -34,8 +34,8 @@ if [[ "${MATRIX_PLAN_ONLY:-0}" != 1 ]]; then
   [[ -s "$RUN_DIR/host-start.txt" ]] || "$ROOT/scripts/capture-host-metadata.sh" "$RUN_DIR/host-start.txt" "$ROOT"
 fi
 
-TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target}
-ROCKS_TARGET_DIR=${SURREAL_ROCKS_TARGET_DIR:-/tmp/rust-db-surreal-rocks-target}
+TARGET_DIR=${CARGO_TARGET_DIR:-$ROOT/target}
+ROCKS_TARGET_DIR=${SURREAL_ROCKS_TARGET_DIR:-$ROOT/target/surrealdb-rocks}
 ROCKS_MANIFEST="$ROOT/engines/surrealdb-rocksdb/Cargo.toml"
 if [[ -n "${BENCH_BIN:-}" ]]; then
   BIN="$BENCH_BIN"; BUILD_PROFILE=external

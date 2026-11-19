@@ -63,7 +63,7 @@ sudo -n dmsetup targets | grep -q '^log-writes ' || {
   exit 77
 }
 
-TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target}
+TARGET_DIR=${CARGO_TARGET_DIR:-$ROOT/target}
 if (( EUID == 0 )) && [[ -z "${BENCH_BIN:-}" ]]; then
   echo "do not build the benchmark as root; build as the normal user and pass BENCH_BIN when invoking this lane as root" >&2
   exit 77

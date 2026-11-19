@@ -3,8 +3,8 @@ set -euo pipefail
 
 ROOT=${ROOT:-"$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"}
 OUT=${1:-/srv/scratch/db-bench-work/record-full-v1/bin}
-TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/rust-db-record-full-v1-target}
-ROCKS_TARGET_DIR=${SURREAL_ROCKS_TARGET_DIR:-/tmp/rust-db-record-full-v1-rocks-target}
+TARGET_DIR=${CARGO_TARGET_DIR:-$ROOT/target/record-full-v1}
+ROCKS_TARGET_DIR=${SURREAL_ROCKS_TARGET_DIR:-$ROOT/target/record-full-v1-rocks}
 
 if [[ -n "$(git -C "$ROOT" status --porcelain=v1 --untracked-files=normal)" ]]; then
   echo "refusing to pin benchmark binaries from a dirty checkout (tracked or untracked changes present)" >&2
