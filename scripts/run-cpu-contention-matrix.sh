@@ -72,7 +72,7 @@ if [[ -n "${BENCHCTL_BIN:-}" ]]; then
   [[ -x "$BENCHCTL" ]] || { echo "BENCHCTL_BIN is not executable: $BENCHCTL" >&2; exit 2; }
 else
   BENCHCTL="$BENCHCTL_TARGET_DIR/debug/all-db-benchctl"
-  CARGO_TARGET_DIR="$BENCHCTL_TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" build --locked \
+  CARGO_TARGET_DIR="$BENCHCTL_TARGET_DIR" "$ROOT/scripts/cargo-local.sh" build --locked \
     --manifest-path "$ROOT/tools/benchctl/Cargo.toml" --bin all-db-benchctl || exit $?
 fi
 if [[ -n "${BENCH_BIN:-}" ]]; then
@@ -80,7 +80,7 @@ if [[ -n "${BENCH_BIN:-}" ]]; then
   [[ -x "$BIN" ]] || { echo "BENCH_BIN is not executable: $BIN" >&2; exit 2; }
 else
   BIN="$TARGET_DIR/release/kvbench"
-  CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" \
+  CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local.sh" \
     build --release --features kv-all --bin kvbench || exit $?
 fi
 

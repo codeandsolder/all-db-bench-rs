@@ -4,7 +4,7 @@ ROOT=${ROOT:-"$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"}
 OUT=${1:-/srv/scratch/db-bench-work/reopen-quick/bin}
 mkdir -p "$OUT"
 TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target}
-CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" build --release --locked --features kv-all --bin kvbench
+CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local.sh" build --release --locked --features kv-all --bin kvbench
 commit=$(git -C "$ROOT" rev-parse HEAD)
 short=${commit:0:16}
 kv="$OUT/kvbench-$short"

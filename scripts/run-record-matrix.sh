@@ -27,12 +27,12 @@ free_bytes=$(df -B1 --output=avail "$DATA_DIR" | tail -n1 | tr -d ' '); min_free
 [[ -s "$RUN_DIR/host-start.txt" ]] || "$ROOT/scripts/capture-host-metadata.sh" "$RUN_DIR/host-start.txt" "$ROOT" || exit $?
 TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target}
 if [[ -n "${BENCH_BIN:-}" ]]; then BIN="$BENCH_BIN"; BUILD_PROFILE=external; [[ -x "$BIN" ]] || exit 2
-elif [[ "$PROFILE" == smoke ]]; then BIN="$TARGET_DIR/debug/recordbench"; BUILD_PROFILE=debug; CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" build --locked --features record --bin recordbench || exit $?
-else BIN="$TARGET_DIR/release/recordbench"; BUILD_PROFILE=release; CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" build --release --locked --features record --bin recordbench || exit $?; fi
+elif [[ "$PROFILE" == smoke ]]; then BIN="$TARGET_DIR/debug/recordbench"; BUILD_PROFILE=debug; CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local.sh" build --locked --features record --bin recordbench || exit $?
+else BIN="$TARGET_DIR/release/recordbench"; BUILD_PROFILE=release; CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local.sh" build --release --locked --features record --bin recordbench || exit $?; fi
 ROCKS_TARGET_DIR=${SURREAL_ROCKS_TARGET_DIR:-/tmp/rust-db-surreal-rocks-target}
 if [[ -n "${ROCKS_BENCH_BIN:-}" ]]; then ROCKS_BIN="$ROCKS_BENCH_BIN"; ROCKS_BUILD_PROFILE=external; [[ -x "$ROCKS_BIN" ]] || exit 2
-elif [[ "$PROFILE" == smoke ]]; then ROCKS_BIN="$ROCKS_TARGET_DIR/debug/surrealdb-rocksdb-recordbench"; ROCKS_BUILD_PROFILE=debug; "$ROOT/scripts/cargo-local-1.99.sh" build --locked --manifest-path "$ROOT/engines/surrealdb-rocksdb/Cargo.toml" --target-dir "$ROCKS_TARGET_DIR" || exit $?
-else ROCKS_BIN="$ROCKS_TARGET_DIR/release/surrealdb-rocksdb-recordbench"; ROCKS_BUILD_PROFILE=release; "$ROOT/scripts/cargo-local-1.99.sh" build --release --locked --manifest-path "$ROOT/engines/surrealdb-rocksdb/Cargo.toml" --target-dir "$ROCKS_TARGET_DIR" || exit $?; fi
+elif [[ "$PROFILE" == smoke ]]; then ROCKS_BIN="$ROCKS_TARGET_DIR/debug/surrealdb-rocksdb-recordbench"; ROCKS_BUILD_PROFILE=debug; "$ROOT/scripts/cargo-local.sh" build --locked --manifest-path "$ROOT/engines/surrealdb-rocksdb/Cargo.toml" --target-dir "$ROCKS_TARGET_DIR" || exit $?
+else ROCKS_BIN="$ROCKS_TARGET_DIR/release/surrealdb-rocksdb-recordbench"; ROCKS_BUILD_PROFILE=release; "$ROOT/scripts/cargo-local.sh" build --release --locked --manifest-path "$ROOT/engines/surrealdb-rocksdb/Cargo.toml" --target-dir "$ROCKS_TARGET_DIR" || exit $?; fi
 BIN_SHA=$(sha256sum "$BIN" | awk '{print $1}'); ROCKS_SHA=$(sha256sum "$ROCKS_BIN" | awk '{print $1}')
 RUNNER_SHA=$(sha256sum "$ROOT/scripts/run-record-matrix.sh" | awk '{print $1}'); NOISE_SHA=$(sha256sum "$ROOT/tools/benchctl/src/noise.rs" | awk '{print $1}'); CONTINUOUS_NOISE_SHA=$(sha256sum "$ROOT/tools/benchctl/src/noise.rs" | awk '{print $1}')
 ADMISSION_POLICY=pre-io+pre/continuous/post-external-v3

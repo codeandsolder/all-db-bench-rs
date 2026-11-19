@@ -19,7 +19,7 @@ resources and filesystem were identical.
 
 ## Build a reproducible image
 
-Build from a clean, committed checkout with Rust 1.99.1, healthy managed
+Build from a clean, committed checkout with Rust 1.100.0, healthy managed
 sccache, native sccache wrappers, and the required system toolchains.
 No build path silently bypasses sccache.
 
@@ -122,7 +122,7 @@ may hide host work, so an accepted case is not proof of single tenancy.
 
 ## Validated local OCI baseline
 
-On 2026-11-07, the sealed image built on Asus using Rust 1.99.1 and managed
+On 2026-11-07, the sealed image built on Asus using Rust 1.100.0 and managed
 sccache passed a single-container smoke of all baseline lanes: **180/180
 raw-KV cases, 40/40 record cases and 4/4 external TSDB server cases**.
 The run used the actual engine executables, complete start/end provenance,

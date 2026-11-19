@@ -34,7 +34,7 @@ if [[ -n "${BENCH_BIN:-}" ]]; then
   [[ -x "$BIN" ]] || { echo "BENCH_BIN is not executable: $BIN" >&2; exit 2; }
 else
   BIN="$TARGET_DIR/release/recordconcurrency"; BUILD_PROFILE=release
-  CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" build --release --locked --features record --bin recordconcurrency || exit $?
+  CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local.sh" build --release --locked --features record --bin recordconcurrency || exit $?
 fi
 if [[ -n "${BENCH_BIN_SHA256:-}" ]]; then
   BIN_SHA="$BENCH_BIN_SHA256"
@@ -48,7 +48,7 @@ if [[ -n "${ROCKS_BENCH_BIN:-}" ]]; then
   [[ -x "$ROCKS_BIN" ]] || { echo "ROCKS_BENCH_BIN is not executable: $ROCKS_BIN" >&2; exit 2; }
 else
   ROCKS_BIN="$ROCKS_TARGET_DIR/release/surrealdb-rocksdb-recordconcurrency"; ROCKS_BUILD_PROFILE=release
-  "$ROOT/scripts/cargo-local-1.99.sh" build --release --locked \
+  "$ROOT/scripts/cargo-local.sh" build --release --locked \
     --manifest-path "$ROOT/engines/surrealdb-rocksdb/Cargo.toml" \
     --target-dir "$ROCKS_TARGET_DIR" --bin surrealdb-rocksdb-recordconcurrency || exit $?
 fi

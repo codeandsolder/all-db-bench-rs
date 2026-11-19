@@ -17,7 +17,7 @@ continuous_noise_prepare_benchctl() {
   target_dir=${BENCHCTL_TARGET_DIR:-${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target}}
   CONTINUOUS_NOISE_BENCHCTL=${BENCHCTL_BIN:-$target_dir/debug/all-db-benchctl}
   if [[ -z "${BENCHCTL_BIN:-}" ]]; then
-    CARGO_TARGET_DIR="$target_dir" "$root/scripts/cargo-local-1.99.sh" build --locked \
+    CARGO_TARGET_DIR="$target_dir" "$root/scripts/cargo-local.sh" build --locked \
       --manifest-path "$root/tools/benchctl/Cargo.toml" --bin all-db-benchctl
   fi
   [[ -x "$CONTINUOUS_NOISE_BENCHCTL" ]] || {

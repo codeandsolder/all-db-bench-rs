@@ -46,9 +46,9 @@ fi
   echo
   echo "## toolchain"
   if command -v rustup >/dev/null 2>&1 && command -v cargo >/dev/null 2>&1; then
-    RUSTC_REAL=$(rustup which rustc --toolchain 1.99.1 2>/dev/null || true)
+    RUSTC_REAL=$(rustup which rustc --toolchain 1.100.0 2>/dev/null || true)
     [[ -x "$RUSTC_REAL" ]] && "$RUSTC_REAL" --version --verbose || true
-    "$ROOT/scripts/cargo-local-1.99.sh" --version || true
+    "$ROOT/scripts/cargo-local.sh" --version || true
   else
     echo "runtime_toolchain=prebuilt-binaries"
   fi
