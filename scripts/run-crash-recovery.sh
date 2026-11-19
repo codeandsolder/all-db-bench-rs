@@ -23,7 +23,7 @@ if [[ -n "${BENCH_BIN:-}" ]]; then
 else
   BIN="$TARGET_DIR/release/kvbench"
   CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local.sh" \
-    build --release --features kv-all --bin kvbench || exit $?
+    build --release --locked --features kv-all --bin kvbench || exit $?
 fi
 
 ENGINES=(redb fjall surrealkv heed sled lkv manifold turbokv paritydb-hash paritydb-btree rocksdb mdbx persy roughdb jammdb lsmdb)

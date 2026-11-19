@@ -35,9 +35,9 @@ mkdir -p "$RUN_DIR"/{cases,stderr} "$DATA_DIR"
 "$ROOT/scripts/capture-host-metadata.sh" "$RUN_DIR/host-start.txt" "$ROOT"
 TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target}"
 BIN="$TARGET_DIR/release/recordbench"
-"$ROOT/scripts/cargo-local.sh" build --release --features record --bin recordbench
+"$ROOT/scripts/cargo-local.sh" build --release --locked --features record --bin recordbench
 ROCKS_TARGET_DIR="${SURREAL_ROCKS_TARGET_DIR:-$ROOT/target/surrealdb-rocks}"
-"$ROOT/scripts/cargo-local.sh" build --release --manifest-path "$ROOT/engines/surrealdb-rocksdb/Cargo.toml" --target-dir "$ROCKS_TARGET_DIR"
+"$ROOT/scripts/cargo-local.sh" build --release --locked --manifest-path "$ROOT/engines/surrealdb-rocksdb/Cargo.toml" --target-dir "$ROCKS_TARGET_DIR" --bin surrealdb-rocksdb-recordbench
 ROCKS_BIN="$ROCKS_TARGET_DIR/release/surrealdb-rocksdb-recordbench"
 READ_MATERIALIZATION=full-record-v1
 WRITE_MATERIALIZATION=no-return-v1

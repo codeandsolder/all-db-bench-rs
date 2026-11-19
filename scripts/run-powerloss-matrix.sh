@@ -74,7 +74,7 @@ if [[ -n "${BENCH_BIN:-}" ]]; then
 else
   BIN="$TARGET_DIR/release/$BENCH_NAME"
   CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local.sh" \
-    build --release --features "$BENCH_FEATURES" --bin "$BENCH_NAME" || exit $?
+    build --release --locked --features "$BENCH_FEATURES" --bin "$BENCH_NAME" || exit $?
 fi
 BIN_SHA=$(sha256sum "$BIN" | awk '{print $1}')
 
@@ -354,7 +354,9 @@ for trial in $(seq 1 "$TRIALS"); do
         mark_stdout="$RUN_DIR/powerloss/$case_id.mark.stdout"
         mark_stderr="$RUN_DIR/powerloss/$case_id.mark.stderr"
         mark_diag="$RUN_DIR/powerloss/$case_id.mark-diagnostic.txt"
-        sudo -n dmsetup message "$DM_NAME" 0 mark "$cut_mark"           >"$mark_stdout" 2>"$mark_stderr"
+        # Output files are intentionally written by the unprivileged caller in RUN_DIR.
+        # shellcheck disable=SC2024
+        sudo -n dmsetup message "$DM_NAME" 0 mark "$cut_mark" >"$mark_stdout" 2>"$mark_stderr"
         rc=$?
         if (( rc != 0 )); then
           record_failure "$case_id" log-mark "$rc" "$mark_stderr"

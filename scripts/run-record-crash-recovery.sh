@@ -32,7 +32,7 @@ if [[ -n "${BENCH_BIN:-}" ]]; then
 else
   BIN="$TARGET_DIR/release/recordbench"
   CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local.sh" \
-    build --release --features record --bin recordbench || exit $?
+    build --release --locked --features record --bin recordbench || exit $?
 fi
 
 ENGINES=(surrealdb turso sqlite)
