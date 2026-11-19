@@ -61,7 +61,7 @@ The summarizer aggregates independent trials using the median and IQR. It does n
 
 ## Validation
 
-GitHub Actions is the authoritative compile/test/lint gate for pushes, pull requests, and manual validation. It uses Rust 1.100.0, the shared public-repository sccache workflow, strict Clippy (`-D warnings`), whole-workspace tests, the root `record` and `kv-all` feature lanes, and the isolated SurrealDB/RocksDB package.
+GitHub Actions is the authoritative compile/test/lint gate for main-branch pushes, pull requests, merge queues, and manual validation. It uses Rust 1.100.0, the shared public-repository sccache workflow, strict Clippy (`-D warnings`), whole-workspace tests, the root `record` and `kv-all` feature lanes, and the isolated SurrealDB/RocksDB package.
 
 For the equivalent local validation plus host-specific prerequisites and shell policy tests:
 

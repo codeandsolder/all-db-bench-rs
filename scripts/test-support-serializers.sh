@@ -10,6 +10,9 @@ R3="tmp-support-recordc-$$"
 R4="tmp-support-record-plan-$$"
 trap 'rm -rf -- "$TMP" "results/runs/$R0" "results/runs/$R1" "results/runs/$R2" "results/runs/$R3" "results/runs/$R4"' EXIT
 SHA=$(sha256sum /bin/true | awk '{print $1}')
+# Publication provenance must hash the authoritative toolchain manifest.
+rg -Fq 'Cargo.lock Cargo.toml rust-toolchain.toml ' "$ROOT/scripts/capture-host-metadata.sh"
+[[ -s "$ROOT/rust-toolchain.toml" ]]
 
 MATRIX_PLAN_ONLY=1 DBBENCH_STORAGE_ROOT="$TMP/kv" BENCH_BIN=/bin/true \
   ENGINES_OVERRIDE=redb WORKLOADS_OVERRIDE=point-read DURABILITIES_OVERRIDE=sync RUN_ID="$R0" \
