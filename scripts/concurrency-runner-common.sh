@@ -23,7 +23,7 @@ concurrency_check_io_quiet() {
   [[ "$profile" == smoke ]] && return 0
   concurrency_check_free_space "$profile" "$phase" || return $?
   [[ "${ALLOW_BUSY:-0}" == 1 ]] && return 0
-  performance_check_io_quiet "$profile" "$phase" "$threshold"
+  io_admission_check "$phase" "$threshold"
 }
 
 concurrency_check_external_noise() {

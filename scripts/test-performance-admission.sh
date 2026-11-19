@@ -77,13 +77,10 @@ for common in performance-runner-common.sh concurrency-runner-common.sh; do
   }
 done
 
-for baseline in run-record-matrix.sh; do
-  rg -Fq 'CASE_MIN_FREE_GIB=${PERFORMANCE_MIN_FREE_GIB:-$MIN_FREE_GIB}' "$ROOT/scripts/$baseline" && \
-  rg -Fq 'min_gib=${CASE_MIN_FREE_GIB}' "$ROOT/scripts/$baseline" || {
-    echo "missing profile-aware free-space admission floor in $baseline" >&2
-    exit 1
-  }
-done
+# The record lane delegates to the shared free-space and device gate.
+rg -Fq 'CASE_MIN_FREE_GIB=${PERFORMANCE_MIN_FREE_GIB:-$MIN_FREE_GIB}' "$ROOT/scripts/run-record-matrix.sh"
+rg -Fq 'performance_check_io_quiet "$PROFILE" "$1"' "$ROOT/scripts/run-record-matrix.sh"
+rg -Fq 'local min_gib=${CASE_MIN_FREE_GIB' "$ROOT/scripts/performance-runner-common.sh"
 
 for runner in \
   run-kv-matrix.sh run-record-matrix.sh \
