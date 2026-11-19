@@ -62,6 +62,7 @@ fi
   echo "storage_profile_sha256=${DBBENCH_STORAGE_PROFILE_SHA256:-}"
   echo "storage_profile_path=${DBBENCH_STORAGE_PROFILE_PATH:-}"
   echo "storage_profile_root=${DBBENCH_STORAGE_ROOT:-}"
+  echo "io_quiet_devices_json=${PERFORMANCE_IO_QUIET_DEVICES_JSON:-[]}"
   cc --version 2>/dev/null | head -n1 || true
   c++ --version 2>/dev/null | head -n1 || true
   fio --version || true

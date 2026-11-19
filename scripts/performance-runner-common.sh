@@ -17,47 +17,72 @@ performance_check_free_space() {
   fi
 }
 
+# The same physical-device gate is used by every measured benchmark family.
+# All backing devices are sampled in one interval; each must be idle.
+io_admission_check() {
+  local phase=$1 threshold=${2:-5.0}
+  local json=${PERFORMANCE_IO_QUIET_DEVICES_JSON:-[]}
+  if ! jq -e 'type=="array" and all(.[];type=="string" and startswith("/"))' <<<"$json" >/dev/null; then
+    echo "invalid PERFORMANCE_IO_QUIET_DEVICES_JSON" >&2; return 2
+  fi
+  local -a devices=() paths=() reads=() writes=() busy=() counters=()
+  mapfile -t devices < <(jq -r '.[]' <<<"$json")
+  if ((${#devices[@]})); then
+    local seconds=${PERFORMANCE_IO_QUIET_SAMPLE_SECONDS:-1}
+    local max_iops=${PERFORMANCE_IO_QUIET_MAX_IOPS:-100}
+    local max_busy=${PERFORMANCE_IO_QUIET_MAX_BUSY_PERCENT:-10}
+    local number_re='^[0-9]+([.][0-9]+)?$'
+    if [[ ! $seconds =~ $number_re || ! $max_iops =~ $number_re || ! $max_busy =~ $number_re ]] ||
+      ! awk -v s="$seconds" 'BEGIN {exit !(s>0)}'; then
+      echo "invalid physical-device admission limits" >&2; return 2
+    fi
+    local dev resolved stat i operations busy_ms
+    for dev in "${devices[@]}"; do
+      resolved=$(realpath -e -- "$dev") || { echo "unresolvable I/O device: $dev" >&2; return 2; }
+      [[ -b "$resolved" ]] || { echo "not a block device: $dev" >&2; return 2; }
+      stat="/sys/class/block/${resolved##*/}/stat"
+      [[ -r "$stat" ]] || { echo "device stat not readable: $stat" >&2; return 2; }
+      read -r -a counters <"$stat" || return 2
+      ((${#counters[@]} >= 11)) || { echo "short device statistics: $stat" >&2; return 2; }
+      paths+=("$stat")
+      reads+=("${counters[0]}")
+      writes+=("${counters[4]}")
+      busy+=("${counters[9]}")
+    done
+    sleep "$seconds" || return 2
+    for i in "${!paths[@]}"; do
+      read -r -a counters <"${paths[i]}" || return 2
+      ((${#counters[@]} >= 11)) || return 2
+      operations=$((counters[0]-reads[i]+counters[4]-writes[i]))
+      busy_ms=$((counters[9]-busy[i]))
+      if ((operations < 0 || busy_ms < 0)); then
+        echo "device I/O statistics reset: ${devices[i]}" >&2; return 2
+      fi
+      if ! awk -v o="$operations" -v b="$busy_ms" -v s="$seconds" -v i="$max_iops" -v m="$max_busy" \
+          'BEGIN {exit !(o/s <= i && b/(s*10) <= m)}'; then
+        echo "refusing benchmark under backing-device I/O ($phase): ${devices[i]} operations=$operations busy_ms=$busy_ms interval=$seconds" >&2
+        return 75
+      fi
+    done
+    return 0
+  fi
+  # CPU/memory bounding is not physical-I/O isolation. Fall back to host
+  # PSI if a versioned profile does not explicitly bind backing devices.
+  local pressure
+  pressure=$(awk '/^full / {for(i=1;i<=NF;i++) if($i ~ /^avg10=/){split($i,a,"="); print a[2]}}' /proc/pressure/io) || return 2
+  if ! awk -v p="${pressure:-0}" -v t="$threshold" 'BEGIN {exit !(p<=t)}'; then
+    echo "refusing benchmark under I/O pressure ($phase): ${pressure}%" >&2
+    return 75
+  fi
+}
+
 performance_check_io_quiet() {
   local profile=$1 phase=$2 threshold=${3:-5.0}
   [[ "$profile" == smoke ]] && return 0
   performance_check_free_space "$profile" "$phase" || return $?
   [[ "${ALLOW_BUSY:-0}" == 1 ]] && return 0
 
-  # Multi-device hosts can have persistent pressure on an unrelated backing
-  # device. When the caller binds admission to the benchmark device, sample
-  # that block device directly instead of rejecting on host-global I/O PSI.
-  if [[ -n "${PERFORMANCE_IO_QUIET_DEVICE:-}" ]]; then
-    local device=${PERFORMANCE_IO_QUIET_DEVICE##*/}
-    local stat_path="/sys/class/block/$device/stat"
-    local sample_s=${PERFORMANCE_IO_QUIET_SAMPLE_SECONDS:-1}
-    local max_iops=${PERFORMANCE_IO_QUIET_MAX_IOPS:-100}
-    local max_busy=${PERFORMANCE_IO_QUIET_MAX_BUSY_PERCENT:-10}
-    [[ -r "$stat_path" ]] || { echo "I/O admission device stat not readable: $stat_path" >&2; return 2; }
-    local r1 _rm1 _rs1 _rt1 w1 _wm1 _ws1 _wt1 _in1 busy1 _weighted1
-    local r2 _rm2 _rs2 _rt2 w2 _wm2 _ws2 _wt2 _in2 busy2 _weighted2
-    read -r r1 _rm1 _rs1 _rt1 w1 _wm1 _ws1 _wt1 _in1 busy1 _weighted1 _ < "$stat_path"
-    sleep "$sample_s"
-    read -r r2 _rm2 _rs2 _rt2 w2 _wm2 _ws2 _wt2 _in2 busy2 _weighted2 _ < "$stat_path"
-    local iops busy_pct
-    iops=$(awk -v d="$(((r2-r1)+(w2-w1)))" -v s="$sample_s" 'BEGIN { printf "%.3f", d/s }') || return 2
-    busy_pct=$(awk -v d="$((busy2-busy1))" -v s="$sample_s" 'BEGIN { printf "%.3f", d/(s*1000)*100 }') || return 2
-    if ! awk -v i="$iops" -v mi="$max_iops" -v b="$busy_pct" -v mb="$max_busy" 'BEGIN { exit !(i<=mi && b<=mb) }'; then
-      echo "refusing performance case under device I/O activity ($phase): device=$PERFORMANCE_IO_QUIET_DEVICE iops=$iops busy=${busy_pct}% limits=${max_iops}iops/${max_busy}%" >&2
-      return 75
-    fi
-    return 0
-  fi
-
-  # A bounded envelope only replaces host-global PSI admission. Explicitly
-  # requested device-scoped admission must still run, including on ZFS hosts.
-  [[ "${DBBENCH_STORAGE_PROFILE_MODE:-}" == bounded ]] && return 0
-
-  local pressure
-  pressure=$(awk '/^full / {for(i=1;i<=NF;i++) if($i ~ /^avg10=/){split($i,a,"="); print a[2]}}' /proc/pressure/io)
-  if ! awk -v p="${pressure:-0}" -v t="$threshold" 'BEGIN{exit !(p<=t)}'; then
-    echo "refusing performance case under I/O pressure ($phase): ${pressure}%" >&2
-    return 75
-  fi
+  io_admission_check "$phase" "$threshold"
 }
 
 performance_check_external_noise() {

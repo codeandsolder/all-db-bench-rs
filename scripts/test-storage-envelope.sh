@@ -70,4 +70,13 @@ rc=$?
 set -e
 [[ $rc -eq 75 ]] || { echo "expected host mismatch exit 75, got $rc" >&2; exit 1; }
 
+# Caller-provided admission device must never replace profile admission.
+out=$(PERFORMANCE_IO_QUIET_DEVICES_JSON='["/dev/invalid"]' \
+  "$ROOT/scripts/run-storage-envelope.sh" "$TMP/native.json" -- sh -c 'printf "%s" "$PERFORMANCE_IO_QUIET_DEVICES_JSON"')
+[[ "$out" == '[]' ]] || { echo "profile failed to replace ambient device binding" >&2; exit 1; }
+jq '.admission.devices = ["/dev/null"]' "$TMP/native.json" >"$TMP/not-block.json"
+if "$ROOT/scripts/run-storage-envelope.sh" "$TMP/not-block.json" -- true >/dev/null 2>&1; then
+  echo "non-block admission device was accepted" >&2; exit 1
+fi
+
 echo "storage envelope tests passed"

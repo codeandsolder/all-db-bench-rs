@@ -13,6 +13,10 @@ A replacement for the earlier redb/Turso/Fjall growth-loop benchmark, designed a
     ./scripts/cargo-local.sh build --release --locked --manifest-path engines/surrealdb-rocksdb/Cargo.toml --target-dir target/surrealdb-rocks
     ./scripts/cargo-local.sh build --release --locked --manifest-path engines/tsdb-server/Cargo.toml
 
+For physical-device-qualified Asus ZFS bounded runs, use the
+profiles/storage/asus-zfs-*-bounded-v3.json manifests. Older profiles are
+retained as historical calibration records.
+
 ## Source layout
 
 - `src/kv/` contains the raw embedded-KV engine adapters, engine policy, concurrent client adapters, deterministic data/lifecycle helpers, and the single/concurrency/sustained runners. The `src/bin/kv*` files are intentionally tiny entrypoints.

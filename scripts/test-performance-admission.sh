@@ -148,32 +148,33 @@ for runner in run-kv-concurrency-plan.sh run-record-concurrency-plan.sh; do
   }
 done
 
-# Device-scoped admission overrides the bounded-profile global-PSI shortcut.
-# Exercise the actual function without depending on unrelated free space.
-# shellcheck source=performance-runner-common.sh
+# Every selected physical device must pass admission in native/bounded mode.
 source "$ROOT/scripts/performance-runner-common.sh"
 performance_check_free_space() { return 0; }
-
-expect_device_admission_status() {
+expect_device_status() {
   local expected=$1 actual
   shift
   if "$@"; then actual=0; else actual=$?; fi
-  if (( actual != expected )); then
+  if ((actual != expected)); then
     printf 'expected admission status %s, got %s\n' "$expected" "$actual" >&2
     return 1
   fi
 }
-
-check_missing_device() (
+missing_device() (
   export DBBENCH_STORAGE_PROFILE_MODE=$1
-  export ALLOW_BUSY=${2:-0}
-  export PERFORMANCE_IO_QUIET_DEVICE=dbbench-nonexistent-admission-test-device
+  export PERFORMANCE_IO_QUIET_DEVICES_JSON='["/dev/dbbench-missing-device"]'
   performance_check_io_quiet quick regression >/dev/null 2>&1
 )
-
-expect_device_admission_status 2 check_missing_device bounded
-expect_device_admission_status 2 check_missing_device native
-expect_device_admission_status 0 check_missing_device bounded 1
-# Bounded mode without an explicit device still skips host-global PSI.
-expect_device_admission_status 0 bash -c 'source "$1"; performance_check_free_space() { return 0; }; unset PERFORMANCE_IO_QUIET_DEVICE; DBBENCH_STORAGE_PROFILE_MODE=bounded performance_check_io_quiet quick regression' _ "$ROOT/scripts/performance-runner-common.sh"
+expect_device_status 2 missing_device bounded
+expect_device_status 2 missing_device native
+expect_device_status 2 bash -c 'source "$1"; performance_check_free_space() { return 0; }; PERFORMANCE_IO_QUIET_DEVICES_JSON=broken performance_check_io_quiet quick malformed' _ "$ROOT/scripts/performance-runner-common.sh"
+# Without a device, bounded mode falls back to PSI, not unconditional approval.
+expect_device_status 75 bash -c 'source "$1"; performance_check_free_space() { return 0; }; PERFORMANCE_IO_QUIET_DEVICES_JSON="[]" DBBENCH_STORAGE_PROFILE_MODE=bounded performance_check_io_quiet quick fallback -1' _ "$ROOT/scripts/performance-runner-common.sh"
+rg -Fq 'source "$ROOT/scripts/performance-runner-common.sh"' "$ROOT/scripts/run-record-matrix.sh"
+rg -Fq 'source "$ROOT/scripts/performance-runner-common.sh"' "$ROOT/scripts/run-tsdb-matrix.sh"
+rg -Fq 'source "$COMMON_DIR/performance-runner-common.sh"' "$ROOT/scripts/concurrency-runner-common.sh"
+for runner in run-kv-concurrency-matrix.sh run-kv-concurrency-plan.sh run-record-concurrency-matrix.sh run-record-concurrency-plan.sh run-record-matrix.sh; do
+  rg -q 'performance_common_sha256' "$ROOT/scripts/$runner" || { echo "missing shared admission helper identity in $runner" >&2; exit 1; }
+done
+rg -Fq '"io_admission_common": "$PERFORMANCE_COMMON_SHA"' "$ROOT/scripts/run-tsdb-matrix.sh"
 echo performance-device-admission-ok

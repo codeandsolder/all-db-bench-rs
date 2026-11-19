@@ -67,6 +67,44 @@ if jq -e '.expected.zfs? | type == "object"' "$PROFILE" >/dev/null; then
   done < <(jq -r '.expected.zfs | to_entries[] | [.key, (.value|tostring)] | @tsv' "$PROFILE")
 fi
 
+# Versioned device list: validate coverage of every active ZFS pool vdev,
+# or the mounted conventional filesystem device, before launching a case.
+ADMISSION_DEVICES=$(jq -ce '(.admission.devices // []) |
+  if type=="array" and all(.[];type=="string" and startswith("/")) then . else error("invalid admission.devices") end' "$PROFILE") || exit 2
+declare -a CONFIGURED=() BACKING=()
+while IFS= read -r dev; do
+  [[ -n "$dev" ]] || continue
+  resolved=$(realpath -e -- "$dev") || { echo "admission device missing: $dev" >&2; exit 75; }
+  [[ -b "$resolved" && -r "/sys/class/block/${resolved##*/}/stat" ]] || {
+    echo "invalid admission block device: $dev" >&2; exit 75
+  }
+  CONFIGURED+=("$resolved")
+done < <(jq -r '.[]' <<<"$ADMISSION_DEVICES")
+if ((${#CONFIGURED[@]})); then
+  if [[ "$FSTYPE" == zfs ]]; then
+    command -v zpool >/dev/null || exit 127
+    pool_status=$(zpool status -P -L "${SOURCE%%/*}") || exit 75
+    while IFS= read -r dev; do
+      [[ -n "$dev" ]] || continue
+      resolved=$(realpath -e -- "$dev") || exit 75
+      [[ -b "$resolved" ]] || exit 75
+      BACKING+=("$resolved")
+    done < <(awk '$1 ~ /^\/dev\// && $2=="ONLINE" {print $1}' <<<"$pool_status")
+  elif [[ "$SOURCE" == /dev/* ]]; then
+    BACKING+=("$(realpath -e -- "$SOURCE")")
+  else
+    echo "cannot verify admission backing for filesystem source $SOURCE" >&2; exit 75
+  fi
+  ((${#BACKING[@]})) || { echo "no active physical backing devices found" >&2; exit 75; }
+  configured_set=$(printf '%s\n' "${CONFIGURED[@]}" | sort -u)
+  backing_set=$(printf '%s\n' "${BACKING[@]}" | sort -u)
+  if [[ "$configured_set" != "$backing_set" ]]; then
+    printf 'admission device mismatch: configured=%s backing=%s\n' "$configured_set" "$backing_set" >&2
+    exit 75
+  fi
+fi
+export PERFORMANCE_IO_QUIET_DEVICES_JSON="$ADMISSION_DEVICES"
+
 PROFILE_SHA=$(sha256sum "$PROFILE" | awk '{print $1}')
 export DBBENCH_STORAGE_PROFILE_ID="$PROFILE_ID"
 export DBBENCH_STORAGE_PROFILE_MODE="$MODE"
@@ -143,4 +181,5 @@ exec systemd-run --quiet --wait --collect --pipe --unit="$UNIT" \
   --setenv="DBBENCH_STORAGE_PROFILE_SHA256=$DBBENCH_STORAGE_PROFILE_SHA256" \
   --setenv="DBBENCH_STORAGE_PROFILE_PATH=$DBBENCH_STORAGE_PROFILE_PATH" \
   --setenv="DBBENCH_STORAGE_ROOT=$DBBENCH_STORAGE_ROOT" \
+  --setenv="PERFORMANCE_IO_QUIET_DEVICES_JSON=$PERFORMANCE_IO_QUIET_DEVICES_JSON" \
   "${PROPS[@]}" -- "$@"

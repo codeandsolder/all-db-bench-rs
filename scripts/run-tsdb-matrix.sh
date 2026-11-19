@@ -83,6 +83,7 @@ INFLUXDB3_PYTHON_LIB=$(find "$DEPS/influxdb3-3.12.1/python/lib" -maxdepth 1 -typ
 [[ -n "$INFLUXDB3_PYTHON_LIB" ]] || { echo "missing bundled InfluxDB libpython runtime" >&2; exit 2; }
 INFLUXDB3_PYTHON_SHA=$(sha256sum "$INFLUXDB3_PYTHON_LIB" | awk '{print $1}')
 RUNNER_SHA=$(sha256sum "$ROOT/scripts/run-tsdb-matrix.sh" | awk '{print $1}')
+PERFORMANCE_COMMON_SHA=$(sha256sum "$ROOT/scripts/performance-runner-common.sh" | awk '{print $1}')
 INSTALLER_SHA=$(sha256sum "$ROOT/scripts/ensure-tsdb-binaries.sh" | awk '{print $1}')
 PROCESS_CAPTURE_SHA=$BENCHCTL_SHA
 MERGE_RESULT_SHA=$BENCHCTL_SHA
@@ -95,15 +96,13 @@ if (( free_bytes < min_free_bytes )); then
   exit 75
 fi
 
+# shellcheck source=performance-runner-common.sh
+source "$ROOT/scripts/performance-runner-common.sh"
+
 check_quiet_host() {
-  local phase=${1:-case} io_psi10
+  local phase=${1:-case}
   [[ "$PROFILE" == smoke || "${ALLOW_BUSY:-0}" == 1 ]] && return 0
-  [[ "${DBBENCH_STORAGE_PROFILE_MODE:-}" == bounded ]] && return 0
-  io_psi10=$(awk '/^full / {for(i=1;i<=NF;i++) if($i ~ /^avg10=/){split($i,a,"="); print a[2]}}' /proc/pressure/io)
-  if ! awk -v p="${io_psi10:-0}" 'BEGIN { exit !(p <= 5.0) }'; then
-    echo "refusing TSDB performance case under I/O pressure ($phase): io PSI full avg10=${io_psi10}%" >&2
-    return 75
-  fi
+  PERFORMANCE_MIN_FREE_GIB="$MIN_FREE_GIB" performance_check_io_quiet "$PROFILE" "$phase"
 }
 
 check_external_noise() {
@@ -221,6 +220,7 @@ cat > "$SUPPORT_NEW" <<EOF_SUPPORT
   "benchmark_binary_sha256": "$BIN_SHA",
   "harness_sha256": {
     "runner": "$RUNNER_SHA",
+    "io_admission_common": "$PERFORMANCE_COMMON_SHA",
     "installer": "$INSTALLER_SHA",
     "process_capture": "$PROCESS_CAPTURE_SHA",
     "result_merge": "$MERGE_RESULT_SHA",
