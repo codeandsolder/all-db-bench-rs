@@ -8,7 +8,9 @@ R1="tmp-support-record-$$"
 R2="tmp-support-kvc-$$"
 R3="tmp-support-recordc-$$"
 R4="tmp-support-record-plan-$$"
-trap 'rm -rf -- "$TMP" "results/runs/$R0" "results/runs/$R1" "results/runs/$R2" "results/runs/$R3" "results/runs/$R4"' EXIT
+R5="tmp-support-sustained-$$"
+R6="tmp-support-reopen-$$"
+trap 'rm -rf -- "$TMP" "results/runs/$R0" "results/runs/$R1" "results/runs/$R2" "results/runs/$R3" "results/runs/$R4" "results/runs/$R5" "results/runs/$R6"' EXIT
 SHA=$(sha256sum /bin/true | awk '{print $1}')
 # Publication provenance must hash the authoritative toolchain manifest.
 rg -Fq 'Cargo.lock Cargo.toml rust-toolchain.toml ' "$ROOT/scripts/capture-host-metadata.sh"
@@ -50,5 +52,16 @@ MATRIX_PLAN_ONLY=1 DBBENCH_STORAGE_ROOT="$TMP/record-plan-data" BENCH_BIN=/bin/t
   scripts/run-record-concurrency-plan.sh "$TMP/record-plan.json" "$R4" >/dev/null
 jq -e '.lane == "record-concurrency" and .read_materialization == "full-record-v1" and .write_materialization == "no-return-v1" and .case_count > 0' \
   "results/runs/$R4/support.json" >/dev/null
+
+# The measured KV lanes retain exact support identity in plan-only mode.
+MATRIX_PLAN_ONLY=1 DBBENCH_STORAGE_ROOT="$TMP/sustained" BENCH_BIN=/bin/true \
+  BENCH_SOURCE_COMMIT="$COMMIT" RUN_ID="$R5" scripts/run-kv-sustained-matrix.sh smoke >/dev/null
+jq -e --arg commit "$COMMIT" '.lane == "kv-sustained" and .benchmark_source_commit == $commit and .build_profile == "external" and .case_count > 0' \
+  "results/runs/$R5/support.json" >/dev/null
+
+MATRIX_PLAN_ONLY=1 DBBENCH_STORAGE_ROOT="$TMP/reopen" BENCH_BIN=/bin/true \
+  BENCH_SOURCE_COMMIT="$COMMIT" RUN_ID="$R6" scripts/run-reopen-matrix.sh smoke warm >/dev/null
+jq -e --arg commit "$COMMIT" '.lane == "kv-reopen" and .benchmark_source_commit == $commit and .build_profile == "external" and .case_count == 50' \
+  "results/runs/$R6/support.json" >/dev/null
 
 echo support-serializers-ok

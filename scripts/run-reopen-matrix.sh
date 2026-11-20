@@ -27,39 +27,13 @@ source "$ROOT/scripts/kv-matrix-policy.sh"
 # shellcheck source=performance-runner-common.sh
 source "$ROOT/scripts/performance-runner-common.sh"
 RUN_ID=${RUN_ID:-"$(date -u +%Y%m%dT%H%M%SZ)-reopen-$CACHE-$PROFILE"}
-RUN_DIR="$ROOT/results/runs/$RUN_ID"; DATA_DIR="${DBBENCH_STORAGE_ROOT:-$ROOT}/data/runs/$RUN_ID"
-mkdir -p "$RUN_DIR"/{cases,stderr,noise} "$DATA_DIR"
-if [[ "${MATRIX_PLAN_ONLY:-0}" != 1 ]]; then
-  free_bytes=$(df -B1 --output=avail "$DATA_DIR" | tail -n1 | tr -d ' ')
-  min_free_bytes=$((MIN_FREE_GIB * 1024 * 1024 * 1024))
-  (( free_bytes >= min_free_bytes )) || { echo "refusing reopen run: free=$free_bytes required=$min_free_bytes" >&2; exit 75; }
-  [[ -s "$RUN_DIR/host-start.txt" ]] || "$ROOT/scripts/capture-host-metadata.sh" "$RUN_DIR/host-start.txt" "$ROOT"
-fi
+performance_prepare_matrix_run "$ROOT" "$RUN_ID" "$MIN_FREE_GIB" "reopen" || exit $?
 
 TARGET_DIR=${CARGO_TARGET_DIR:-$ROOT/target}
-if [[ -n "${BENCH_BIN:-}" ]]; then
-  BIN="$BENCH_BIN"; BUILD_PROFILE=external
-  [[ -x "$BIN" ]] || { echo "BENCH_BIN is not executable: $BIN" >&2; exit 2; }
-else
-  BIN="$TARGET_DIR/release/kvbench"; BUILD_PROFILE=release
-  CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local.sh" build --release --locked --features kv-all --bin kvbench || exit $?
-fi
-if [[ -n "${BENCH_BIN_SHA256:-}" ]]; then BIN_SHA="$BENCH_BIN_SHA256"; else BIN_SHA=$(sha256sum "$BIN" | awk '{print $1}'); fi
-HARNESS_COMMIT=$(git -C "$ROOT" rev-parse HEAD)
-if [[ "$BUILD_PROFILE" == external ]]; then
-  BENCH_SOURCE_COMMIT=${BENCH_SOURCE_COMMIT:-}
-else
-  BENCH_SOURCE_COMMIT=${BENCH_SOURCE_COMMIT:-$HARNESS_COMMIT}
-fi
-[[ "$BENCH_SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo "invalid or missing BENCH_SOURCE_COMMIT=$BENCH_SOURCE_COMMIT" >&2; exit 2; }
-RUNNER_SHA=$(sha256sum "$ROOT/scripts/run-reopen-matrix.sh" | awk '{print $1}')
+performance_select_benchmark_binary "$ROOT" "$TARGET_DIR" kv-all kvbench release || exit $?
+performance_capture_benchmark_source "$ROOT" || exit $?
 KV_POLICY_SHA=$(sha256sum "$ROOT/scripts/kv-matrix-policy.sh" | awk '{print $1}')
-COMMON_SHA=$(sha256sum "$ROOT/scripts/performance-runner-common.sh" | awk '{print $1}')
-NOISE_SHA=$(sha256sum "$ROOT/tools/benchctl/src/noise.rs" | awk '{print $1}')
-CONTINUOUS_NOISE_SHA=$(sha256sum "$ROOT/tools/benchctl/src/noise.rs" | awk '{print $1}')
-CONTINUOUS_NOISE_COMMON_SHA=$(sha256sum "$ROOT/scripts/continuous-noise-runner-common.sh" | awk '{print $1}')
-HOST_NAME=$(hostname); MACHINE_ID_SHA256=$("$ROOT/scripts/host-machine-id-sha256.sh")
-FILESYSTEM=$(findmnt -n -o FSTYPE --target "$DATA_DIR"); SOURCE=$(findmnt -n -o SOURCE --target "$DATA_DIR")
+performance_capture_benchmark_context "$ROOT" "$ROOT/scripts/run-reopen-matrix.sh" "$DATA_DIR" || exit $?
 
 ENGINES=(redb fjall surrealkv heed sled lkv manifold turbokv paritydb-hash paritydb-btree rocksdb mdbx persy roughdb jammdb lsmdb)
 DURS=(relaxed sync)

@@ -44,16 +44,9 @@ min_free_bytes=$((MIN_FREE_GIB * 1024 * 1024 * 1024))
 [[ -s "$RUN_DIR/host-start.txt" ]] || "$ROOT/scripts/capture-host-metadata.sh" "$RUN_DIR/host-start.txt" "$ROOT"
 
 TARGET_DIR=${CARGO_TARGET_DIR:-$ROOT/target}
-if [[ -n "${BENCH_BIN:-}" ]]; then
-  BIN="$BENCH_BIN"; BUILD_PROFILE=external
-  [[ -x "$BIN" ]] || { echo "BENCH_BIN is not executable: $BIN" >&2; exit 2; }
-elif [[ "$PROFILE" == smoke ]]; then
-  BIN="$TARGET_DIR/debug/recordconcurrency"; BUILD_PROFILE=debug
-  CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local.sh" build --locked --features record --bin recordconcurrency || exit $?
-else
-  BIN="$TARGET_DIR/release/recordconcurrency"; BUILD_PROFILE=release
-  CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local.sh" build --release --locked --features record --bin recordconcurrency || exit $?
-fi
+CONCURRENCY_BUILD_MODE=release
+[[ "$PROFILE" == smoke ]] && CONCURRENCY_BUILD_MODE=debug
+performance_select_benchmark_binary "$ROOT" "$TARGET_DIR" record recordconcurrency "$CONCURRENCY_BUILD_MODE" || exit $?
 if [[ -n "${BENCH_BIN_SHA256:-}" ]]; then BIN_SHA="$BENCH_BIN_SHA256"; else BIN_SHA=$(sha256sum "$BIN" | awk '{print $1}'); fi
 ROCKS_TARGET_DIR=${SURREAL_ROCKS_TARGET_DIR:-$ROOT/target/surrealdb-rocks}
 if [[ -n "${ROCKS_BENCH_BIN:-}" ]]; then

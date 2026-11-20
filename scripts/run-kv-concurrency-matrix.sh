@@ -43,16 +43,9 @@ min_free_bytes=$((MIN_FREE_GIB * 1024 * 1024 * 1024))
 [[ -s "$RUN_DIR/host-start.txt" ]] || "$ROOT/scripts/capture-host-metadata.sh" "$RUN_DIR/host-start.txt" "$ROOT"
 
 TARGET_DIR=${CARGO_TARGET_DIR:-$ROOT/target}
-if [[ -n "${BENCH_BIN:-}" ]]; then
-  BIN="$BENCH_BIN"; BUILD_PROFILE=external
-  [[ -x "$BIN" ]] || { echo "BENCH_BIN is not executable: $BIN" >&2; exit 2; }
-elif [[ "$PROFILE" == smoke ]]; then
-  BIN="$TARGET_DIR/debug/kvconcurrency"; BUILD_PROFILE=debug
-  CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local.sh" build --locked --features kv-all --bin kvconcurrency || exit $?
-else
-  BIN="$TARGET_DIR/release/kvconcurrency"; BUILD_PROFILE=release
-  CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local.sh" build --release --locked --features kv-all --bin kvconcurrency || exit $?
-fi
+CONCURRENCY_BUILD_MODE=release
+[[ "$PROFILE" == smoke ]] && CONCURRENCY_BUILD_MODE=debug
+performance_select_benchmark_binary "$ROOT" "$TARGET_DIR" kv-all kvconcurrency "$CONCURRENCY_BUILD_MODE" || exit $?
 if [[ -n "${BENCH_BIN_SHA256:-}" ]]; then BIN_SHA="$BENCH_BIN_SHA256"; else BIN_SHA=$(sha256sum "$BIN" | awk '{print $1}'); fi
 RUNNER_SHA=$(sha256sum "$ROOT/scripts/run-kv-concurrency-matrix.sh" | awk '{print $1}')
 KV_POLICY_SHA=$(sha256sum "$ROOT/scripts/kv-matrix-policy.sh" | awk '{print $1}')
