@@ -3,22 +3,18 @@ set -euo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "$0")" && pwd)
 ROOT=$(cd -- "$SCRIPT_DIR/.." && pwd)
 if [[ -z "${CARGO_REAL:-}" ]]; then
-  if [[ -x /opt/cargo-ephemeral/current/cargo ]]; then
-    CARGO_REAL=/opt/cargo-ephemeral/current/cargo
-  else
-    CARGO_REAL=$(rustup which cargo --toolchain 1.99.1 2>/dev/null || command -v cargo || true)
-  fi
+  CARGO_REAL=$(rustup which cargo --toolchain 1.100.0 2>/dev/null || true)
 fi
 if [[ -z "$CARGO_REAL" || ! -x "$CARGO_REAL" ]]; then
   echo "Cargo binary not found (set CARGO_REAL explicitly)" >&2
   exit 127
 fi
-RUSTC_REAL=${RUSTC_REAL:-$(rustup which rustc --toolchain 1.99.1)}
+RUSTC_REAL=${RUSTC_REAL:-$(rustup which rustc --toolchain 1.100.0)}
 if [[ ! -x "$RUSTC_REAL" ]]; then
-  echo "Rust 1.99.1 rustc not found: $RUSTC_REAL" >&2
+  echo "Rust 1.100.0 rustc not found: $RUSTC_REAL" >&2
   exit 127
 fi
-export RUSTUP_TOOLCHAIN=1.99.1
+export RUSTUP_TOOLCHAIN=1.100.0
 export RUSTC="$RUSTC_REAL"
 # shellcheck source=sccache-native-common.sh
 source "$ROOT/scripts/sccache-native-common.sh"

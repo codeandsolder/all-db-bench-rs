@@ -49,10 +49,10 @@ if (( free_bytes < min_free_bytes )); then
 fi
 
 [[ -s "$RUN_DIR/host-start.txt" ]] || "$ROOT/scripts/capture-host-metadata.sh" "$RUN_DIR/host-start.txt" "$ROOT" || exit $?
-TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target}
+TARGET_DIR=${CARGO_TARGET_DIR:-$ROOT/target}
 BENCHCTL_TARGET_DIR=${BENCHCTL_TARGET_DIR:-$TARGET_DIR}
 BENCHCTL="$BENCHCTL_TARGET_DIR/debug/all-db-benchctl"
-CARGO_TARGET_DIR="$BENCHCTL_TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" build --locked \
+CARGO_TARGET_DIR="$BENCHCTL_TARGET_DIR" "$ROOT/scripts/cargo-local.sh" build --locked \
   --manifest-path "$ROOT/tools/benchctl/Cargo.toml" --bin all-db-benchctl || exit $?
 BENCHCTL_SHA=$(sha256sum "$BENCHCTL" | awk '{print $1}')
 if [[ -n "${BENCH_BIN:-}" ]]; then
@@ -62,24 +62,24 @@ else
   "$ROOT/scripts/ensure-sqlite-3.54.0.sh" || exit $?
   if [[ "$PROFILE" == smoke ]]; then
     BIN="$TARGET_DIR/debug/recordbench"; BUILD_PROFILE=debug
-    CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" build --locked --features record --bin recordbench || exit $?
+    CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local.sh" build --locked --features record --bin recordbench || exit $?
   else
     BIN="$TARGET_DIR/release/recordbench"; BUILD_PROFILE=release
-    CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" build --release --locked --features record --bin recordbench || exit $?
+    CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local.sh" build --release --locked --features record --bin recordbench || exit $?
   fi
 fi
 
-ROCKS_TARGET_DIR=${SURREAL_ROCKS_TARGET_DIR:-/tmp/rust-db-surreal-rocks-target}
+ROCKS_TARGET_DIR=${SURREAL_ROCKS_TARGET_DIR:-$ROOT/target/surrealdb-rocks}
 if [[ -n "${ROCKS_BENCH_BIN:-}" ]]; then
   ROCKS_BIN="$ROCKS_BENCH_BIN"; ROCKS_BUILD_PROFILE=external
   [[ -x "$ROCKS_BIN" ]] || { echo "ROCKS_BENCH_BIN is not executable: $ROCKS_BIN" >&2; exit 2; }
 else
   if [[ "$PROFILE" == smoke ]]; then
     ROCKS_BIN="$ROCKS_TARGET_DIR/debug/surrealdb-rocksdb-recordbench"; ROCKS_BUILD_PROFILE=debug
-    "$ROOT/scripts/cargo-local-1.99.sh" build --locked --manifest-path "$ROOT/engines/surrealdb-rocksdb/Cargo.toml" --target-dir "$ROCKS_TARGET_DIR" --bin surrealdb-rocksdb-recordbench || exit $?
+    "$ROOT/scripts/cargo-local.sh" build --locked --manifest-path "$ROOT/engines/surrealdb-rocksdb/Cargo.toml" --target-dir "$ROCKS_TARGET_DIR" --bin surrealdb-rocksdb-recordbench || exit $?
   else
     ROCKS_BIN="$ROCKS_TARGET_DIR/release/surrealdb-rocksdb-recordbench"; ROCKS_BUILD_PROFILE=release
-    "$ROOT/scripts/cargo-local-1.99.sh" build --release --locked --manifest-path "$ROOT/engines/surrealdb-rocksdb/Cargo.toml" --target-dir "$ROCKS_TARGET_DIR" --bin surrealdb-rocksdb-recordbench || exit $?
+    "$ROOT/scripts/cargo-local.sh" build --release --locked --manifest-path "$ROOT/engines/surrealdb-rocksdb/Cargo.toml" --target-dir "$ROCKS_TARGET_DIR" --bin surrealdb-rocksdb-recordbench || exit $?
   fi
 fi
 

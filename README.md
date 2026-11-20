@@ -8,10 +8,14 @@ A replacement for the earlier redb/Turso/Fjall growth-loop benchmark, designed a
 
 ## Build
 
-    CARGO_TARGET_DIR=/tmp/rust-db-realistic-bench-target ./scripts/cargo-local-1.99.sh build --release --locked --features kv-all --bin kvbench
-    CARGO_TARGET_DIR=/tmp/rust-db-realistic-bench-target ./scripts/cargo-local-1.99.sh build --release --locked --features record --bin recordbench
-    ./scripts/cargo-local-1.99.sh build --release --locked --manifest-path engines/surrealdb-rocksdb/Cargo.toml --target-dir /tmp/rust-db-surreal-rocks-target
-    ./scripts/cargo-local-1.99.sh build --release --locked --manifest-path engines/tsdb-server/Cargo.toml --target-dir /tmp/rust-db-tsdb-target
+    ./scripts/cargo-local.sh build --release --locked --features kv-all --bin kvbench
+    ./scripts/cargo-local.sh build --release --locked --features record --bin recordbench
+    ./scripts/cargo-local.sh build --release --locked --manifest-path engines/surrealdb-rocksdb/Cargo.toml --target-dir target/surrealdb-rocks
+    ./scripts/cargo-local.sh build --release --locked --manifest-path engines/tsdb-server/Cargo.toml
+
+For physical-device-qualified Asus ZFS bounded runs, use the
+profiles/storage/asus-zfs-*-bounded-v3.json manifests. Older profiles are
+retained as historical calibration records.
 
 ## Source layout
 
@@ -57,7 +61,7 @@ The summarizer aggregates independent trials using the median and IQR. It does n
 
 ## Validation
 
-GitHub Actions is the authoritative compile/test/lint gate for pushes, pull requests, and manual validation. It uses Rust 1.99.1, the shared public-repository sccache workflow, strict Clippy (`-D warnings`), whole-workspace tests, the root `record` and `kv-all` feature lanes, and the isolated SurrealDB/RocksDB package.
+GitHub Actions is the authoritative compile/test/lint gate for main-branch pushes, pull requests, merge queues, and manual validation. It uses Rust 1.100.0, the shared public-repository sccache workflow, strict Clippy (`-D warnings`), whole-workspace tests, the root `record` and `kv-all` feature lanes, and the isolated SurrealDB/RocksDB package.
 
 For the equivalent local validation plus host-specific prerequisites and shell policy tests:
 
@@ -176,7 +180,7 @@ All engine versions are pinned to the latest published usable release verified o
 
 The record lane includes SurrealDB 4.0.1 with its embedded SurrealKV backend (SurrealKV 1.2.0 in the current lockfile), Turso 0.8.3, SQLite 3.54.0 via rusqlite 0.40.2, and an isolated SurrealDB 3.3.5/RocksDB package. SurrealDB 4 removed the RocksDB engine, so the real RocksDB comparison remains pinned to SurrealDB 3.x instead of silently substituting SurrealKV. SQLite is built project-locally under `.deps/sqlite-3.54.0` because rusqlite's bundled copy is older than current SQLite.
 
-Final benchmark binaries use rustc 1.99.1 with `target-cpu=native` through `scripts/cargo-local-1.99.sh`. The wrapper requires a managed native-safe sccache daemon and refuses uncached fallback. Non-root builds use the same-owner `/run/sccache-<user>/sccache.sock`; root builds retain the dedicated root daemon on port 4237. Our sccache fork resolves the requesting host native CPU/features, hashes that profile into the cache key, and rewrites distributed Rust native codegen to a proven-equivalent explicit CPU/feature set; unresolved native requests are not guessed. The native lane therefore shares the ordinary scheduler and Garage cache safely.
+Final benchmark binaries use rustc 1.100.0 with `target-cpu=native` through `scripts/cargo-local.sh`. The wrapper requires a managed native-safe sccache daemon and refuses uncached fallback. Non-root builds use the same-owner `/run/sccache-<user>/sccache.sock`; root builds retain the dedicated root daemon on port 4237. Our sccache fork resolves the requesting host native CPU/features, hashes that profile into the cache key, and rewrites distributed Rust native codegen to a proven-equivalent explicit CPU/feature set; unresolved native requests are not guessed. The native lane therefore shares the ordinary scheduler and Garage cache safely.
 
 Fresh baseline publication is orchestrated by `scripts/benchctl.sh baseline-generation`: one generation ID/root names the KV and record stock runs, sizing and short-pressure repair plans, follow-up prefixes, selected corpora and readiness certificates. All measurement stages use the same pinned source commit/binary manifests and continuous-v3 admission; historical publication generations remain immutable rather than being resumed under new binaries.
 

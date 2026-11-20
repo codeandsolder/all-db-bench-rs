@@ -43,9 +43,9 @@ DATA_DIR="${DBBENCH_STORAGE_ROOT:-$ROOT}/data/runs/$RUN_ID"
 mkdir -p "$RUN_DIR"/{cases,stderr,device} "$DATA_DIR"
 "$ROOT/scripts/capture-host-metadata.sh" "$RUN_DIR/host-start.txt" "$ROOT"
 
-TARGET_DIR="${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target}"
+TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target}"
 BIN="$TARGET_DIR/release/kvbench"
-CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" build --release --features kv-all --bin kvbench
+CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local.sh" build --release --locked --features kv-all --bin kvbench
 
 ENGINES=(redb fjall surrealkv heed sled lkv manifold turbokv paritydb-hash paritydb-btree rocksdb mdbx persy roughdb jammdb lsmdb)
 JOBS=()

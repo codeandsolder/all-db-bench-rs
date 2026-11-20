@@ -34,28 +34,28 @@ if [[ "${MATRIX_PLAN_ONLY:-0}" != 1 ]]; then
   [[ -s "$RUN_DIR/host-start.txt" ]] || "$ROOT/scripts/capture-host-metadata.sh" "$RUN_DIR/host-start.txt" "$ROOT"
 fi
 
-TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target}
-ROCKS_TARGET_DIR=${SURREAL_ROCKS_TARGET_DIR:-/tmp/rust-db-surreal-rocks-target}
+TARGET_DIR=${CARGO_TARGET_DIR:-$ROOT/target}
+ROCKS_TARGET_DIR=${SURREAL_ROCKS_TARGET_DIR:-$ROOT/target/surrealdb-rocks}
 ROCKS_MANIFEST="$ROOT/engines/surrealdb-rocksdb/Cargo.toml"
 if [[ -n "${BENCH_BIN:-}" ]]; then
   BIN="$BENCH_BIN"; BUILD_PROFILE=external
   [[ -x "$BIN" ]] || { echo "BENCH_BIN is not executable: $BIN" >&2; exit 2; }
 elif [[ "$PROFILE" == smoke ]]; then
   BIN="$TARGET_DIR/debug/recordsustained"; BUILD_PROFILE=debug
-  CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" build --locked --features record --bin recordsustained || exit $?
+  CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local.sh" build --locked --features record --bin recordsustained || exit $?
 else
   BIN="$TARGET_DIR/release/recordsustained"; BUILD_PROFILE=release
-  CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" build --release --locked --features record --bin recordsustained || exit $?
+  CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local.sh" build --release --locked --features record --bin recordsustained || exit $?
 fi
 if [[ -n "${BENCH_ROCKS_BIN:-}" ]]; then
   ROCKS_BIN="$BENCH_ROCKS_BIN"; ROCKS_BUILD_PROFILE=external
   [[ -x "$ROCKS_BIN" ]] || { echo "BENCH_ROCKS_BIN is not executable: $ROCKS_BIN" >&2; exit 2; }
 elif [[ "$PROFILE" == smoke ]]; then
   ROCKS_BIN="$ROCKS_TARGET_DIR/debug/surrealdb-rocksdb-recordsustained"; ROCKS_BUILD_PROFILE=debug
-  CARGO_TARGET_DIR="$ROCKS_TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" build --locked --manifest-path "$ROCKS_MANIFEST" --bin surrealdb-rocksdb-recordsustained || exit $?
+  CARGO_TARGET_DIR="$ROCKS_TARGET_DIR" "$ROOT/scripts/cargo-local.sh" build --locked --manifest-path "$ROCKS_MANIFEST" --bin surrealdb-rocksdb-recordsustained || exit $?
 else
   ROCKS_BIN="$ROCKS_TARGET_DIR/release/surrealdb-rocksdb-recordsustained"; ROCKS_BUILD_PROFILE=release
-  CARGO_TARGET_DIR="$ROCKS_TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" build --release --locked --manifest-path "$ROCKS_MANIFEST" --bin surrealdb-rocksdb-recordsustained || exit $?
+  CARGO_TARGET_DIR="$ROCKS_TARGET_DIR" "$ROOT/scripts/cargo-local.sh" build --release --locked --manifest-path "$ROCKS_MANIFEST" --bin surrealdb-rocksdb-recordsustained || exit $?
 fi
 if [[ -n "${BENCH_BIN_SHA256:-}" ]]; then BIN_SHA="$BENCH_BIN_SHA256"; else BIN_SHA=$(sha256sum "$BIN" | awk '{print $1}'); fi
 if [[ -n "${BENCH_ROCKS_BIN_SHA256:-}" ]]; then ROCKS_BIN_SHA="$BENCH_ROCKS_BIN_SHA256"; else ROCKS_BIN_SHA=$(sha256sum "$ROCKS_BIN" | awk '{print $1}'); fi

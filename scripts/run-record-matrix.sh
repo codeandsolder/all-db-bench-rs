@@ -18,6 +18,8 @@ ROOT=${ROOT:-"$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"}
 source "$ROOT/scripts/record-result-cleanup.sh"
 # shellcheck source=continuous-noise-runner-common.sh
 source "$ROOT/scripts/continuous-noise-runner-common.sh"
+# shellcheck source=performance-runner-common.sh
+source "$ROOT/scripts/performance-runner-common.sh"
 RUN_ID=${RUN_ID:-"$(date -u +%Y%m%dT%H%M%SZ)-record-$PROFILE"}
 RUN_DIR="$ROOT/results/runs/$RUN_ID"; DATA_DIR="${DBBENCH_STORAGE_ROOT:-$ROOT}/data/runs/$RUN_ID"
 mkdir -p "$RUN_DIR"/{cases,stderr,noise} "$DATA_DIR"
@@ -25,16 +27,17 @@ free_bytes=$(df -B1 --output=avail "$DATA_DIR" | tail -n1 | tr -d ' '); min_free
 (( free_bytes >= min_free_bytes )) || { echo "refusing record run: free=$free_bytes required=$min_free_bytes" >&2; exit 75; }
 [[ "${MATRIX_PLAN_ONLY:-0}" == 1 || "${DBBENCH_PINNED_SQLITE_PREBUILT:-0}" == 1 ]] || "$ROOT/scripts/ensure-sqlite-3.54.0.sh"
 [[ -s "$RUN_DIR/host-start.txt" ]] || "$ROOT/scripts/capture-host-metadata.sh" "$RUN_DIR/host-start.txt" "$ROOT" || exit $?
-TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target}
+TARGET_DIR=${CARGO_TARGET_DIR:-$ROOT/target}
 if [[ -n "${BENCH_BIN:-}" ]]; then BIN="$BENCH_BIN"; BUILD_PROFILE=external; [[ -x "$BIN" ]] || exit 2
-elif [[ "$PROFILE" == smoke ]]; then BIN="$TARGET_DIR/debug/recordbench"; BUILD_PROFILE=debug; CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" build --locked --features record --bin recordbench || exit $?
-else BIN="$TARGET_DIR/release/recordbench"; BUILD_PROFILE=release; CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" build --release --locked --features record --bin recordbench || exit $?; fi
-ROCKS_TARGET_DIR=${SURREAL_ROCKS_TARGET_DIR:-/tmp/rust-db-surreal-rocks-target}
+elif [[ "$PROFILE" == smoke ]]; then BIN="$TARGET_DIR/debug/recordbench"; BUILD_PROFILE=debug; CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local.sh" build --locked --features record --bin recordbench || exit $?
+else BIN="$TARGET_DIR/release/recordbench"; BUILD_PROFILE=release; CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local.sh" build --release --locked --features record --bin recordbench || exit $?; fi
+ROCKS_TARGET_DIR=${SURREAL_ROCKS_TARGET_DIR:-$ROOT/target/surrealdb-rocks}
 if [[ -n "${ROCKS_BENCH_BIN:-}" ]]; then ROCKS_BIN="$ROCKS_BENCH_BIN"; ROCKS_BUILD_PROFILE=external; [[ -x "$ROCKS_BIN" ]] || exit 2
-elif [[ "$PROFILE" == smoke ]]; then ROCKS_BIN="$ROCKS_TARGET_DIR/debug/surrealdb-rocksdb-recordbench"; ROCKS_BUILD_PROFILE=debug; "$ROOT/scripts/cargo-local-1.99.sh" build --locked --manifest-path "$ROOT/engines/surrealdb-rocksdb/Cargo.toml" --target-dir "$ROCKS_TARGET_DIR" || exit $?
-else ROCKS_BIN="$ROCKS_TARGET_DIR/release/surrealdb-rocksdb-recordbench"; ROCKS_BUILD_PROFILE=release; "$ROOT/scripts/cargo-local-1.99.sh" build --release --locked --manifest-path "$ROOT/engines/surrealdb-rocksdb/Cargo.toml" --target-dir "$ROCKS_TARGET_DIR" || exit $?; fi
+elif [[ "$PROFILE" == smoke ]]; then ROCKS_BIN="$ROCKS_TARGET_DIR/debug/surrealdb-rocksdb-recordbench"; ROCKS_BUILD_PROFILE=debug; "$ROOT/scripts/cargo-local.sh" build --locked --manifest-path "$ROOT/engines/surrealdb-rocksdb/Cargo.toml" --target-dir "$ROCKS_TARGET_DIR" --bin surrealdb-rocksdb-recordbench || exit $?
+else ROCKS_BIN="$ROCKS_TARGET_DIR/release/surrealdb-rocksdb-recordbench"; ROCKS_BUILD_PROFILE=release; "$ROOT/scripts/cargo-local.sh" build --release --locked --manifest-path "$ROOT/engines/surrealdb-rocksdb/Cargo.toml" --target-dir "$ROCKS_TARGET_DIR" --bin surrealdb-rocksdb-recordbench || exit $?; fi
 BIN_SHA=$(sha256sum "$BIN" | awk '{print $1}'); ROCKS_SHA=$(sha256sum "$ROCKS_BIN" | awk '{print $1}')
 RUNNER_SHA=$(sha256sum "$ROOT/scripts/run-record-matrix.sh" | awk '{print $1}'); NOISE_SHA=$(sha256sum "$ROOT/tools/benchctl/src/noise.rs" | awk '{print $1}'); CONTINUOUS_NOISE_SHA=$(sha256sum "$ROOT/tools/benchctl/src/noise.rs" | awk '{print $1}')
+PERFORMANCE_COMMON_SHA=$(sha256sum "$ROOT/scripts/performance-runner-common.sh" | awk '{print $1}')
 ADMISSION_POLICY=pre-io+pre/continuous/post-external-v3
 CONTINUOUS_NOISE_SAMPLE_MS=${CONTINUOUS_NOISE_SAMPLE_MS:-250}
 CONTINUOUS_NOISE_MAX_CPU_PERCENT=${CONTINUOUS_NOISE_MAX_CPU_PERCENT:-50}
@@ -46,18 +49,18 @@ WRITE_MATERIALIZATION=no-return-v1
 ENGINES=(surrealdb turso sqlite surrealdb-rocksdb); WORKLOADS=(point-read indexed-read read-heavy tiny-txn write-burst); DURABILITIES=(relaxed sync)
 [[ -n "${ENGINES_OVERRIDE:-}" ]] && read -r -a ENGINES <<< "$ENGINES_OVERRIDE"; [[ -n "${WORKLOADS_OVERRIDE:-}" ]] && read -r -a WORKLOADS <<< "$WORKLOADS_OVERRIDE"; [[ -n "${DURABILITIES_OVERRIDE:-}" ]] && read -r -a DURABILITIES <<< "$DURABILITIES_OVERRIDE"
 if [[ "${MATRIX_RESUME_SHUFFLE_REMAINING:-0}" == 1 ]]; then RESUME_ORDER_POLICY=reshuffle-remaining; else RESUME_ORDER_POLICY=fixed-initial; fi
-check_free_space(){ [[ "$PROFILE" == smoke ]] && return 0; local phase=$1 min_gib=${CASE_MIN_FREE_GIB} free_kib min_kib; free_kib=$(df -Pk -- "$DATA_DIR" | awk 'NR==2 {print $4}')||return 2; min_kib=$(awk -v g="$min_gib" 'BEGIN{if(g<0)exit 2;printf "%.0f",g*1024*1024}')||return 2; ((free_kib>=min_kib))||{ echo "refusing record performance case under low free space ($phase): free_kib=$free_kib required_kib=$min_kib path=$DATA_DIR" >&2; return 75; }; }
-check_io_quiet(){ [[ "$PROFILE" == smoke ]] && return 0; local phase=$1 p; check_free_space "$phase"||return $?; [[ "${ALLOW_BUSY:-0}" == 1 ]]&&return 0; [[ "${DBBENCH_STORAGE_PROFILE_MODE:-}" == bounded ]]&&return 0; p=$(awk '/^full / {for(i=1;i<=NF;i++) if($i ~ /^avg10=/){split($i,a,"="); print a[2]}}' /proc/pressure/io); awk -v p="${p:-0}" 'BEGIN{exit !(p<=5.0)}' || { echo "refusing record performance case under I/O pressure ($phase): ${p}%" >&2; return 75; }; }
+
+check_io_quiet(){ performance_check_io_quiet "$PROFILE" "$1"; }
 check_external_noise(){ local phase=$1 evidence=$2 rc; [[ "$PROFILE" == smoke || "${ALLOW_EXTERNAL_NOISE:-0}" == 1 ]] && return 0; continuous_noise_prepare_benchctl "$ROOT" || return $?; if "$CONTINUOUS_NOISE_BENCHCTL" check-external-noise --json-out "$evidence"; then rc=0; else rc=$?; fi; ((rc==0)) || echo "refusing record performance case due to external host work ($phase): $(cat "$evidence" 2>/dev/null)" >&2; return "$rc"; }
 JOBS=(); for trial in $(seq 1 "$TRIALS"); do for engine in "${ENGINES[@]}"; do for durability in "${DURABILITIES[@]}"; do for workload in "${WORKLOADS[@]}"; do JOBS+=("$trial|$engine|$durability|$workload"); done; done; done; done
 SUPPORT_NEW="$RUN_DIR/support.json.new"
 printf '%s' "$(jq -cnS \
   --arg lane record --arg profile "$PROFILE" --argjson trials "$TRIALS" --argjson records "$RECORDS" --argjson ops "$OPS" --argjson tiny_ops "$TINY_TXN_OPS" \
   --arg engines "${ENGINES[*]}" --arg workloads "${WORKLOADS[*]}" --arg durabilities "${DURABILITIES[*]}" --arg resume "$RESUME_ORDER_POLICY" --arg build "$BUILD_PROFILE" --arg rocks_build "$ROCKS_BUILD_PROFILE" --arg bin_sha "$BIN_SHA" --arg rocks_sha "$ROCKS_SHA" \
-  --arg read_materialization "$READ_MATERIALIZATION" --arg write_materialization "$WRITE_MATERIALIZATION" --arg runner_sha "$RUNNER_SHA" --arg noise_sha "$NOISE_SHA" --arg continuous_sha "$CONTINUOUS_NOISE_SHA" --arg admission "$ADMISSION_POLICY" \
+  --arg read_materialization "$READ_MATERIALIZATION" --arg write_materialization "$WRITE_MATERIALIZATION" --arg runner_sha "$RUNNER_SHA" --arg perf_sha "$PERFORMANCE_COMMON_SHA" --arg noise_sha "$NOISE_SHA" --arg continuous_sha "$CONTINUOUS_NOISE_SHA" --arg admission "$ADMISSION_POLICY" \
   --argjson sample_ms "$CONTINUOUS_NOISE_SAMPLE_MS" --argjson max_cpu "$CONTINUOUS_NOISE_MAX_CPU_PERCENT" --argjson max_io_avg "$CONTINUOUS_NOISE_MAX_IO_AVERAGE_MIB_S" --argjson max_io_rate "$CONTINUOUS_NOISE_MAX_IO_RATE_MIB_S" --argjson min_free "$MIN_FREE_GIB" --arg case_min_free "$CASE_MIN_FREE_GIB" \
   --arg hostname "$HOST_NAME" --arg machine "$MACHINE_ID_SHA256" --arg filesystem "$FILESYSTEM" --arg source "$SOURCE" \
-  '{lane:$lane,profile:$profile,trials:$trials,records:$records,ops:$ops,tiny_txn_ops:$tiny_ops,payload_bytes:512,txn_size:100,engines:$engines,workloads:$workloads,durabilities:$durabilities,resume_order_policy:$resume,build_profile:$build,rocks_build_profile:$rocks_build,benchmark_binary_sha256:$bin_sha,surrealdb_rocksdb_binary_sha256:$rocks_sha,read_materialization:$read_materialization,write_materialization:$write_materialization,runner_sha256:$runner_sha,noise_guard_sha256:$noise_sha,continuous_noise_guard_sha256:$continuous_sha,admission_policy:$admission,continuous_noise_sample_ms:$sample_ms,continuous_noise_max_cpu_percent:$max_cpu,continuous_noise_max_io_average_mib_s:$max_io_avg,continuous_noise_max_io_rate_mib_s:$max_io_rate,initial_min_free_gib:$min_free,case_min_free_gib:$case_min_free,hostname:$hostname,machine_id_sha256:$machine,filesystem:$filesystem,source:$source}')" > "$SUPPORT_NEW"
+  '{lane:$lane,profile:$profile,trials:$trials,records:$records,ops:$ops,tiny_txn_ops:$tiny_ops,payload_bytes:512,txn_size:100,engines:$engines,workloads:$workloads,durabilities:$durabilities,resume_order_policy:$resume,build_profile:$build,rocks_build_profile:$rocks_build,benchmark_binary_sha256:$bin_sha,surrealdb_rocksdb_binary_sha256:$rocks_sha,read_materialization:$read_materialization,write_materialization:$write_materialization,runner_sha256:$runner_sha,performance_common_sha256:$perf_sha,noise_guard_sha256:$noise_sha,continuous_noise_guard_sha256:$continuous_sha,admission_policy:$admission,continuous_noise_sample_ms:$sample_ms,continuous_noise_max_cpu_percent:$max_cpu,continuous_noise_max_io_average_mib_s:$max_io_avg,continuous_noise_max_io_rate_mib_s:$max_io_rate,initial_min_free_gib:$min_free,case_min_free_gib:$case_min_free,hostname:$hostname,machine_id_sha256:$machine,filesystem:$filesystem,source:$source}')" > "$SUPPORT_NEW"
 EXISTING_CASES=$(find "$RUN_DIR/cases" -type f -name '*.json' | wc -l)
 if [[ -s "$RUN_DIR/support.json" ]]; then if ! jq -e -s '.[0] == .[1]' "$RUN_DIR/support.json" "$SUPPORT_NEW" >/dev/null; then if ((EXISTING_CASES>0)); then rm -f "$SUPPORT_NEW"; echo "refusing record resume: support identity changed" >&2; exit 2; fi; mv "$SUPPORT_NEW" "$RUN_DIR/support.json"; else rm -f "$SUPPORT_NEW"; fi; else mv "$SUPPORT_NEW" "$RUN_DIR/support.json"; fi
 if [[ -s "$RUN_DIR/jobs.txt" ]]; then expected=$(mktemp); existing=$(mktemp); printf '%s\n' "${JOBS[@]}"|sort>"$expected"; sort "$RUN_DIR/jobs.txt">"$existing"; cmp -s "$expected" "$existing" || { rm -f "$expected" "$existing"; echo "refusing record resume: jobs.txt changed" >&2; exit 2; }; rm -f "$expected" "$existing"; mapfile -t ORDERED < "$RUN_DIR/jobs.txt"; else mapfile -t ORDERED < <(printf '%s\n' "${JOBS[@]}"|shuf); printf '%s\n' "${ORDERED[@]}">"$RUN_DIR/jobs.txt"; fi

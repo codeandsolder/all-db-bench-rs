@@ -65,14 +65,14 @@ cat > "$RUN_DIR/support.json" <<JSON
 }
 JSON
 
-TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target}
+TARGET_DIR=${CARGO_TARGET_DIR:-$ROOT/target}
 BENCHCTL_TARGET_DIR=${BENCHCTL_TARGET_DIR:-$TARGET_DIR}
 if [[ -n "${BENCHCTL_BIN:-}" ]]; then
   BENCHCTL="$BENCHCTL_BIN"
   [[ -x "$BENCHCTL" ]] || { echo "BENCHCTL_BIN is not executable: $BENCHCTL" >&2; exit 2; }
 else
   BENCHCTL="$BENCHCTL_TARGET_DIR/debug/all-db-benchctl"
-  CARGO_TARGET_DIR="$BENCHCTL_TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" build --locked \
+  CARGO_TARGET_DIR="$BENCHCTL_TARGET_DIR" "$ROOT/scripts/cargo-local.sh" build --locked \
     --manifest-path "$ROOT/tools/benchctl/Cargo.toml" --bin all-db-benchctl || exit $?
 fi
 if [[ -n "${BENCH_BIN:-}" ]]; then
@@ -80,8 +80,8 @@ if [[ -n "${BENCH_BIN:-}" ]]; then
   [[ -x "$BIN" ]] || { echo "BENCH_BIN is not executable: $BIN" >&2; exit 2; }
 else
   BIN="$TARGET_DIR/release/kvbench"
-  CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" \
-    build --release --features kv-all --bin kvbench || exit $?
+  CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local.sh" \
+    build --release --locked --features kv-all --bin kvbench || exit $?
 fi
 
 ENGINES=(redb fjall surrealkv heed sled lkv manifold turbokv paritydb-hash paritydb-btree rocksdb mdbx persy roughdb jammdb lsmdb)

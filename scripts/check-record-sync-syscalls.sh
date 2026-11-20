@@ -7,14 +7,14 @@ MAIN_BIN=${RECORD_BENCH_BIN:-}
 ROCKS_BIN=${ROCKS_RECORD_BENCH_BIN:-}
 
 if [[ -z "$MAIN_BIN" ]]; then
-  TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target}
+  TARGET_DIR=${CARGO_TARGET_DIR:-$ROOT/target}
   MAIN_BIN="$TARGET_DIR/release/recordbench"
-  "$ROOT/scripts/cargo-local-1.99.sh" build --release --locked --features record --bin recordbench
+  "$ROOT/scripts/cargo-local.sh" build --release --locked --features record --bin recordbench
 fi
 if [[ -z "$ROCKS_BIN" ]]; then
-  ROCKS_TARGET_DIR=${SURREAL_ROCKS_TARGET_DIR:-/tmp/rust-db-surreal-rocks-target}
+  ROCKS_TARGET_DIR=${SURREAL_ROCKS_TARGET_DIR:-$ROOT/target/surrealdb-rocks}
   ROCKS_BIN="$ROCKS_TARGET_DIR/release/surrealdb-rocksdb-recordbench"
-  "$ROOT/scripts/cargo-local-1.99.sh" build --release --locked \
+  "$ROOT/scripts/cargo-local.sh" build --release --locked \
     --manifest-path "$ROOT/engines/surrealdb-rocksdb/Cargo.toml" \
     --target-dir "$ROCKS_TARGET_DIR" --bin surrealdb-rocksdb-recordbench
 fi

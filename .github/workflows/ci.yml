@@ -2,7 +2,9 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
+  merge_group:
   workflow_dispatch:
 
 concurrency:
@@ -14,28 +16,33 @@ jobs:
     name: Rust validation (shared sccache)
     permissions:
       contents: read
-    uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@50c4dbb544f008f87ba479324b43a1bd807672bd # main
+    uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@c047330c7591f051268ee2d78a1ed695dc0f5f36 # main
     with:
-      rust-toolchain: "1.99.1"
+      rust-toolchain: "1.100.0"
       rust-components: "rustfmt clippy"
       rustflags: "-C target-cpu=x86-64-v2 -C target-feature=+aes,+sse2"
       timeout-minutes: 90
       sccache-cache-size-mib: 6144
       command: |
-        cargo +1.99.1 fmt --all -- --check
-        cargo +1.99.1 fmt --manifest-path engines/surrealdb-rocksdb/Cargo.toml -- --check
+        if ! command -v rg >/dev/null 2>&1; then
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ripgrep
+        fi
+        cargo +1.100.0 fmt --all -- --check
+        cargo +1.100.0 fmt --manifest-path engines/surrealdb-rocksdb/Cargo.toml -- --check
         bash -n scripts/*.sh deploy/rental/*.sh
         ./scripts/test-rental-deployment.sh
         ./scripts/test-record-semantics.sh
+        ./scripts/test-performance-admission.sh
         ./scripts/test-no-python-tooling.sh
 
-        cargo +1.99.1 test --locked --workspace --all-targets
-        cargo +1.99.1 clippy --locked --workspace --all-targets -- -D warnings
+        cargo +1.100.0 test --locked --workspace --all-targets
+        cargo +1.100.0 clippy --locked --workspace --all-targets -- -D warnings
 
-        cargo +1.99.1 test --locked -p rust-db-realistic-bench --all-targets --features record
-        cargo +1.99.1 clippy --locked -p rust-db-realistic-bench --all-targets --features record -- -D warnings
-        cargo +1.99.1 test --locked -p rust-db-realistic-bench --all-targets --features kv-all
-        cargo +1.99.1 clippy --locked -p rust-db-realistic-bench --all-targets --features kv-all -- -D warnings
+        cargo +1.100.0 test --locked -p rust-db-realistic-bench --all-targets --features record
+        cargo +1.100.0 clippy --locked -p rust-db-realistic-bench --all-targets --features record -- -D warnings
+        cargo +1.100.0 test --locked -p rust-db-realistic-bench --all-targets --features kv-all
+        cargo +1.100.0 clippy --locked -p rust-db-realistic-bench --all-targets --features kv-all -- -D warnings
 
-        cargo +1.99.1 test --locked --manifest-path engines/surrealdb-rocksdb/Cargo.toml --all-targets
-        cargo +1.99.1 clippy --locked --manifest-path engines/surrealdb-rocksdb/Cargo.toml --all-targets -- -D warnings
+        cargo +1.100.0 test --locked --manifest-path engines/surrealdb-rocksdb/Cargo.toml --all-targets
+        cargo +1.100.0 clippy --locked --manifest-path engines/surrealdb-rocksdb/Cargo.toml --all-targets -- -D warnings

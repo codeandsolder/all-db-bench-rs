@@ -216,7 +216,7 @@ cp "$BASELINE_SUPPORT" "$RUN_DIR/baseline-support.json" || exit $?
 cp "$BASELINE_MANIFEST" "$RUN_DIR/baseline-calibration.json" || exit $?
 cp "$BASELINE_SUMMARY" "$RUN_DIR/baseline-summary.json" || exit $?
 
-TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target}
+TARGET_DIR=${CARGO_TARGET_DIR:-$ROOT/target}
 if [[ -n "${BENCH_BIN:-}" ]]; then
   BIN="$BENCH_BIN"
   BUILD_PROFILE="external"
@@ -224,12 +224,12 @@ if [[ -n "${BENCH_BIN:-}" ]]; then
 elif [[ "$PROFILE" == smoke ]]; then
   BIN="$TARGET_DIR/debug/kvbench"
   BUILD_PROFILE="debug"
-  CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" \
+  CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local.sh" \
     build --locked --features kv-all --bin kvbench || exit $?
 else
   BIN="$TARGET_DIR/release/kvbench"
   BUILD_PROFILE="release"
-  CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" \
+  CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local.sh" \
     build --release --locked --features kv-all --bin kvbench || exit $?
 fi
 BIN_SHA=$(sha256sum "$BIN" | awk '{print $1}')

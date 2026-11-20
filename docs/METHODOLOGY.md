@@ -33,7 +33,7 @@ SurrealDB 3.3.4, Turso 0.8.3, and SQLite 3.54.0 via rusqlite 0.40.2 are tested s
 
 ## Benchmark build identity
 
-Performance binaries are built with rustc 1.99.1 and `target-cpu=native`. Benchmark compilation must pass through a managed same-owner sccache service: non-root builds use `/run/sccache-<user>/sccache.sock`, while root builds use the dedicated port-4237 daemon. Our fork fingerprints the requesting host native CPU/features into the cache identity and converts distributed native Rust requests into an explicit proven-equivalent CPU/feature set before dispatch; unresolved or unsafe native requests stay local or are treated as non-cacheable within sccache. Missing sccache or compiler wrappers are hard errors.
+Performance binaries are built with rustc 1.100.0 and `target-cpu=native`. Benchmark compilation must pass through a managed same-owner sccache service: non-root builds use `/run/sccache-<user>/sccache.sock`, while root builds use the dedicated port-4237 daemon. Our fork fingerprints the requesting host native CPU/features into the cache identity and converts distributed native Rust requests into an explicit proven-equivalent CPU/feature set before dispatch; unresolved or unsafe native requests stay local or are treated as non-cacheable within sccache. Missing sccache or compiler wrappers are hard errors.
 
 ## Durability
 
@@ -126,7 +126,7 @@ Cold-start/reopen latency is a separate benchmark class and must not be simulate
 
 ## Reproducibility
 
-The suite pins a Rust 1.99.1 toolchain and exact database crate versions. Workload generation uses a fixed seed plus trial number. The matrix stores host/kernel/filesystem/toolchain metadata beside the result file.
+The suite pins a Rust 1.100.0 toolchain and exact database crate versions. Workload generation uses a fixed seed plus trial number. The matrix stores host/kernel/filesystem/toolchain metadata beside the result file.
 
 No benchmark stops because of one slow observation. Tail stalls remain samples in the latency distribution instead of censoring the rest of the series.
 
@@ -138,7 +138,7 @@ The relaxed lane is deliberately secondary. It answers "what does this engine co
 
 ## Build isolation on cold-storage
 
-Cargo build artifacts are kept outside the measured database root. The build wrapper uses `DB_BENCH_CARGO_HOME` when explicitly set, otherwise the existing `CARGO_HOME`, otherwise the user’s stable `~/.cargo`; it does not use a shared temporary registry/source tree that can disappear underneath concurrent builds. `scripts/cargo-local-1.99.sh` pins rustc 1.99.1 and requires repo-local Rust/C/C++ sccache wrappers connected to a managed same-owner native-safe service (user UDS for non-root builds; port 4237 for root). That service uses canonical Rust paths, the shared scheduler, and Garage; the fork makes `target-cpu=native` safe by resolving and hashing the requester native profile and using explicit proven-equivalent codegen remotely. Missing sccache is a hard failure rather than a direct-compiler fallback. Measured database data lives on the selected storage-profile root.
+Cargo build artifacts are kept outside the measured database root. The build wrapper uses `DB_BENCH_CARGO_HOME` when explicitly set, otherwise the existing `CARGO_HOME`, otherwise the user’s stable `~/.cargo`; it does not use a shared temporary registry/source tree that can disappear underneath concurrent builds. `scripts/cargo-local.sh` pins rustc 1.100.0 and requires repo-local Rust/C/C++ sccache wrappers connected to a managed same-owner native-safe service (user UDS for non-root builds; port 4237 for root). That service uses canonical Rust paths, the shared scheduler, and Garage; the fork makes `target-cpu=native` safe by resolving and hashing the requester native profile and using explicit proven-equivalent codegen remotely. Missing sccache is a hard failure rather than a direct-compiler fallback. Measured database data lives on the selected storage-profile root.
 
 ## Durability syscall sanity check
 
@@ -456,3 +456,11 @@ For sizing/diagnostic reruns, the TSDB profile dimensions can be overridden expl
 Validation found a GreptimeDB 1.2.1 bug outside the accepted benchmark path: an instant PromQL range-vector query such as `bench_metric{host="h000000"}[200000ms]` can panic in Arrow dictionary casting (`arrow-select` `take.rs`, observed impossible index `85899345920` for a 20-element vector). The normal Prometheus `query_range` route does not crash. The harness therefore stays on the shared `query_range` API; it does not treat the crashing instant-range-vector path as a benchmark result. GreptimeDB also exposes its evaluation-grid phase more strictly than Prometheus/VictoriaMetrics, which is why generated samples are step-aligned for every engine rather than carrying an arbitrary wall-clock millisecond phase.
 
  KV and record baseline quick/full cases also apply the full-I/O PSI gate after each measured invocation; a case that becomes storage-contaminated mid-run is deleted before acceptance and retried on resume. The baseline runners also expose provenance-bound `KV_*_OVERRIDE` and `RECORD_*_OVERRIDE` controls for trial count, record count, and operation count. They default to the profile values and are intended for targeted remeasurement of configurations whose stock quick interval is too short or too variable; selected values are already part of `support.json`, so incompatible resumes are refused.
+
+Bounded storage profiles skip *host-global* I/O PSI admission, not an explicitly
+configured device check. If `PERFORMANCE_IO_QUIET_DEVICE` is set, that device's
+I/O statistics are sampled and enforced even in bounded mode; an invalid device
+is a hard error. In particular, OpenZFS writeback may escape cgroup I/O
+accounting, so bounded CPU/memory settings do not establish quiet physical I/O.
+Build outputs default to the repository-local, gitignored `target/` directory,
+with independent engine-specific target subdirectories where needed.

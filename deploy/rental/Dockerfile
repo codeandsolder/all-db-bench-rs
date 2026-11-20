@@ -1,5 +1,5 @@
 # Build context is the output of package.sh, not the development checkout.
-# Binaries are prebuilt using Rust 1.99.1 through the mandatory sccache path.
+# Binaries are prebuilt using Rust 1.100.0 through the mandatory sccache path.
 FROM archlinux:base
 RUN pacman -Syu --noconfirm --needed \
     bash ca-certificates coreutils curl diffutils file findutils fio gawk gcc-libs git \

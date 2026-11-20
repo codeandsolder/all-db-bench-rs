@@ -2,14 +2,15 @@
 set -euo pipefail
 ROOT=$(cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$ROOT"
-TARGET_DIR="${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target}"
+TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target}"
 BIN="$TARGET_DIR/release/kvbench"
-"$ROOT/scripts/cargo-local-1.99.sh" build --release --features kv-all --bin kvbench
-PROBE_ROOT="$ROOT/data/sync-syscall-probe"
-rm -rf "$PROBE_ROOT"
-mkdir -p "$PROBE_ROOT"
-TRACE_ROOT=$(mktemp -d /tmp/dbbench-sync-trace.XXXXXX)
-trap 'rm -rf "$TRACE_ROOT" "$PROBE_ROOT"' EXIT
+"$ROOT/scripts/cargo-local.sh" build --release --locked --features kv-all --bin kvbench
+mkdir -p "$ROOT/data"
+PROBE_SESSION=$(mktemp -d "$ROOT/data/sync-syscall-probe.XXXXXXXX")
+trap 'rm -rf -- "$PROBE_SESSION"' EXIT
+PROBE_ROOT="$PROBE_SESSION/db"
+TRACE_ROOT="$PROBE_SESSION/traces"
+mkdir -p "$PROBE_ROOT" "$TRACE_ROOT"
 
 count_syncs() {
   local prefix=$1
@@ -24,7 +25,8 @@ count_syncs() {
 }
 
 trace_one() {
-  local engine=$1 durability=$2 prefix="$TRACE_ROOT/$engine-$durability"
+  local engine=$1 durability=$2
+  local prefix="$TRACE_ROOT/$engine-$durability"
   strace -qq -ff -e trace=fsync,fdatasync,msync,sync_file_range -o "$prefix" \
     "$BIN" --engine "$engine" --durability "$durability" --workload tiny-txn \
       --records 10 --ops 1 --value-bytes 64 --txn-size 1 --trial 1 \

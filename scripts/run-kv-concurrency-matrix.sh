@@ -42,27 +42,14 @@ min_free_bytes=$((MIN_FREE_GIB * 1024 * 1024 * 1024))
 (( free_bytes >= min_free_bytes )) || { echo "refusing KV concurrency run: free=$free_bytes required=$min_free_bytes" >&2; exit 75; }
 [[ -s "$RUN_DIR/host-start.txt" ]] || "$ROOT/scripts/capture-host-metadata.sh" "$RUN_DIR/host-start.txt" "$ROOT"
 
-TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target}
-if [[ -n "${BENCH_BIN:-}" ]]; then
-  BIN="$BENCH_BIN"; BUILD_PROFILE=external
-  [[ -x "$BIN" ]] || { echo "BENCH_BIN is not executable: $BIN" >&2; exit 2; }
-elif [[ "$PROFILE" == smoke ]]; then
-  BIN="$TARGET_DIR/debug/kvconcurrency"; BUILD_PROFILE=debug
-  CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" build --locked --features kv-all --bin kvconcurrency || exit $?
-else
-  BIN="$TARGET_DIR/release/kvconcurrency"; BUILD_PROFILE=release
-  CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" build --release --locked --features kv-all --bin kvconcurrency || exit $?
-fi
+TARGET_DIR=${CARGO_TARGET_DIR:-$ROOT/target}
+CONCURRENCY_BUILD_MODE=release
+[[ "$PROFILE" == smoke ]] && CONCURRENCY_BUILD_MODE=debug
+performance_select_benchmark_binary "$ROOT" "$TARGET_DIR" kv-all kvconcurrency "$CONCURRENCY_BUILD_MODE" || exit $?
 if [[ -n "${BENCH_BIN_SHA256:-}" ]]; then BIN_SHA="$BENCH_BIN_SHA256"; else BIN_SHA=$(sha256sum "$BIN" | awk '{print $1}'); fi
-RUNNER_SHA=$(sha256sum "$ROOT/scripts/run-kv-concurrency-matrix.sh" | awk '{print $1}')
 KV_POLICY_SHA=$(sha256sum "$ROOT/scripts/kv-matrix-policy.sh" | awk '{print $1}')
-CONCURRENCY_POLICY_SHA=$(sha256sum "$ROOT/scripts/concurrency-matrix-policy.sh" | awk '{print $1}')
-NOISE_SHA=$(sha256sum "$ROOT/tools/benchctl/src/noise.rs" | awk '{print $1}')
-CONTINUOUS_NOISE_SHA=$(sha256sum "$ROOT/tools/benchctl/src/noise.rs" | awk '{print $1}')
-CONCURRENCY_RUNNER_COMMON_SHA=$(sha256sum "$ROOT/scripts/concurrency-runner-common.sh" | awk '{print $1}')
-CONTINUOUS_NOISE_COMMON_SHA=$(sha256sum "$ROOT/scripts/continuous-noise-runner-common.sh" | awk '{print $1}')
-HOST_NAME=$(hostname); MACHINE_ID_SHA256=$("$ROOT/scripts/host-machine-id-sha256.sh")
-FILESYSTEM=$(findmnt -n -o FSTYPE --target "$DATA_DIR"); SOURCE=$(findmnt -n -o SOURCE --target "$DATA_DIR")
+concurrency_capture_matrix_context "$ROOT" "$ROOT/scripts/run-kv-concurrency-matrix.sh" "$DATA_DIR" || exit $?
+
 IMPORT_MANIFEST="$RUN_DIR/import-manifest.json"
 IMPORT_MANIFEST_SHA=""
 if [[ -s "$IMPORT_MANIFEST" ]]; then
@@ -109,10 +96,10 @@ SLED_CASE_TIMEOUT_S=$(concurrency_case_timeout_s "$PROFILE" sled) || exit 2
 printf '%s' "$(jq -cnS \
   --arg lane kv-concurrency --arg profile "$PROFILE" --argjson trials "$TRIALS" --argjson records "$RECORDS" --argjson default_ops "$OPS" --argjson case_count "$TOTAL" \
   --arg engines "${ENGINES[*]}" --arg clients "${CLIENTS[*]}" --arg core_workloads "${CORE_WORKLOADS[*]}" --arg range_clients "${RANGE_CLIENTS[*]}" --arg delete_clients "${DELETE_CLIENTS[*]}" --arg relaxed_clients "${RELAXED_CLIENTS[*]}" \
-  --arg resume "$RESUME_ORDER_POLICY" --arg build "$BUILD_PROFILE" --arg bin_sha "$BIN_SHA" --arg runner_sha "$RUNNER_SHA" --arg common_sha "$CONCURRENCY_RUNNER_COMMON_SHA" --arg noise_common_sha "$CONTINUOUS_NOISE_COMMON_SHA" --arg kv_policy_sha "$KV_POLICY_SHA" --arg policy_sha "$CONCURRENCY_POLICY_SHA" --arg noise_sha "$NOISE_SHA" --arg continuous_sha "$CONTINUOUS_NOISE_SHA" --arg admission "$CONCURRENCY_ADMISSION_POLICY" \
+  --arg resume "$RESUME_ORDER_POLICY" --arg build "$BUILD_PROFILE" --arg bin_sha "$BIN_SHA" --arg runner_sha "$RUNNER_SHA" --arg common_sha "$CONCURRENCY_RUNNER_COMMON_SHA" --arg perf_sha "$PERFORMANCE_COMMON_SHA" --arg noise_common_sha "$CONTINUOUS_NOISE_COMMON_SHA" --arg kv_policy_sha "$KV_POLICY_SHA" --arg policy_sha "$CONCURRENCY_POLICY_SHA" --arg noise_sha "$NOISE_SHA" --arg continuous_sha "$CONTINUOUS_NOISE_SHA" --arg admission "$CONCURRENCY_ADMISSION_POLICY" \
   --argjson sample_ms "$CONTINUOUS_NOISE_SAMPLE_MS" --argjson max_cpu "$CONTINUOUS_NOISE_MAX_CPU_PERCENT" --argjson max_io_avg "$CONTINUOUS_NOISE_MAX_IO_AVERAGE_MIB_S" --argjson max_io_rate "$CONTINUOUS_NOISE_MAX_IO_RATE_MIB_S" --argjson min_free "$MIN_FREE_GIB" --arg case_min_free "$CASE_MIN_FREE_GIB" --argjson timeout "$DEFAULT_CASE_TIMEOUT_S" --argjson sled_timeout "$SLED_CASE_TIMEOUT_S" --argjson persy_timeout "$PERSY_LOCK_TIMEOUT_MS" \
   --arg import_manifest "$IMPORT_MANIFEST_SHA" --arg hostname "$HOST_NAME" --arg machine "$MACHINE_ID_SHA256" --arg filesystem "$FILESYSTEM" --arg source "$SOURCE" \
-  '{lane:$lane,profile:$profile,trials:$trials,records:$records,default_ops:$default_ops,case_count:$case_count,shared_database:true,total_ops_fixed_across_client_counts:true,engines:$engines,clients:$clients,core_workloads:$core_workloads,range_clients:$range_clients,delete_clients:$delete_clients,relaxed_clients:$relaxed_clients,resume_order_policy:$resume,build_profile:$build,benchmark_binary_sha256:$bin_sha,runner_sha256:$runner_sha,concurrency_runner_common_sha256:$common_sha,continuous_noise_common_sha256:$noise_common_sha,kv_matrix_policy_sha256:$kv_policy_sha,concurrency_policy_sha256:$policy_sha,noise_guard_sha256:$noise_sha,continuous_noise_guard_sha256:$continuous_sha,admission_policy:$admission,continuous_noise_sample_ms:$sample_ms,continuous_noise_max_cpu_percent:$max_cpu,continuous_noise_max_io_average_mib_s:$max_io_avg,continuous_noise_max_io_rate_mib_s:$max_io_rate,initial_min_free_gib:$min_free,case_min_free_gib:$case_min_free,case_timeout_s:$timeout,engine_case_timeouts_s:{sled:$sled_timeout},persy_lock_timeout_ms:$persy_timeout,state_evolution:"growth",write_pattern:"append",persy_timeout_retry_policy:"typed PrepareError::TransactionTimeout only; max 100 retries; deterministic micro-backoff; retry cost is timed",import_manifest_sha256:($import_manifest|if length==0 then null else . end),hostname:$hostname,machine_id_sha256:$machine,filesystem:$filesystem,source:$source,unsupported:[{engine:"lkv",scope:"all concurrency workloads",reason:"no native clone/shared writer handle"},{engine:"paritydb-hash",scope:"range-scan",reason:"hash-column mode is unordered"}]}')" > "$SUPPORT_NEW"
+  '{lane:$lane,profile:$profile,trials:$trials,records:$records,default_ops:$default_ops,case_count:$case_count,shared_database:true,total_ops_fixed_across_client_counts:true,engines:$engines,clients:$clients,core_workloads:$core_workloads,range_clients:$range_clients,delete_clients:$delete_clients,relaxed_clients:$relaxed_clients,resume_order_policy:$resume,build_profile:$build,benchmark_binary_sha256:$bin_sha,runner_sha256:$runner_sha,concurrency_runner_common_sha256:$common_sha,performance_common_sha256:$perf_sha,continuous_noise_common_sha256:$noise_common_sha,kv_matrix_policy_sha256:$kv_policy_sha,concurrency_policy_sha256:$policy_sha,noise_guard_sha256:$noise_sha,continuous_noise_guard_sha256:$continuous_sha,admission_policy:$admission,continuous_noise_sample_ms:$sample_ms,continuous_noise_max_cpu_percent:$max_cpu,continuous_noise_max_io_average_mib_s:$max_io_avg,continuous_noise_max_io_rate_mib_s:$max_io_rate,initial_min_free_gib:$min_free,case_min_free_gib:$case_min_free,case_timeout_s:$timeout,engine_case_timeouts_s:{sled:$sled_timeout},persy_lock_timeout_ms:$persy_timeout,state_evolution:"growth",write_pattern:"append",persy_timeout_retry_policy:"typed PrepareError::TransactionTimeout only; max 100 retries; deterministic micro-backoff; retry cost is timed",import_manifest_sha256:($import_manifest|if length==0 then null else . end),hostname:$hostname,machine_id_sha256:$machine,filesystem:$filesystem,source:$source,unsupported:[{engine:"lkv",scope:"all concurrency workloads",reason:"no native clone/shared writer handle"},{engine:"paritydb-hash",scope:"range-scan",reason:"hash-column mode is unordered"}]}')" > "$SUPPORT_NEW"
 EXISTING_CASES=$(find "$RUN_DIR/cases" -type f -name '*.json' | wc -l)
 if [[ -s "$RUN_DIR/support.json" ]]; then
   if ! jq -e -s '.[0] == .[1]' "$RUN_DIR/support.json" "$SUPPORT_NEW" >/dev/null; then

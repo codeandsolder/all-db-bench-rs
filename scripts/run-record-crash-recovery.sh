@@ -25,14 +25,14 @@ DATA_DIR="${DBBENCH_STORAGE_ROOT:-$ROOT}/data/runs/$RUN_ID"
 mkdir -p "$RUN_DIR"/{cases,stderr,progress,child} "$DATA_DIR"
 "$ROOT/scripts/capture-host-metadata.sh" "$RUN_DIR/host-start.txt" "$ROOT"
 
-TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target}
+TARGET_DIR=${CARGO_TARGET_DIR:-$ROOT/target}
 if [[ -n "${BENCH_BIN:-}" ]]; then
   BIN="$BENCH_BIN"
   [[ -x "$BIN" ]] || { echo "BENCH_BIN is not executable: $BIN" >&2; exit 2; }
 else
   BIN="$TARGET_DIR/release/recordbench"
-  CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" \
-    build --release --features record --bin recordbench || exit $?
+  CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local.sh" \
+    build --release --locked --features record --bin recordbench || exit $?
 fi
 
 ENGINES=(surrealdb turso sqlite)

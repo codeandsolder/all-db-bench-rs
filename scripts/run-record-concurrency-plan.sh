@@ -28,13 +28,13 @@ min_free_bytes=$((MIN_FREE_GIB * 1024 * 1024 * 1024))
 [[ "${MATRIX_PLAN_ONLY:-0}" == 1 || "${DBBENCH_PINNED_SQLITE_PREBUILT:-0}" == 1 ]] || "$ROOT/scripts/ensure-sqlite-3.54.0.sh" >/dev/null
 [[ -s "$RUN_DIR/host-start.txt" ]] || "$ROOT/scripts/capture-host-metadata.sh" "$RUN_DIR/host-start.txt" "$ROOT"
 
-TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target}
+TARGET_DIR=${CARGO_TARGET_DIR:-$ROOT/target}
 if [[ -n "${BENCH_BIN:-}" ]]; then
   BIN="$BENCH_BIN"; BUILD_PROFILE=external
   [[ -x "$BIN" ]] || { echo "BENCH_BIN is not executable: $BIN" >&2; exit 2; }
 else
   BIN="$TARGET_DIR/release/recordconcurrency"; BUILD_PROFILE=release
-  CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" build --release --locked --features record --bin recordconcurrency || exit $?
+  CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local.sh" build --release --locked --features record --bin recordconcurrency || exit $?
 fi
 if [[ -n "${BENCH_BIN_SHA256:-}" ]]; then
   BIN_SHA="$BENCH_BIN_SHA256"
@@ -42,13 +42,13 @@ else
   BIN_SHA=$(sha256sum "$BIN" | awk '{print $1}')
 fi
 
-ROCKS_TARGET_DIR=${SURREAL_ROCKS_TARGET_DIR:-/tmp/rust-db-surreal-rocks-target}
+ROCKS_TARGET_DIR=${SURREAL_ROCKS_TARGET_DIR:-$ROOT/target/surrealdb-rocks}
 if [[ -n "${ROCKS_BENCH_BIN:-}" ]]; then
   ROCKS_BIN="$ROCKS_BENCH_BIN"; ROCKS_BUILD_PROFILE=external
   [[ -x "$ROCKS_BIN" ]] || { echo "ROCKS_BENCH_BIN is not executable: $ROCKS_BIN" >&2; exit 2; }
 else
   ROCKS_BIN="$ROCKS_TARGET_DIR/release/surrealdb-rocksdb-recordconcurrency"; ROCKS_BUILD_PROFILE=release
-  "$ROOT/scripts/cargo-local-1.99.sh" build --release --locked \
+  "$ROOT/scripts/cargo-local.sh" build --release --locked \
     --manifest-path "$ROOT/engines/surrealdb-rocksdb/Cargo.toml" \
     --target-dir "$ROCKS_TARGET_DIR" --bin surrealdb-rocksdb-recordconcurrency || exit $?
 fi
@@ -62,6 +62,7 @@ RUNNER_SHA=$(sha256sum "$ROOT/scripts/run-record-concurrency-plan.sh" | awk '{pr
 NOISE_SHA=$(sha256sum "$ROOT/tools/benchctl/src/noise.rs" | awk '{print $1}')
 CONTINUOUS_NOISE_SHA=$(sha256sum "$ROOT/tools/benchctl/src/noise.rs" | awk '{print $1}')
 CONCURRENCY_RUNNER_COMMON_SHA=$(sha256sum "$ROOT/scripts/concurrency-runner-common.sh" | awk '{print $1}')
+PERFORMANCE_COMMON_SHA=$(sha256sum "$ROOT/scripts/performance-runner-common.sh" | awk '{print $1}')
 CONTINUOUS_NOISE_COMMON_SHA=$(sha256sum "$ROOT/scripts/continuous-noise-runner-common.sh" | awk '{print $1}')
 POLICY_SHA=$(sha256sum "$ROOT/scripts/concurrency-matrix-policy.sh" | awk '{print $1}')
 HOST_NAME=$(hostname)
@@ -101,9 +102,9 @@ TOTAL=${#JOBS[@]}
 SUPPORT_NEW="$RUN_DIR/support.json.new"
 printf '%s' "$(jq -cnS \
   --argjson case_count "$TOTAL" --argjson trials "$EXPECT_TRIALS" --argjson plan_version "$PLAN_VERSION" --arg plan_kind "$PLAN_KIND" --arg read_materialization "$READ_MATERIALIZATION" --arg write_materialization "$WRITE_MATERIALIZATION" --arg plan_path "$PLAN" --arg plan_sha "$PLAN_SHA" \
-  --arg build "$BUILD_PROFILE" --arg bin_sha "$BIN_SHA" --arg bench_commit "$BENCH_SOURCE_COMMIT" --arg rocks_build "$ROCKS_BUILD_PROFILE" --arg rocks_sha "$ROCKS_BIN_SHA" --arg rocks_commit "$ROCKS_BENCH_SOURCE_COMMIT" --arg harness_commit "$HARNESS_COMMIT" --arg runner_sha "$RUNNER_SHA" --arg common_sha "$CONCURRENCY_RUNNER_COMMON_SHA" --arg noise_common_sha "$CONTINUOUS_NOISE_COMMON_SHA" --arg policy_sha "$POLICY_SHA" --arg noise_sha "$NOISE_SHA" --arg continuous_sha "$CONTINUOUS_NOISE_SHA" --arg admission "$CONCURRENCY_ADMISSION_POLICY" \
+  --arg build "$BUILD_PROFILE" --arg bin_sha "$BIN_SHA" --arg bench_commit "$BENCH_SOURCE_COMMIT" --arg rocks_build "$ROCKS_BUILD_PROFILE" --arg rocks_sha "$ROCKS_BIN_SHA" --arg rocks_commit "$ROCKS_BENCH_SOURCE_COMMIT" --arg harness_commit "$HARNESS_COMMIT" --arg runner_sha "$RUNNER_SHA" --arg common_sha "$CONCURRENCY_RUNNER_COMMON_SHA" --arg perf_sha "$PERFORMANCE_COMMON_SHA" --arg noise_common_sha "$CONTINUOUS_NOISE_COMMON_SHA" --arg policy_sha "$POLICY_SHA" --arg noise_sha "$NOISE_SHA" --arg continuous_sha "$CONTINUOUS_NOISE_SHA" --arg admission "$CONCURRENCY_ADMISSION_POLICY" \
   --argjson sample_ms "$CONTINUOUS_NOISE_SAMPLE_MS" --argjson max_cpu "$CONTINUOUS_NOISE_MAX_CPU_PERCENT" --argjson max_io_avg "$CONTINUOUS_NOISE_MAX_IO_AVERAGE_MIB_S" --argjson max_io_rate "$CONTINUOUS_NOISE_MAX_IO_RATE_MIB_S" --argjson min_free "$MIN_FREE_GIB" --arg case_min_free "$CASE_MIN_FREE_GIB" --argjson timeout "$CASE_TIMEOUT_S" --arg hostname "$HOST_NAME" --arg machine "$MACHINE_ID_SHA256" --arg filesystem "$FILESYSTEM" --arg source "$SOURCE" \
-  '{lane:"record-concurrency",profile:"quick",case_count:$case_count,trials:$trials,expect_trials:$trials,plan_version:$plan_version,plan_kind:$plan_kind,read_materialization:$read_materialization,write_materialization:$write_materialization,plan_path:$plan_path,plan_sha256:$plan_sha,engines:"surrealdb turso sqlite surrealdb-rocksdb",clients:"1 2 4 8",relaxed_clients:"1 4 8",stress_clients:"1 4 8",tx_clients:"1 4 8",build_profile:$build,benchmark_binary_sha256:$bin_sha,benchmark_source_commit:$bench_commit,rocks_build_profile:$rocks_build,surrealdb_rocksdb_binary_sha256:$rocks_sha,surrealdb_rocksdb_source_commit:$rocks_commit,harness_commit:$harness_commit,runner_sha256:$runner_sha,concurrency_runner_common_sha256:$common_sha,continuous_noise_common_sha256:$noise_common_sha,concurrency_policy_sha256:$policy_sha,noise_guard_sha256:$noise_sha,continuous_noise_guard_sha256:$continuous_sha,admission_policy:$admission,continuous_noise_sample_ms:$sample_ms,continuous_noise_max_cpu_percent:$max_cpu,continuous_noise_max_io_average_mib_s:$max_io_avg,continuous_noise_max_io_rate_mib_s:$max_io_rate,initial_min_free_gib:$min_free,case_min_free_gib:$case_min_free,case_timeout_s:$timeout,hostname:$hostname,machine_id_sha256:$machine,filesystem:$filesystem,source:$source,total_work_semantics:"each plan family keeps identical records and total ops across client counts",state_evolution_semantics:"bounded tiny/write updates the prefilled record universe; growth preserves append diagnostics",surreal_conflict_policy:"retry typed transaction conflicts only; retry time stays inside measured latency"}')" > "$SUPPORT_NEW"
+  '{lane:"record-concurrency",profile:"quick",case_count:$case_count,trials:$trials,expect_trials:$trials,plan_version:$plan_version,plan_kind:$plan_kind,read_materialization:$read_materialization,write_materialization:$write_materialization,plan_path:$plan_path,plan_sha256:$plan_sha,engines:"surrealdb turso sqlite surrealdb-rocksdb",clients:"1 2 4 8",relaxed_clients:"1 4 8",stress_clients:"1 4 8",tx_clients:"1 4 8",build_profile:$build,benchmark_binary_sha256:$bin_sha,benchmark_source_commit:$bench_commit,rocks_build_profile:$rocks_build,surrealdb_rocksdb_binary_sha256:$rocks_sha,surrealdb_rocksdb_source_commit:$rocks_commit,harness_commit:$harness_commit,runner_sha256:$runner_sha,concurrency_runner_common_sha256:$common_sha,performance_common_sha256:$perf_sha,continuous_noise_common_sha256:$noise_common_sha,concurrency_policy_sha256:$policy_sha,noise_guard_sha256:$noise_sha,continuous_noise_guard_sha256:$continuous_sha,admission_policy:$admission,continuous_noise_sample_ms:$sample_ms,continuous_noise_max_cpu_percent:$max_cpu,continuous_noise_max_io_average_mib_s:$max_io_avg,continuous_noise_max_io_rate_mib_s:$max_io_rate,initial_min_free_gib:$min_free,case_min_free_gib:$case_min_free,case_timeout_s:$timeout,hostname:$hostname,machine_id_sha256:$machine,filesystem:$filesystem,source:$source,total_work_semantics:"each plan family keeps identical records and total ops across client counts",state_evolution_semantics:"bounded tiny/write updates the prefilled record universe; growth preserves append diagnostics",surreal_conflict_policy:"retry typed transaction conflicts only; retry time stays inside measured latency"}')" > "$SUPPORT_NEW"
 EXISTING_CASES=$(find "$RUN_DIR/cases" -type f -name '*.json' | wc -l)
 if [[ -s "$RUN_DIR/support.json" ]]; then
   if ! jq -e -s '.[0] == .[1]' "$RUN_DIR/support.json" "$SUPPORT_NEW" >/dev/null; then

@@ -63,6 +63,25 @@ The 2026-10-23 calibration exposed a split personality. Direct I/O looked implau
 
 The native profile preserves that behavior. A separate bounded HDD-class profile caps bandwidth at 180 MiB/s and random IOPS at 200 read / 150 write, but deliberately does **not** claim to simulate seek distributions and does not hide the underlying FLUSH pathology.
 
+## Physical backing-device admission (Asus bounded v3)
+
+New asus-zfs-*-bounded-v3.json profiles preserve historical v1/v2 identities
+and add admission.devices, an explicit list of physical backing devices. For
+the current single-vdev zpcachyos pool, the list contains persistent partition
+UUID a9bd88ed-aebc-4db0-8fc2-7cb5c957f9b1. The envelope validates each
+path as a block device and compares the complete set against all active ZFS
+pool vdevs from zpool status -P -L. A missing, extra, or unrelated device is
+rejected rather than sampling the wrong disk. For conventional filesystems,
+the devices must match the block-backed mount source.
+
+The validated JSON list is exported to the launched command, including a
+bounded systemd transient unit. KV, record, concurrency and TSDB quick/full
+lanes now share the same device counter gate. All devices are sampled over one
+interval with per-device IOPS and busy-time limits. If a profile has no device
+selection, global I/O PSI remains the fallback even with bounded CPU/memory.
+Smoke results remain functional-only. Complete profile SHA-256 is included
+in historical benchmark provenance; previous result generations are immutable.
+
 ## Cross-host interpretation
 
 cold-storage NVMe versus cold-storage HDD is the clean media comparison because CPU and VM environment are shared.

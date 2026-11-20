@@ -77,13 +77,10 @@ for common in performance-runner-common.sh concurrency-runner-common.sh; do
   }
 done
 
-for baseline in run-record-matrix.sh; do
-  rg -Fq 'CASE_MIN_FREE_GIB=${PERFORMANCE_MIN_FREE_GIB:-$MIN_FREE_GIB}' "$ROOT/scripts/$baseline" && \
-  rg -Fq 'min_gib=${CASE_MIN_FREE_GIB}' "$ROOT/scripts/$baseline" || {
-    echo "missing profile-aware free-space admission floor in $baseline" >&2
-    exit 1
-  }
-done
+# The record lane delegates to the shared free-space and device gate.
+rg -Fq 'CASE_MIN_FREE_GIB=${PERFORMANCE_MIN_FREE_GIB:-$MIN_FREE_GIB}' "$ROOT/scripts/run-record-matrix.sh"
+rg -Fq 'performance_check_io_quiet "$PROFILE" "$1"' "$ROOT/scripts/run-record-matrix.sh"
+rg -Fq 'local min_gib=${CASE_MIN_FREE_GIB' "$ROOT/scripts/performance-runner-common.sh"
 
 for runner in \
   run-kv-matrix.sh run-record-matrix.sh \
@@ -147,3 +144,59 @@ for runner in run-kv-concurrency-plan.sh run-record-concurrency-plan.sh; do
     exit 1
   }
 done
+
+# Both benchmark families enforce the same free-space admission contract.
+# Test the profile floor separately from ALLOW_BUSY and bounded-mode I/O.
+source "$ROOT/scripts/performance-runner-common.sh"
+source "$ROOT/scripts/concurrency-runner-common.sh"
+assert_runner_free_space_gate() (
+  local checker=$1 rc
+  export DATA_DIR="$ROOT"
+  unset CASE_MIN_FREE_GIB
+  if PERFORMANCE_MIN_FREE_GIB=1000000 "$checker" quick low-space >/dev/null 2>&1; then rc=0; else rc=$?; fi
+  [[ $rc == 75 ]] || { echo "$checker: low free space was not rejected" >&2; exit 1; }
+  if ALLOW_BUSY=1 PERFORMANCE_MIN_FREE_GIB=1000000 "$checker" quick busy-low-space >/dev/null 2>&1; then rc=0; else rc=$?; fi
+  [[ $rc == 75 ]] || { echo "$checker: ALLOW_BUSY bypassed free-space gating" >&2; exit 1; }
+
+  export CASE_MIN_FREE_GIB=1000000
+  if "$checker" quick profile-floor >/dev/null 2>&1; then rc=0; else rc=$?; fi
+  [[ $rc == 75 ]] || { echo "$checker: profile floor was not enforced" >&2; exit 1; }
+  if ALLOW_BUSY=1 PERFORMANCE_MIN_FREE_GIB=0 CASE_MIN_FREE_GIB=0 "$checker" quick explicit-override >/dev/null 2>&1; then rc=0; else rc=$?; fi
+  [[ $rc == 0 ]] || { echo "$checker: explicit zero floor was rejected: $rc" >&2; exit 1; }
+
+  unset CASE_MIN_FREE_GIB
+  PERFORMANCE_MIN_FREE_GIB=1000000 "$checker" smoke smoke-bypass
+)
+assert_runner_free_space_gate performance_check_io_quiet
+assert_runner_free_space_gate concurrency_check_io_quiet
+echo performance-free-space-admission-ok
+
+# Every selected physical device must pass admission in native/bounded mode.
+performance_check_free_space() { return 0; }
+expect_device_status() {
+  local expected=$1 actual
+  shift
+  if "$@"; then actual=0; else actual=$?; fi
+  if ((actual != expected)); then
+    printf 'expected admission status %s, got %s\n' "$expected" "$actual" >&2
+    return 1
+  fi
+}
+missing_device() (
+  export DBBENCH_STORAGE_PROFILE_MODE=$1
+  export PERFORMANCE_IO_QUIET_DEVICES_JSON='["/dev/dbbench-missing-device"]'
+  performance_check_io_quiet quick regression >/dev/null 2>&1
+)
+expect_device_status 2 missing_device bounded
+expect_device_status 2 missing_device native
+expect_device_status 2 bash -c 'source "$1"; performance_check_free_space() { return 0; }; PERFORMANCE_IO_QUIET_DEVICES_JSON=broken performance_check_io_quiet quick malformed' _ "$ROOT/scripts/performance-runner-common.sh"
+# Without a device, bounded mode falls back to PSI, not unconditional approval.
+expect_device_status 75 bash -c 'source "$1"; performance_check_free_space() { return 0; }; PERFORMANCE_IO_QUIET_DEVICES_JSON="[]" DBBENCH_STORAGE_PROFILE_MODE=bounded performance_check_io_quiet quick fallback -1' _ "$ROOT/scripts/performance-runner-common.sh"
+rg -Fq 'source "$ROOT/scripts/performance-runner-common.sh"' "$ROOT/scripts/run-record-matrix.sh"
+rg -Fq 'source "$ROOT/scripts/performance-runner-common.sh"' "$ROOT/scripts/run-tsdb-matrix.sh"
+rg -Fq 'source "$COMMON_DIR/performance-runner-common.sh"' "$ROOT/scripts/concurrency-runner-common.sh"
+for runner in run-kv-concurrency-matrix.sh run-kv-concurrency-plan.sh run-record-concurrency-matrix.sh run-record-concurrency-plan.sh run-record-matrix.sh; do
+  rg -q 'performance_common_sha256' "$ROOT/scripts/$runner" || { echo "missing shared admission helper identity in $runner" >&2; exit 1; }
+done
+rg -Fq '"io_admission_common": "$PERFORMANCE_COMMON_SHA"' "$ROOT/scripts/run-tsdb-matrix.sh"
+echo performance-device-admission-ok
