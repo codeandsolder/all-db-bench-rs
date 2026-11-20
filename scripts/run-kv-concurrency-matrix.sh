@@ -47,16 +47,9 @@ CONCURRENCY_BUILD_MODE=release
 [[ "$PROFILE" == smoke ]] && CONCURRENCY_BUILD_MODE=debug
 performance_select_benchmark_binary "$ROOT" "$TARGET_DIR" kv-all kvconcurrency "$CONCURRENCY_BUILD_MODE" || exit $?
 if [[ -n "${BENCH_BIN_SHA256:-}" ]]; then BIN_SHA="$BENCH_BIN_SHA256"; else BIN_SHA=$(sha256sum "$BIN" | awk '{print $1}'); fi
-RUNNER_SHA=$(sha256sum "$ROOT/scripts/run-kv-concurrency-matrix.sh" | awk '{print $1}')
 KV_POLICY_SHA=$(sha256sum "$ROOT/scripts/kv-matrix-policy.sh" | awk '{print $1}')
-CONCURRENCY_POLICY_SHA=$(sha256sum "$ROOT/scripts/concurrency-matrix-policy.sh" | awk '{print $1}')
-NOISE_SHA=$(sha256sum "$ROOT/tools/benchctl/src/noise.rs" | awk '{print $1}')
-CONTINUOUS_NOISE_SHA=$(sha256sum "$ROOT/tools/benchctl/src/noise.rs" | awk '{print $1}')
-CONCURRENCY_RUNNER_COMMON_SHA=$(sha256sum "$ROOT/scripts/concurrency-runner-common.sh" | awk '{print $1}')
-PERFORMANCE_COMMON_SHA=$(sha256sum "$ROOT/scripts/performance-runner-common.sh" | awk '{print $1}')
-CONTINUOUS_NOISE_COMMON_SHA=$(sha256sum "$ROOT/scripts/continuous-noise-runner-common.sh" | awk '{print $1}')
-HOST_NAME=$(hostname); MACHINE_ID_SHA256=$("$ROOT/scripts/host-machine-id-sha256.sh")
-FILESYSTEM=$(findmnt -n -o FSTYPE --target "$DATA_DIR"); SOURCE=$(findmnt -n -o SOURCE --target "$DATA_DIR")
+concurrency_capture_matrix_context "$ROOT" "$ROOT/scripts/run-kv-concurrency-matrix.sh" "$DATA_DIR" || exit $?
+
 IMPORT_MANIFEST="$RUN_DIR/import-manifest.json"
 IMPORT_MANIFEST_SHA=""
 if [[ -s "$IMPORT_MANIFEST" ]]; then

@@ -43,12 +43,19 @@ PERFORMANCE_MIN_FREE_GIB=1000000 concurrency_check_io_quiet smoke smoke-bypass
 # overwriting retry evidence.
 reject_dir="$tmp/reject"
 mkdir -p "$reject_dir"
-printf {}n > "$reject_dir/before.json"
-printf {contaminated:true}n > "$reject_dir/during.json"
-printf {}n > "$reject_dir/after.json"
+printf '{}\n' > "$reject_dir/before.json"
+printf '{"contaminated":true}\n' > "$reject_dir/during.json"
+printf '{}\n' > "$reject_dir/after.json"
 concurrency_preserve_noise_rejection "$reject_dir" synthetic-case continuous \
   "$reject_dir/before.json" "$reject_dir/during.json" "$reject_dir/after.json"
 [[ $(wc -l < "$reject_dir/noise/rejections.ndjson") -eq 1 ]]
 rg -q '"reason":"continuous"' "$reject_dir/noise/rejections.ndjson"
 [[ $(find "$reject_dir/noise/rejected" -type f | wc -l) -eq 3 ]]
+concurrency_capture_matrix_context "$ROOT" "$ROOT/scripts/run-kv-concurrency-matrix.sh" "$tmp"
+[[ "$RUNNER_SHA" == "$(sha256sum "$ROOT/scripts/run-kv-concurrency-matrix.sh" | awk '{print $1}')" ]]
+[[ "$CONCURRENCY_POLICY_SHA" == "$(sha256sum "$ROOT/scripts/concurrency-matrix-policy.sh" | awk '{print $1}')" ]]
+[[ "$PERFORMANCE_COMMON_SHA" == "$(sha256sum "$ROOT/scripts/performance-runner-common.sh" | awk '{print $1}')" ]]
+[[ "$CONCURRENCY_RUNNER_COMMON_SHA" == "$(sha256sum "$ROOT/scripts/concurrency-runner-common.sh" | awk '{print $1}')" ]]
+[[ "$CONTINUOUS_NOISE_SHA" == "$NOISE_SHA" ]]
+
 echo concurrency-runner-common-ok

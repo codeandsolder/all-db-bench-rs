@@ -6,6 +6,17 @@ source "$COMMON_DIR/continuous-noise-runner-common.sh"
 # shellcheck source=performance-runner-common.sh
 source "$COMMON_DIR/performance-runner-common.sh"
 CONCURRENCY_ADMISSION_POLICY=${CONCURRENCY_ADMISSION_POLICY:-$CONTINUOUS_ADMISSION_POLICY}
+# Reuse the performance runner's host and admission-helper provenance; the
+# concurrency lane adds only its own runner/policy hashes.
+# shellcheck disable=SC2034
+concurrency_capture_matrix_context() {
+  local root=$1 runner=$2 data_dir=$3
+  performance_capture_benchmark_context "$root" "$runner" "$data_dir" || return $?
+  PERFORMANCE_COMMON_SHA=$COMMON_SHA
+  CONCURRENCY_RUNNER_COMMON_SHA=$(sha256sum "$root/scripts/concurrency-runner-common.sh" | awk '{print $1}') || return 2
+  CONCURRENCY_POLICY_SHA=$(sha256sum "$root/scripts/concurrency-matrix-policy.sh" | awk '{print $1}') || return 2
+}
+
 concurrency_check_free_space() {
   local profile=$1 phase=$2 path=${3:-${PERFORMANCE_FREE_SPACE_PATH:-${DATA_DIR:-$PWD}}}
   [[ "$profile" == smoke ]] && return 0
