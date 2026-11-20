@@ -145,8 +145,33 @@ for runner in run-kv-concurrency-plan.sh run-record-concurrency-plan.sh; do
   }
 done
 
-# Every selected physical device must pass admission in native/bounded mode.
+# Both benchmark families enforce the same free-space admission contract.
+# Test the profile floor separately from ALLOW_BUSY and bounded-mode I/O.
 source "$ROOT/scripts/performance-runner-common.sh"
+source "$ROOT/scripts/concurrency-runner-common.sh"
+assert_runner_free_space_gate() (
+  local checker=$1 rc
+  export DATA_DIR="$ROOT"
+  unset CASE_MIN_FREE_GIB
+  if PERFORMANCE_MIN_FREE_GIB=1000000 "$checker" quick low-space >/dev/null 2>&1; then rc=0; else rc=$?; fi
+  [[ $rc == 75 ]] || { echo "$checker: low free space was not rejected" >&2; exit 1; }
+  if ALLOW_BUSY=1 PERFORMANCE_MIN_FREE_GIB=1000000 "$checker" quick busy-low-space >/dev/null 2>&1; then rc=0; else rc=$?; fi
+  [[ $rc == 75 ]] || { echo "$checker: ALLOW_BUSY bypassed free-space gating" >&2; exit 1; }
+
+  export CASE_MIN_FREE_GIB=1000000
+  if "$checker" quick profile-floor >/dev/null 2>&1; then rc=0; else rc=$?; fi
+  [[ $rc == 75 ]] || { echo "$checker: profile floor was not enforced" >&2; exit 1; }
+  if ALLOW_BUSY=1 PERFORMANCE_MIN_FREE_GIB=0 CASE_MIN_FREE_GIB=0 "$checker" quick explicit-override >/dev/null 2>&1; then rc=0; else rc=$?; fi
+  [[ $rc == 0 ]] || { echo "$checker: explicit zero floor was rejected: $rc" >&2; exit 1; }
+
+  unset CASE_MIN_FREE_GIB
+  PERFORMANCE_MIN_FREE_GIB=1000000 "$checker" smoke smoke-bypass
+)
+assert_runner_free_space_gate performance_check_io_quiet
+assert_runner_free_space_gate concurrency_check_io_quiet
+echo performance-free-space-admission-ok
+
+# Every selected physical device must pass admission in native/bounded mode.
 performance_check_free_space() { return 0; }
 expect_device_status() {
   local expected=$1 actual
