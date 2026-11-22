@@ -3,6 +3,7 @@ use super::{
     proc::{ancestor_pids, clock_ticks_per_second, proc_pids, uptime_seconds},
 };
 use anyhow::{Context, Result, bail};
+use num_traits::ToPrimitive;
 use rustix::process::{Pid, Signal, getpriority_process, kill_process_group, setpriority_process};
 use serde_json::{Value, json};
 use std::{
@@ -227,7 +228,9 @@ pub fn run_continuous(args: ContinuousNoiseArgs<'_>) -> Result<i32> {
 
     let ticks = clock_ticks_per_second()?;
     let start_uptime_s = uptime_seconds();
-    let start_ticks = f64_to_u64!((start_uptime_s * int_as_f64!(ticks)));
+    let start_ticks = (start_uptime_s * int_as_f64!(ticks))
+        .to_u64()
+        .context("invalid uptime in clock ticks")?;
     let own_ancestors = ancestor_pids(std::process::id());
     let (meta_prev, mut io_prev) = sample_proc();
     let mut cpu_prev = meta_prev

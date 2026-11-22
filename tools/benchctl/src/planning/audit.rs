@@ -4,6 +4,7 @@ use super::{
     write_json,
 };
 use anyhow::{Context, Result, bail};
+use num_traits::ToPrimitive;
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::{
@@ -353,9 +354,14 @@ struct StatefulRisk {
     provisional_stateful_risk: &'static str,
 }
 
-fn stateful_risk(fastest: f64, trials: i64) -> StatefulRisk {
-    let needed = trials.max(f64_to_i64!((TARGET_SECONDS / fastest).ceil()));
-    StatefulRisk {
+fn stateful_risk(fastest: f64, trials: i64) -> Result<StatefulRisk> {
+    let needed = trials.max(
+        (TARGET_SECONDS / fastest)
+            .ceil()
+            .to_i64()
+            .context("stateful trial requirement exceeds integer range")?,
+    );
+    Ok(StatefulRisk {
         provisional_stateful_trials_needed: needed,
         provisional_stateful_risk: if fastest < SEVERE_SECONDS || needed > STATEFUL_MAX_TRIALS {
             "redesign-required"
@@ -364,7 +370,7 @@ fn stateful_risk(fastest: f64, trials: i64) -> StatefulRisk {
         } else {
             "sized"
         },
-    }
+    })
 }
 
 fn sizing_decision(
@@ -402,7 +408,7 @@ fn sizing_decision(
             suggested_trials: Some(trials),
         });
     }
-    let risk = stateful_risk(fastest, trials);
+    let risk = stateful_risk(fastest, trials)?;
     let (status, recommendation) = if fastest >= FLOOR_SECONDS {
         ("sized", "keep-stock")
     } else if risk.provisional_stateful_risk == "more-fresh-trials" {
@@ -462,7 +468,8 @@ fn family_report<'a>(
     let provisional = stats
         .as_ref()
         .filter(|_| STATE_CHANGING_WORKLOADS.contains(&key.workload.as_str()))
-        .map(|stats| stateful_risk(stats.fastest_observed_median_elapsed_s, trials));
+        .map(|stats| stateful_risk(stats.fastest_observed_median_elapsed_s, trials))
+        .transpose()?;
     let observed_client_groups = clients.len() - missing_clients.len();
     Ok(FamilyReport {
         key,

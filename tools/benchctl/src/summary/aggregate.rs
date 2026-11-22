@@ -3,7 +3,8 @@ use super::model::{
     configuration, group_key, nested_f64, nested_u64, optional_str, required_f64, required_str,
     required_u64,
 };
-use anyhow::{Context, Result, bail};
+use crate::numeric::sample_quantile;
+use anyhow::{Context, Result};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -27,24 +28,7 @@ fn required_median(values: Vec<f64>, label: &str) -> Result<f64> {
 
 fn quantile(mut values: Vec<f64>, q: f64) -> Result<f64> {
     values.retain(|value| value.is_finite());
-    if values.is_empty() {
-        bail!("cannot compute quantile of empty values");
-    }
-    values.sort_by(f64::total_cmp);
-    if values.len() == 1 {
-        return Ok(values[0]);
-    }
-    let position = int_as_f64!((values.len() - 1)) * q;
-    let low = numeric_to_usize!(position.floor());
-    let high = numeric_to_usize!(position.ceil());
-    if low == high {
-        Ok(values[low])
-    } else {
-        Ok(values[high].mul_add(
-            position - int_as_f64!(low),
-            values[low] * (int_as_f64!(high) - position),
-        ))
-    }
+    sample_quantile(&mut values, q).context("cannot compute quantile")
 }
 
 fn latency_p99(row: &Value, field: &str) -> Option<f64> {

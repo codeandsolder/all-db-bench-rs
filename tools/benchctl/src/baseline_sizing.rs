@@ -1,7 +1,9 @@
 use crate::json_io::read_json;
 use crate::json_value::json_truthy;
 use crate::json_value::py_string;
+use crate::numeric::align_up;
 use anyhow::{Context, Result, bail};
+use num_traits::ToPrimitive;
 use serde_json::{Value, json};
 use std::{collections::HashMap, fs, path::Path};
 
@@ -122,8 +124,15 @@ fn sort_key(key: &[Value]) -> Vec<String> {
     key.iter().map(py_string).collect()
 }
 
-const fn round_up_ops(value: f64) -> i64 {
-    let requested = f64_to_i64!(value.ceil().max(1.0));
+fn round_up_ops(value: f64) -> Result<i64> {
+    if !value.is_finite() || value <= 0.0 {
+        bail!("invalid operation recommendation: {value}");
+    }
+    let requested = value
+        .ceil()
+        .max(1.0)
+        .to_i64()
+        .context("operation recommendation exceeds integer range")?;
     let quantum = if requested < 1_000 {
         10
     } else if requested < 10_000 {
@@ -135,15 +144,19 @@ const fn round_up_ops(value: f64) -> i64 {
     } else {
         100_000
     };
-    ((requested + quantum - 1) / quantum) * quantum
+    align_up(requested, quantum)
 }
 
-fn round_up_odd_trials(value: f64) -> i64 {
-    let mut requested = f64_to_i64!(value.ceil()).max(3);
+fn round_up_odd_trials(value: f64) -> Result<i64> {
+    let mut requested = value
+        .ceil()
+        .to_i64()
+        .context("trial recommendation exceeds integer range")?
+        .max(3);
     if requested % 2 == 0 {
         requested += 1;
     }
-    requested
+    Ok(requested)
 }
 
 fn round_up_trials(value: f64, maximum: i64) -> Result<i64> {
@@ -155,7 +168,7 @@ fn round_up_trials(value: f64, maximum: i64) -> Result<i64> {
     } else {
         maximum - 1
     };
-    Ok(round_up_odd_trials(value).min(cap))
+    Ok(round_up_odd_trials(value)?.min(cap))
 }
 
 fn runner_ops_override(row: &Value, effective_ops: i64) -> Result<i64> {
@@ -164,8 +177,12 @@ fn runner_ops_override(row: &Value, effective_ops: i64) -> Result<i64> {
     }
     let lane = row.get("lane").and_then(Value::as_str).unwrap_or("kv");
     match lane {
-        "kv" => Ok(effective_ops * 10),
-        "record" => Ok(effective_ops * 2),
+        "kv" => effective_ops
+            .checked_mul(10)
+            .context("KV runner operation count overflow"),
+        "record" => effective_ops
+            .checked_mul(2)
+            .context("record runner operation count overflow"),
         other => bail!("unknown tiny-txn baseline lane: {other:?}"),
     }
 }
@@ -292,7 +309,7 @@ fn report_group(
     if undersized && read_only {
         let scaled =
             int_as_f64!(effective_ops) * config.read_only_target_seconds / median_elapsed.max(1e-9);
-        let suggested = round_up_ops(scaled);
+        let suggested = round_up_ops(scaled)?;
         suggested_effective_ops = Some(suggested);
         runner_override = Some(runner_ops_override(first, suggested)?);
         suggested_trials = Some(expect_trials);
@@ -301,7 +318,7 @@ fn report_group(
         suggested_effective_ops = Some(effective_ops);
         runner_override = Some(runner_ops_override(first, effective_ops)?);
         let minimum =
-            round_up_odd_trials(config.stateful_min_total_seconds / median_elapsed.max(1e-9));
+            round_up_odd_trials(config.stateful_min_total_seconds / median_elapsed.max(1e-9))?;
         let suggested = round_up_trials(
             config.stateful_target_total_seconds / median_elapsed.max(1e-9),
             config.stateful_max_trials,
@@ -900,10 +917,13 @@ mod tests {
     }
 
     #[test]
-    fn operation_rounding_matches_policy() {
-        assert_eq!(round_up_ops(1.0), 10);
-        assert_eq!(round_up_ops(999.1), 1000);
-        assert_eq!(round_up_ops(300_000.0), 300_000);
-        assert_eq!(round_up_ops(1_000_001.0), 1_100_000);
+    fn operation_rounding_matches_policy() -> Result<()> {
+        assert_eq!(round_up_ops(1.0)?, 10);
+        assert_eq!(round_up_ops(999.1)?, 1000);
+        assert_eq!(round_up_ops(300_000.0)?, 300_000);
+        assert_eq!(round_up_ops(1_000_001.0)?, 1_100_000);
+        assert!(round_up_ops(f64::INFINITY).is_err());
+        assert!(round_up_ops(9_223_372_036_854_775_808.0).is_err());
+        Ok(())
     }
 }

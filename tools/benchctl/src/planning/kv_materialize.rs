@@ -1,4 +1,4 @@
-use crate::json_value::py_string;
+use crate::json_value::{py_int, py_string};
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 use std::{
@@ -47,31 +47,6 @@ struct ClientKey {
 struct IdentityKey {
     client: ClientKey,
     trial: i64,
-}
-
-fn py_int(value: &Value) -> Option<i64> {
-    match value {
-        Value::Bool(value) => Some(i64::from(*value)),
-        Value::Number(number) => {
-            if let Some(value) = number.as_i64() {
-                Some(value)
-            } else if let Some(value) = number.as_u64() {
-                i64::try_from(value).ok()
-            } else {
-                let value = number.as_f64()?;
-                if value.is_finite()
-                    && value >= int_as_f64!(i64::MIN)
-                    && value <= int_as_f64!(i64::MAX)
-                {
-                    Some(f64_to_i64!(value.trunc()))
-                } else {
-                    None
-                }
-            }
-        }
-        Value::String(value) => value.trim().parse::<i64>().ok(),
-        Value::Null | Value::Array(_) | Value::Object(_) => None,
-    }
 }
 
 fn required<'a>(item: &'a Value, key: &str, index: usize) -> Result<&'a Value> {

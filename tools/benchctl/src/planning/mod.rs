@@ -1,8 +1,9 @@
 use crate::file_hash::{lower_hex, sha256};
 use crate::json_io::read_json;
-use crate::json_value::json_truthy;
+use crate::json_value::{exact_i64 as value_i64, json_truthy};
 use crate::support::{canonical_identity_sha256, support_identity};
 use anyhow::{Context, Result, bail};
+use num_traits::ToPrimitive;
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::{
@@ -52,24 +53,6 @@ fn get_str<'a>(value: &'a Value, key: &str) -> Result<&'a str> {
         .with_context(|| format!("missing or invalid {key}"))
 }
 
-fn value_i64(value: &Value) -> Option<i64> {
-    if let Some(value) = value.as_i64() {
-        return Some(value);
-    }
-    if let Some(value) = value.as_u64() {
-        return i64::try_from(value).ok();
-    }
-    if let Some(value) = value.as_f64()
-        && value.is_finite()
-        && value.fract() == 0.0
-        && value >= int_as_f64!(i64::MIN)
-        && value <= int_as_f64!(i64::MAX)
-    {
-        return Some(f64_to_i64!(value));
-    }
-    value.as_str()?.parse::<i64>().ok()
-}
-
 fn get_i64(value: &Value, key: &str) -> Result<i64> {
     let raw = value.get(key).with_context(|| format!("missing {key}"))?;
     value_i64(raw).with_context(|| format!("invalid {key}: {raw}"))
@@ -104,16 +87,20 @@ fn rounded_ops(value: f64) -> Result<i64> {
     if !value.is_finite() || value <= 0.0 {
         bail!("invalid operation recommendation: {value}");
     }
-    let exponent = f64_to_i32!(value.log10().floor());
+    let exponent = value
+        .log10()
+        .floor()
+        .to_i32()
+        .context("invalid operation recommendation exponent")?;
     let scale = 10_f64.powi(exponent);
     let normalized = value / scale;
     for step in [1.0, 2.0, 5.0, 10.0] {
         if normalized <= step {
             let result = step * scale;
-            if result > int_as_f64!(i64::MAX) {
-                bail!("operation recommendation too large: {result}");
-            }
-            return Ok(f64_to_i64!(result).max(1));
+            return Ok(result
+                .to_i64()
+                .with_context(|| format!("operation recommendation too large: {result}"))?
+                .max(1));
         }
     }
     bail!("unable to round operation recommendation: {value}")

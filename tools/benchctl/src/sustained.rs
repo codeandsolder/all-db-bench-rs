@@ -1,4 +1,5 @@
 use crate::json_value::py_string;
+use crate::numeric::sample_quantile;
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Number, Value, json};
 use std::{
@@ -120,23 +121,7 @@ fn median(values: &mut [f64]) -> Option<f64> {
 }
 
 fn quantile(values: &[f64], q: f64) -> Option<f64> {
-    if values.is_empty() {
-        return None;
-    }
-    let mut sorted = values.to_vec();
-    sorted.sort_by(f64::total_cmp);
-    if sorted.len() == 1 {
-        return sorted.first().copied();
-    }
-    let position = q * int_as_f64!((sorted.len() - 1));
-    let low = numeric_to_usize!(position.floor());
-    let high = numeric_to_usize!(position.ceil());
-    if low == high {
-        Some(sorted[low])
-    } else {
-        let fraction = position - int_as_f64!(low);
-        Some(sorted[high].mul_add(fraction, sorted[low] * (1.0 - fraction)))
-    }
+    sample_quantile(&mut values.to_vec(), q)
 }
 
 fn ratio(numerator: f64, denominator: f64) -> Option<f64> {

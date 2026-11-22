@@ -11,57 +11,6 @@ macro_rules! int_as_f64 {
     }};
 }
 
-macro_rules! f64_to_i64 {
-    ($value:expr) => {{
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "benchmark planning intentionally rounds finite bounded f64 control values to i64"
-        )]
-        let value = $value as i64;
-        value
-    }};
-}
-
-macro_rules! f64_to_i32 {
-    ($value:expr) => {{
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "base-10 planning exponents are finite and tiny before conversion to i32"
-        )]
-        let value = $value as i32;
-        value
-    }};
-}
-
-macro_rules! f64_to_u64 {
-    ($value:expr) => {{
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "validated nonnegative timing and byte values intentionally narrow to u64"
-        )]
-        #[expect(
-            clippy::cast_sign_loss,
-            reason = "validated nonnegative timing and byte values intentionally narrow to u64"
-        )]
-        let value = $value as u64;
-        value
-    }};
-}
-
-macro_rules! numeric_to_usize {
-    ($value:expr) => {{
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "validated nonnegative bounded indices and counts intentionally narrow to usize"
-        )]
-        #[expect(
-            clippy::cast_sign_loss,
-            reason = "validated nonnegative bounded indices and counts intentionally narrow to usize"
-        )]
-        let value = $value as usize;
-        value
-    }};
-}
 mod baseline_generation;
 mod baseline_selection;
 mod baseline_sizing;
@@ -79,6 +28,7 @@ mod io_pressure;
 mod json_io;
 mod json_value;
 mod noise;
+mod numeric;
 mod planning;
 mod process_tree;
 mod ready;

@@ -1,3 +1,4 @@
+use crate::json_value::py_int;
 use anyhow::{Context, Result};
 use serde_json::{Map, Number, Value};
 use std::{fs, path::Path};
@@ -31,31 +32,6 @@ fn load(path: &Path) -> Result<Value> {
         &fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?,
     )
     .with_context(|| format!("invalid JSON in {}", path.display()))
-}
-
-fn py_int(value: &Value) -> Option<i64> {
-    match value {
-        Value::Bool(value) => Some(i64::from(*value)),
-        Value::Number(number) => {
-            if let Some(value) = number.as_i64() {
-                Some(value)
-            } else if let Some(value) = number.as_u64() {
-                i64::try_from(value).ok()
-            } else {
-                let value = number.as_f64()?;
-                if value.is_finite()
-                    && value >= int_as_f64!(i64::MIN)
-                    && value <= int_as_f64!(i64::MAX)
-                {
-                    Some(f64_to_i64!(value.trunc()))
-                } else {
-                    None
-                }
-            }
-        }
-        Value::String(value) => value.trim().parse::<i64>().ok(),
-        Value::Null | Value::Array(_) | Value::Object(_) => None,
-    }
 }
 
 fn int_or_zero(value: Option<&Value>) -> i64 {

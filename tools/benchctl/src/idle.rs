@@ -5,6 +5,7 @@ use crate::support::{
 };
 use anyhow::{Context, Result, bail};
 use fs2::FileExt;
+use num_traits::ToPrimitive;
 use serde_json::{Map, Value, json};
 use std::{
     env,
@@ -204,10 +205,9 @@ pub fn minimum_free_bytes(raw: &str) -> Result<u64> {
         bail!("PERFORMANCE_MIN_FREE_GIB must be non-negative");
     }
     let bytes = gib * 1024_f64.powi(3);
-    if bytes > int_as_f64!(u64::MAX) {
-        bail!("PERFORMANCE_MIN_FREE_GIB is too large");
-    }
-    Ok(f64_to_u64!(bytes))
+    bytes
+        .to_u64()
+        .context("PERFORMANCE_MIN_FREE_GIB is too large")
 }
 
 pub fn available_bytes(path: &Path) -> Result<u64> {

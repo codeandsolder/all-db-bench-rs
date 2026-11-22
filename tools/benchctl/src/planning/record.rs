@@ -3,7 +3,9 @@ use super::{
     WRITE_MATERIALIZATION, canonical_identity_sha256, case_paths, case_set_sha256, clone_field,
     get_f64, get_i64, get_str, json_truthy, read_json, sha256, support_identity, write_json,
 };
+use crate::numeric::align_up;
 use anyhow::{Context, Result, bail};
+use num_traits::ToPrimitive;
 use serde_json::{Map, Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -184,8 +186,14 @@ fn choose_ops(
         fastest = fastest.max(rate);
         slowest = slowest.min(rate);
     }
-    let mut desired = f64_to_i64!((fastest * TARGET_SECONDS).ceil());
-    let mut cap = f64_to_i64!((slowest * RECORD_MAX_SLOW_SECONDS).floor());
+    let mut desired = (fastest * TARGET_SECONDS)
+        .ceil()
+        .to_i64()
+        .context("desired record ops exceed integer range")?;
+    let mut cap = (slowest * RECORD_MAX_SLOW_SECONDS)
+        .floor()
+        .to_i64()
+        .context("record op cap exceeds integer range")?;
     let workload = get_str(&cases[0], "workload")?;
     let txn = get_i64(&cases[0], "txn_size")?;
     if txn < 1 {
@@ -202,9 +210,11 @@ fn choose_ops(
         if current_ops % txn != 0 {
             bail!("calibration write-burst ops are not transaction aligned");
         }
-        desired = ((desired + txn - 1) / txn) * txn;
+        desired = align_up(desired, txn)?;
         cap = (cap / txn) * txn;
-        max_clients * txn
+        max_clients
+            .checked_mul(txn)
+            .context("minimum record ops overflow")?
     } else {
         max_clients
     };

@@ -456,7 +456,7 @@ fn followup_complete(repo: &Path, group: &Value, prefix: &str) -> bool {
             v.iter()
                 .enumerate()
                 .all(|(i, x)| x.as_i64() == Some(i64::try_from(i + 1).unwrap_or(i64::MAX)))
-                && v.len() == numeric_to_usize!(trials)
+                && usize::try_from(trials).ok() == Some(v.len())
         })
 }
 
