@@ -102,6 +102,20 @@ fn case_key(item: &Value) -> Result<CaseKey> {
     })
 }
 
+pub(super) fn verify_results(plan: &Value, rows: &[Value]) -> Result<()> {
+    super::verify_case_coverage(plan, rows, |item| {
+        let ops = item
+            .get("ops")
+            .or_else(|| item.get("ops_requested"))
+            .and_then(super::value_i64)
+            .context("missing or invalid ops/ops_requested")?;
+        if item.get("ops_requested").is_some() && get_i64(item, "ops_requested")? != ops {
+            bail!("conflicting ops and ops_requested");
+        }
+        Ok((case_key(item)?, get_i64(item, "records")?, ops))
+    })
+}
+
 fn policy_ops(repo: &Path, scenario: &str, workload: &str, default_ops: i64) -> Result<i64> {
     let policy = repo.join("scripts/concurrency-matrix-policy.sh");
     let output = Command::new("bash")
@@ -471,14 +485,11 @@ fn materialize(plan: &Value) -> Result<(Vec<Vec<String>>, Value)> {
         rows.push(values);
     }
 
-    let expected_trials: BTreeSet<i64> = (1..=expect_trials).collect();
     for (key, trials) in trials_by_client {
-        if trials != expected_trials {
-            bail!(
-                "client group {key:?} has trials {:?}, expected {:?}",
-                trials.iter().copied().collect::<Vec<_>>(),
-                expected_trials.iter().copied().collect::<Vec<_>>()
-            );
+        if i64::try_from(trials.len())? != expect_trials
+            || trials.iter().copied().ne(1..=expect_trials)
+        {
+            bail!("client group {key:?} has trials {trials:?}, expected 1..={expect_trials}");
         }
     }
     if !rows.is_empty()

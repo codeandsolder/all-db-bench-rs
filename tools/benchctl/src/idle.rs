@@ -1,5 +1,5 @@
-use crate::json_io::read_json;
-use crate::json_value::json_truthy;
+use crate::admission::{AdmissionLoop, sleep_duration};
+use crate::json_io::{read_json, read_ndjson};
 use crate::support::{
     CONTINUOUS_ADMISSION, canonical_identity_sha256, support_identity, verify_plan_identity,
 };
@@ -14,8 +14,6 @@ use std::{
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::{Command, ExitStatus},
-    thread,
-    time::Duration,
 };
 
 const DEFAULT_LOCK_FILE: &str = "/run/lock/all-db-bench-performance.lock";
@@ -277,12 +275,14 @@ pub fn io_pressure_preflight(max_io_full_avg10: f64, pressure_path: &Path) -> i3
     if pressure > max_io_full_avg10 { 75 } else { 0 }
 }
 
-fn preflight_host(repo: &Path) -> i32 {
-    let storage_rc = storage_preflight(repo);
-    if storage_rc != 0 {
-        return storage_rc;
+pub fn host_preflight(repo: &Path, max_io_full: f64, storage: bool) -> i32 {
+    if storage {
+        let storage_rc = storage_preflight(repo);
+        if storage_rc != 0 {
+            return storage_rc;
+        }
     }
-    let pressure_rc = io_pressure_preflight(MAX_IO_FULL_AVG10, Path::new("/proc/pressure/io"));
+    let pressure_rc = io_pressure_preflight(max_io_full, Path::new("/proc/pressure/io"));
     if pressure_rc != 0 {
         return pressure_rc;
     }
@@ -305,11 +305,7 @@ fn value_as_i64(value: Option<&Value>) -> Option<i64> {
 }
 
 fn plan_version(path: &Path) -> Result<i64> {
-    let plan: Value = serde_json::from_str(
-        &fs::read_to_string(path)
-            .with_context(|| format!("cannot read concurrency plan {}", path.display()))?,
-    )
-    .with_context(|| format!("cannot parse concurrency plan {}", path.display()))?;
+    let plan = read_json(path)?;
     let version = value_as_i64(plan.get("concurrency_probe_plan_version")).unwrap_or(-1);
     if !matches!(version, 1 | 2) {
         bail!("unsupported concurrency plan version: {version}");
@@ -317,61 +313,72 @@ fn plan_version(path: &Path) -> Result<i64> {
     Ok(version)
 }
 
-fn support_matches_plan(lane: Lane, repo: &Path, support_path: &Path, plan_path: &Path) -> bool {
-    let result = (|| -> Result<()> {
-        let support = read_json(support_path)?;
-        let plan = read_json(plan_path)?;
-        let identity = support_identity(
-            &support,
-            lane.support_lane(),
-            Some(repo),
-            Some(lane.runner_name()),
-            CONTINUOUS_ADMISSION,
-            &support_path.display().to_string(),
-        )?;
-        let digest = canonical_identity_sha256(&identity)?;
-        verify_plan_identity(&plan, &identity, &digest)?;
-        Ok(())
-    })();
-    result.is_ok()
+fn verify_plan_support(
+    lane: Lane,
+    repo: &Path,
+    support: &Value,
+    plan_path: &Path,
+    rows: &[Value],
+) -> Result<()> {
+    use sha2::{Digest, Sha256};
+    let bytes = fs::read(plan_path)?;
+    let plan: Value = serde_json::from_slice(&bytes)?;
+    let sha = crate::file_hash::lower_hex(&Sha256::digest(&bytes));
+    if support.get("plan_sha256").and_then(Value::as_str) != Some(sha.as_str()) {
+        bail!("completed run refers to a different plan");
+    }
+    let identity = support_identity(
+        support,
+        lane.support_lane(),
+        Some(repo),
+        Some(lane.runner_name()),
+        CONTINUOUS_ADMISSION,
+        "completed run support",
+    )?;
+    let digest = canonical_identity_sha256(&identity)?;
+    verify_plan_identity(&plan, &identity, &digest)?;
+    crate::planning::verify_plan_results(&plan, rows, lane.support_lane())
 }
 
-fn run_complete(lane: Lane, repo: &Path, run_id: &str, plan_path: Option<&Path>) -> bool {
+fn validate_completed_run(
+    lane: Lane,
+    repo: &Path,
+    run_id: &str,
+    plan_path: Option<&Path>,
+) -> Result<()> {
     let run = repo.join("results/runs").join(run_id);
-    let support_path = run.join("support.json");
-    let Ok(support) = read_json(&support_path) else {
-        return false;
-    };
-    let Ok(summary) = read_json(&run.join("summary.json")) else {
-        return false;
-    };
-    if let Some(plan_path) = plan_path
-        && !support_matches_plan(lane, repo, &support_path, plan_path)
-    {
-        return false;
+    let support = read_json(&run.join("support.json"))?;
+    let summary = read_json(&run.join("summary.json"))?;
+    match run.join("failures.ndjson").metadata() {
+        Ok(metadata) if metadata.len() > 0 => bail!("run has failures"),
+        Ok(_) => {}
+        Err(error) if error.kind() == ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
     }
-    let failures = run.join("failures.ndjson");
-    if failures.metadata().is_ok_and(|metadata| metadata.len() > 0) {
-        return false;
-    }
-    let expected = value_as_i64(support.get("case_count")).unwrap_or(-1);
+    let expected =
+        usize::try_from(value_as_i64(support.get("case_count")).context("missing case count")?)?;
     let trials = match lane {
         Lane::Kv => value_as_i64(support.get("expect_trials")),
         Lane::Record => value_as_i64(support.get("expect_trials"))
             .or_else(|| value_as_i64(support.get("trials"))),
     }
-    .unwrap_or(0);
-    let expected_groups = if trials > 0 && expected > 0 && expected % trials == 0 {
-        expected / trials
-    } else {
-        -1
-    };
-    expected > 0
-        && trials > 0
-        && expected_groups > 0
-        && value_as_i64(summary.get("row_count")) == Some(expected)
-        && value_as_i64(summary.get("group_count")) == Some(expected_groups)
-        && !json_truthy(summary.get("problems"))
+    .context("missing trial count")?;
+    let rows = read_ndjson(&run.join("results.ndjson"))?;
+    crate::summary::verify_result_evidence(
+        &rows,
+        &summary,
+        lane.support_lane(),
+        expected,
+        usize::try_from(trials)?,
+    )?;
+    if let Some(plan_path) = plan_path {
+        verify_plan_support(lane, repo, &support, plan_path, &rows)?;
+    }
+    Ok(())
+}
+
+fn run_complete(lane: Lane, repo: &Path, run_id: &str, plan_path: Option<&Path>) -> bool {
+    validate_completed_run(lane, repo, run_id, plan_path).is_ok()
 }
 
 fn command_code(status: ExitStatus) -> i32 {
@@ -417,16 +424,79 @@ fn run_runner(lane: Lane, args: &IdleArgs<'_>, version: Option<i64>) -> Result<i
     Ok(command_code(status))
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
-)]
+#[derive(Clone, Copy)]
+enum PlanMode {
+    KvLegacy,
+    KvPinned,
+    Record,
+}
+
+impl PlanMode {
+    fn prepare(lane: Lane, args: &IdleArgs<'_>) -> Result<Self> {
+        verify_binary(args.bench_bin, args.bench_bin_sha256)?;
+        match lane {
+            Lane::Kv => match plan_version(args.plan)? {
+                1 => Ok(Self::KvLegacy),
+                2 => Ok(Self::KvPinned),
+                _ => bail!("unsupported KV plan version"),
+            },
+            Lane::Record => {
+                let rocks_bin = args
+                    .rocks_bench_bin
+                    .context("--rocks-bench-bin is required for record-concurrency")?;
+                let rocks_sha = args
+                    .rocks_bench_bin_sha256
+                    .context("--rocks-bench-bin-sha256 is required for record-concurrency")?;
+                verify_binary(rocks_bin, rocks_sha)?;
+                Ok(Self::Record)
+            }
+        }
+    }
+
+    const fn version(self) -> Option<i64> {
+        match self {
+            Self::KvLegacy => Some(1),
+            Self::KvPinned => Some(2),
+            Self::Record => None,
+        }
+    }
+
+    const fn completion_plan(self, plan: &Path) -> Option<&Path> {
+        match self {
+            Self::KvLegacy => None,
+            Self::KvPinned | Self::Record => Some(plan),
+        }
+    }
+
+    fn preflight(self, repo: &Path) -> i32 {
+        match self {
+            Self::KvPinned => 0,
+            Self::KvLegacy | Self::Record => host_preflight(repo, MAX_IO_FULL_AVG10, true),
+        }
+    }
+}
+
+fn report_complete(args: &IdleArgs<'_>, lane: Lane, busy: u64, skipped: bool) -> Result<i32> {
+    let _ = write_status(
+        args.status_file,
+        status_fields("complete", Some(args.run_id), Some(busy)),
+    )?;
+    let label = if lane == Lane::Record {
+        "record concurrency plan"
+    } else {
+        "concurrency plan"
+    };
+    if skipped {
+        println!("skip complete {label}: {}", args.run_id);
+    } else {
+        println!("{label} complete: {}", args.run_id);
+    }
+    Ok(0)
+}
+
 pub fn run(args: IdleArgs<'_>) -> Result<i32> {
     let lane = Lane::parse(args.lane)?;
-    if !args.busy_sleep_s.is_finite() {
-        bail!("--busy-sleep must be finite");
-    }
-    let busy_sleep = Duration::from_secs_f64(args.busy_sleep_s.max(0.1));
+    let busy_sleep = sleep_duration(args.busy_sleep_s)?;
     let lock_path = args
         .lock_file
         .unwrap_or_else(|| Path::new(DEFAULT_LOCK_FILE));
@@ -437,141 +507,43 @@ pub fn run(args: IdleArgs<'_>) -> Result<i32> {
         );
         return Ok(73);
     };
-
-    if let Err(error) = verify_binary(args.bench_bin, args.bench_bin_sha256) {
-        status_failure(args.status_file, None, None, Some(&error.to_string()))?;
-        eprintln!("{error}");
-        return Ok(2);
-    }
-    if lane == Lane::Record {
-        let Some(rocks_bin) = args.rocks_bench_bin else {
-            status_failure(
-                args.status_file,
-                None,
-                None,
-                Some("--rocks-bench-bin is required for record-concurrency"),
-            )?;
-            return Ok(2);
-        };
-        let Some(rocks_sha) = args.rocks_bench_bin_sha256 else {
-            status_failure(
-                args.status_file,
-                None,
-                None,
-                Some("--rocks-bench-bin-sha256 is required for record-concurrency"),
-            )?;
-            return Ok(2);
-        };
-        if let Err(error) = verify_binary(rocks_bin, rocks_sha) {
+    let mode = match PlanMode::prepare(lane, &args) {
+        Ok(mode) => mode,
+        Err(error) => {
             status_failure(args.status_file, None, None, Some(&error.to_string()))?;
             eprintln!("{error}");
             return Ok(2);
         }
-    }
-
-    let version = if lane == Lane::Kv {
-        match plan_version(args.plan) {
-            Ok(version) => Some(version),
-            Err(error) => {
-                status_failure(args.status_file, None, None, Some(&error.to_string()))?;
-                eprintln!("{error}");
-                return Ok(2);
-            }
-        }
-    } else {
-        None
     };
-    let completion_plan = match (lane, version) {
-        (Lane::Kv, Some(value)) if value >= 2 => Some(args.plan),
-        (Lane::Kv, _) => None,
-        (Lane::Record, _) => Some(args.plan),
-    };
+    let completion_plan = mode.completion_plan(args.plan);
     if run_complete(lane, args.repo, args.run_id, completion_plan) {
-        let _ = write_status(
-            args.status_file,
-            status_fields("complete", Some(args.run_id), Some(0)),
-        )?;
-        match lane {
-            Lane::Kv => println!("skip complete concurrency plan: {}", args.run_id),
-            Lane::Record => println!("skip complete record concurrency plan: {}", args.run_id),
-        }
-        return Ok(0);
+        return report_complete(&args, lane, 0, true);
     }
-
-    let mut busy_events = 0_u64;
-    loop {
-        let preflight = match (lane, version) {
-            (Lane::Kv, Some(value)) if value >= 2 => 0,
-            _ => preflight_host(args.repo),
-        };
-        if preflight == 75 {
-            busy_events += 1;
-            let _ = write_status(
-                args.status_file,
-                status_fields("waiting-for-idle", Some(args.run_id), Some(busy_events)),
-            )?;
-            if busy_events == 1 || busy_events.is_multiple_of(30) {
-                match lane {
-                    Lane::Kv => println!(
-                        "concurrency plan waiting for idle: run={} busy_events={busy_events}",
-                        args.run_id
-                    ),
-                    Lane::Record => println!(
-                        "record concurrency plan waiting for idle: run={} busy_events={busy_events}",
-                        args.run_id
-                    ),
-                }
-            }
-            thread::sleep(busy_sleep);
-            continue;
-        }
-        if preflight != 0 {
-            status_failure(
-                args.status_file,
-                Some(args.run_id),
-                Some(preflight),
-                Some("host preflight failed"),
-            )?;
-            return Ok(preflight);
-        }
-
-        let _ = write_status(
-            args.status_file,
-            status_fields("running", Some(args.run_id), Some(busy_events)),
-        )?;
-        let rc = run_runner(lane, &args, version)?;
-        if rc == 0 {
-            if !run_complete(lane, args.repo, args.run_id, completion_plan) {
-                status_failure(
-                    args.status_file,
-                    Some(args.run_id),
-                    None,
-                    Some("runner returned success but final validation failed"),
-                )?;
-                return Ok(2);
-            }
-            let _ = write_status(
-                args.status_file,
-                status_fields("complete", Some(args.run_id), Some(busy_events)),
-            )?;
-            match lane {
-                Lane::Kv => println!("concurrency calibration plan complete: {}", args.run_id),
-                Lane::Record => println!("record concurrency plan complete: {}", args.run_id),
-            }
-            return Ok(0);
-        }
-        if rc == 75 {
-            busy_events += 1;
-            let _ = write_status(
-                args.status_file,
-                status_fields("waiting-for-idle", Some(args.run_id), Some(busy_events)),
-            )?;
-            thread::sleep(busy_sleep);
-            continue;
-        }
-        status_failure(args.status_file, Some(args.run_id), Some(rc), None)?;
-        return Ok(rc);
+    let mut admission = AdmissionLoop::new(true, busy_sleep);
+    let code = admission.run(
+        || Ok(mode.preflight(args.repo)),
+        || run_runner(lane, &args, mode.version()),
+        |event, busy| {
+            let fields = event.fields(status_fields(event.state(), Some(args.run_id), Some(busy)));
+            let _ = write_status(args.status_file, fields)?;
+            Ok(())
+        },
+    )?;
+    if code != 0 {
+        return Ok(code);
     }
+    if let Err(error) = validate_completed_run(lane, args.repo, args.run_id, completion_plan) {
+        status_failure(
+            args.status_file,
+            Some(args.run_id),
+            None,
+            Some(&format!(
+                "runner returned success but final validation failed: {error:#}"
+            )),
+        )?;
+        return Ok(2);
+    }
+    report_complete(&args, lane, admission.busy_events(), false)
 }
 
 #[cfg(test)]
@@ -739,28 +711,40 @@ printf '%s\n' "$ROCKS_BENCH_BIN|$ROCKS_BENCH_BIN_SHA256|$MATRIX_RESUME_SHUFFLE_R
         Ok(())
     }
 
-    fn write_complete_run(repo: &Path, case_count: i64, trials: i64, groups: i64) -> Result<()> {
+    fn write_complete_run(repo: &Path, lane: Lane, trials: u64, groups: u64) -> Result<()> {
         let run = repo.join("results/runs/r");
         fs::create_dir_all(&run)?;
         fs::write(
             run.join("support.json"),
-            serde_json::to_vec(&json!({"case_count": case_count, "expect_trials": trials}))?,
+            serde_json::to_vec(&json!({"case_count": trials * groups, "expect_trials": trials}))?,
         )?;
-        fs::write(
-            run.join("summary.json"),
-            serde_json::to_vec(&json!({
-                "row_count": case_count,
-                "group_count": groups,
-                "problems": []
-            }))?,
-        )?;
-        Ok(())
+        let mut rows = String::new();
+        for clients in 1..=groups {
+            for trial in 1..=trials {
+                rows.push_str(&serde_json::to_string(&json!({
+                    "lane": lane.support_lane(), "scenario": "test", "engine": "test",
+                    "engine_version": "1", "durability": "sync", "durability_mapping": "sync",
+                    "workload": "point-read", "records": 100, "clients": clients,
+                    "ops_requested": 100, "ops_completed": 100, "txn_size": 1,
+                    "trial": trial, "ops_per_s": 100.0, "elapsed_s": 1.0, "db_bytes": 1024,
+                }))?);
+                rows.push('\n');
+            }
+        }
+        let input = run.join("results.ndjson");
+        fs::write(&input, rows)?;
+        crate::summary::summarize_file(
+            &input,
+            Some(&run.join("summary.json")),
+            Some(&run.join("summary.md")),
+            Some(usize::try_from(trials)?),
+        )
     }
 
     #[test]
     fn complete_run_requires_exact_group_count_and_no_failures() -> Result<()> {
         let dir = TestDir::new("complete")?;
-        write_complete_run(&dir.0, 12, 3, 4)?;
+        write_complete_run(&dir.0, Lane::Kv, 3, 4)?;
         assert!(run_complete(Lane::Kv, &dir.0, "r", None));
         fs::write(dir.0.join("results/runs/r/failures.ndjson"), "{}\n")?;
         assert!(!run_complete(Lane::Kv, &dir.0, "r", None));
@@ -769,6 +753,22 @@ printf '%s\n' "$ROCKS_BENCH_BIN|$ROCKS_BENCH_BIN_SHA256|$MATRIX_RESUME_SHUFFLE_R
             dir.0.join("results/runs/r/summary.json"),
             serde_json::to_vec(&json!({"row_count": 12, "group_count": 12, "problems": []}))?,
         )?;
+        assert!(!run_complete(Lane::Kv, &dir.0, "r", None));
+        Ok(())
+    }
+
+    #[test]
+    fn complete_run_requires_actual_result_evidence() -> Result<()> {
+        let dir = TestDir::new("result-evidence")?;
+        write_complete_run(&dir.0, Lane::Kv, 2, 1)?;
+        let input = dir.0.join("results/runs/r/results.ndjson");
+        let original = fs::read_to_string(&input)?;
+        let first = original.lines().next().context("first row")?;
+        fs::write(&input, format!("{first}\n{first}\n"))?;
+        assert!(!run_complete(Lane::Kv, &dir.0, "r", None));
+        fs::write(&input, &original)?;
+        assert!(run_complete(Lane::Kv, &dir.0, "r", None));
+        fs::remove_file(&input)?;
         assert!(!run_complete(Lane::Kv, &dir.0, "r", None));
         Ok(())
     }
@@ -794,14 +794,10 @@ printf '%s\n' "$ROCKS_BENCH_BIN|$ROCKS_BENCH_BIN_SHA256|$MATRIX_RESUME_SHUFFLE_R
     fn record_completion_uses_trials_fallback() -> Result<()> {
         let dir = TestDir::new("trials-fallback")?;
         let run = dir.0.join("results/runs/r");
-        fs::create_dir_all(&run)?;
+        write_complete_run(&dir.0, Lane::Record, 1, 3)?;
         fs::write(
             run.join("support.json"),
             serde_json::to_vec(&json!({"case_count": 3, "trials": 1}))?,
-        )?;
-        fs::write(
-            run.join("summary.json"),
-            serde_json::to_vec(&json!({"row_count": 3, "group_count": 3, "problems": []}))?,
         )?;
         assert!(run_complete(Lane::Record, &dir.0, "r", None));
         Ok(())

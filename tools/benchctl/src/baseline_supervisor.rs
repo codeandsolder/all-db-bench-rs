@@ -1,11 +1,12 @@
+use crate::admission::{AdmissionLoop, RunEvent, sleep_duration};
 use crate::baseline_identity::{matches_followup, matches_trials, run_id};
 use crate::baseline_sizing::TrialStatistics;
 use crate::json_io::{read_json, read_ndjson};
 use crate::json_value::json_truthy;
-use crate::{baseline_sizing, file_hash, idle, noise};
+use crate::{baseline_sizing, file_hash, idle};
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value, json};
-use std::{fs, os::unix::fs::PermissionsExt, path::Path, process::Command, thread, time::Duration};
+use std::{fs, os::unix::fs::PermissionsExt, path::Path, process::Command, time::Duration};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Lane {
@@ -111,34 +112,6 @@ fn status(state: &str, campaign: &str) -> Map<String, Value> {
     m.insert("campaign".into(), json!(campaign));
     m
 }
-fn sleep_duration(value: f64) -> Result<Duration> {
-    if !value.is_finite() {
-        bail!("busy sleep must be finite")
-    }
-    Duration::try_from_secs_f64(value.max(0.1)).context("busy sleep out of range")
-}
-
-fn preflight(repo: &Path, max_io: f64, storage: bool) -> i32 {
-    if storage {
-        let rc = idle::storage_preflight(repo);
-        if rc != 0 {
-            return rc;
-        }
-    }
-    let rc = idle::io_pressure_preflight(max_io, Path::new("/proc/pressure/io"));
-    if rc != 0 {
-        return rc;
-    }
-    noise::run_external(noise::ExternalNoiseArgs {
-        ignore_nice_at_least: 15,
-        json_out: Some(Path::new("/dev/null")),
-        exclude_pids: &[],
-        max_aggregate_cpu_percent: 50.0,
-        sample_ms: 250.0,
-    })
-    .unwrap_or(2)
-}
-
 fn verify_expected(path: &Path, expected: Option<&str>) -> Result<()> {
     if let Some(expected) = expected {
         let actual = file_hash::sha256(path)?;
@@ -202,89 +175,6 @@ impl BinaryPins<'_> {
     }
 }
 
-#[derive(Debug)]
-enum RunEvent<'a> {
-    Waiting,
-    Running,
-    Failed { code: i32, error: Option<&'a str> },
-}
-
-impl RunEvent<'_> {
-    fn fields(&self, mut base: Map<String, Value>) -> Map<String, Value> {
-        if let Self::Failed { code, error } = self {
-            base.insert("returncode".into(), json!(code));
-            if let Some(error) = error {
-                base.insert("error".into(), json!(error));
-            }
-        }
-        base
-    }
-
-    const fn state(&self) -> &'static str {
-        match self {
-            Self::Waiting => "waiting-for-idle",
-            Self::Running => "running",
-            Self::Failed { .. } => "failed",
-        }
-    }
-}
-
-struct AdmissionLoop {
-    watch: bool,
-    sleep: Duration,
-    busy: u64,
-}
-
-impl AdmissionLoop {
-    fn run(
-        &mut self,
-        mut admit: impl FnMut() -> Result<i32>,
-        mut execute: impl FnMut() -> Result<i32>,
-        mut report: impl FnMut(RunEvent<'_>, u64) -> Result<()>,
-    ) -> Result<i32> {
-        loop {
-            let result = match admit() {
-                Ok(0) => {
-                    report(RunEvent::Running, self.busy)?;
-                    execute()
-                }
-                other => other,
-            };
-            let code = match result {
-                Ok(code) => code,
-                Err(error) => {
-                    report(
-                        RunEvent::Failed {
-                            code: 2,
-                            error: Some(&error.to_string()),
-                        },
-                        self.busy,
-                    )?;
-                    return Ok(2);
-                }
-            };
-            match code {
-                0 => return Ok(0),
-                75 => {
-                    self.busy += 1;
-                    report(RunEvent::Waiting, self.busy)?;
-                    if !self.watch {
-                        return Ok(75);
-                    }
-                    if self.busy == 1 || self.busy.is_multiple_of(30) {
-                        println!("waiting for idle: busy_events={}", self.busy);
-                    }
-                    thread::sleep(self.sleep);
-                }
-                code => {
-                    report(RunEvent::Failed { code, error: None }, self.busy)?;
-                    return Ok(code);
-                }
-            }
-        }
-    }
-}
-
 struct MatrixRunner<'a> {
     repo: &'a Path,
     lane: Lane,
@@ -309,11 +199,7 @@ impl<'a> MatrixRunner<'a> {
             pins,
             max_io,
             verified: false,
-            admission: AdmissionLoop {
-                watch,
-                sleep,
-                busy: 0,
-            },
+            admission: AdmissionLoop::new(watch, sleep),
         }
     }
 
@@ -331,7 +217,7 @@ impl<'a> MatrixRunner<'a> {
     ) -> Result<i32> {
         self.admission.run(
             || {
-                let rc = preflight(self.repo, self.max_io, storage);
+                let rc = idle::host_preflight(self.repo, self.max_io, storage);
                 if rc == 0 && !self.verified {
                     self.pins.verify(self.lane)?;
                     self.verified = true;
@@ -434,7 +320,7 @@ pub fn run_quick(args: QuickArgs<'_>) -> Result<i32> {
         Ok(())
     })?;
     if code == 0 {
-        finish_quick(&args, lane, runner.admission.busy)
+        finish_quick(&args, lane, runner.admission.busy_events())
     } else {
         Ok(code)
     }
@@ -729,7 +615,7 @@ fn run_followup(
     match followup_evidence(args.repo, group, args.run_prefix) {
         Ok(evidence) => Ok(Ok(evidence)),
         Err(error) => {
-            let mut fields = progress.fields("failed", current, runner.admission.busy);
+            let mut fields = progress.fields("failed", current, runner.admission.busy_events());
             fields.insert(
                 "error".into(),
                 json!(format!("runner success did not validate: {error}")),
@@ -819,13 +705,13 @@ pub fn run_followups(args: FollowupArgs<'_>) -> Result<i32> {
             index,
             &rid,
             &args,
-            runner.admission.busy,
+            runner.admission.busy_events(),
             evidence.median_elapsed,
         )? {
             return Ok(2);
         }
     }
-    progress.finish(&args, runner.admission.busy)
+    progress.finish(&args, runner.admission.busy_events())
 }
 
 #[cfg(test)]
@@ -851,84 +737,6 @@ mod tests {
     fn group() -> Value {
         json!({"engine":"redb","durability":"sync","workload":"point-read","records":100_000,"suggested_effective_ops":300_000,"runner_ops_override":300_000,"suggested_trials":3,"resize_strategy":"more-ops","median_elapsed_s":0.5,"status":"undersized"})
     }
-    #[test]
-    fn admission_retries_preflight_and_runner_busy_without_releasing_state() -> Result<()> {
-        let mut gate = AdmissionLoop {
-            watch: true,
-            sleep: Duration::ZERO,
-            busy: 0,
-        };
-        let mut probes = [75, 0, 0].into_iter();
-        let mut launches = [75, 0].into_iter();
-        let mut events = Vec::new();
-        let result = gate.run(
-            || probes.next().context("unexpected probe"),
-            || launches.next().context("unexpected launch"),
-            |event, busy| {
-                events.push((event.state(), busy));
-                Ok(())
-            },
-        )?;
-        assert_eq!(result, 0);
-        assert_eq!(
-            events,
-            [
-                ("waiting-for-idle", 1),
-                ("running", 1),
-                ("waiting-for-idle", 2),
-                ("running", 2)
-            ]
-        );
-        assert_eq!(gate.busy, 2);
-        Ok(())
-    }
-
-    #[test]
-    fn admission_nonwatch_and_failure_do_not_launch() -> Result<()> {
-        let mut gate = AdmissionLoop {
-            watch: false,
-            sleep: Duration::ZERO,
-            busy: 0,
-        };
-        let mut launched = false;
-        let mut events = Vec::new();
-        let code = gate.run(
-            || Ok(75),
-            || {
-                launched = true;
-                Ok(0)
-            },
-            |event, busy| {
-                events.push((event.state(), busy));
-                Ok(())
-            },
-        )?;
-        assert_eq!(code, 75);
-        assert!(!launched);
-        let code = gate.run(
-            || bail!("pin verification failed"),
-            || {
-                launched = true;
-                Ok(0)
-            },
-            |event, busy| {
-                assert!(matches!(
-                    event,
-                    RunEvent::Failed {
-                        code: 2,
-                        error: Some("pin verification failed")
-                    }
-                ));
-                events.push((event.state(), busy));
-                Ok(())
-            },
-        )?;
-        assert_eq!(code, 2);
-        assert!(!launched);
-        assert_eq!(events, [("waiting-for-idle", 1), ("failed", 1)]);
-        Ok(())
-    }
-
     #[test]
     fn run_id_matches_python() -> Result<()> {
         assert_eq!(

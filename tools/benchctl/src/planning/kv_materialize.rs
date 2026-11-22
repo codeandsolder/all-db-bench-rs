@@ -252,8 +252,10 @@ fn materialize(plan: &Value) -> Result<(Vec<Vec<String>>, Value)> {
 
     for (client, trials) in client_trials {
         let observed = i64::try_from(trials.len()).context("trial count overflow")?;
-        if observed != expect_trials {
-            bail!("client group {client:?} has {observed} trials, expected {expect_trials}");
+        if observed != expect_trials || trials.iter().copied().ne(1..=expect_trials) {
+            bail!(
+                "client group {client:?} has {observed} trials, expected {expect_trials}; IDs: {trials:?}"
+            );
         }
     }
     if !rows.is_empty() {
@@ -416,7 +418,7 @@ mod tests {
     }
 
     #[test]
-    fn trial_values_are_count_based_for_compatibility() -> Result<()> {
+    fn trial_values_must_match_numbered_sequence() {
         let mut cases = Vec::new();
         for trial in [2, 3, 4] {
             let mut item = case(1, trial);
@@ -425,13 +427,14 @@ mod tests {
             item["bounded_churn_slots"] = json!(0);
             cases.push(item);
         }
-        let (rows, _) = materialize(&json!({
-            "concurrency_probe_plan_version": 2,
-            "expect_trials": 3,
-            "case_count": 3,
-            "cases": cases,
-        }))?;
-        assert_eq!(rows.len(), 3);
-        Ok(())
+        assert!(
+            materialize(&json!({
+                "concurrency_probe_plan_version": 2,
+                "expect_trials": 3,
+                "case_count": 3,
+                "cases": cases,
+            }))
+            .is_err()
+        );
     }
 }

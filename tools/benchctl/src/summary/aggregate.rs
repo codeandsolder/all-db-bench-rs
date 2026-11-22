@@ -4,7 +4,7 @@ use super::model::{
     required_u64,
 };
 use crate::numeric::sample_quantile;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -205,6 +205,9 @@ fn summarize_group(key: &GroupKey, rows: &[&Value]) -> Result<SummaryGroup> {
         .collect::<Result<BTreeSet<_>>>()?
         .into_iter()
         .collect::<Vec<_>>();
+    if trials.len() != rows.len() || trials.first() == Some(&0) {
+        bail!("duplicate or zero trial ID for {key:?}");
+    }
     let engine_compression_mapping = rows
         .iter()
         .map(|row| optional_str(row, "engine_compression_mapping", "legacy/default"))
@@ -299,7 +302,14 @@ pub(super) fn summarize_rows(
 ) -> Result<(Vec<SummaryGroup>, Vec<String>)> {
     let mut grouped: BTreeMap<GroupKey, Vec<&Value>> = BTreeMap::new();
     for row in rows {
-        grouped.entry(group_key(row)?).or_default().push(row);
+        let key = group_key(row)?;
+        if key.ops_requested == 0 || required_u64(row, "ops_completed")? != key.ops_requested {
+            bail!("incomplete measurement for {key:?}");
+        }
+        if required_f64(row, "elapsed_s")? <= 0.0 || required_f64(row, "ops_per_s")? <= 0.0 {
+            bail!("nonpositive measurement timing for {key:?}");
+        }
+        grouped.entry(key).or_default().push(row);
     }
 
     let mut summary = Vec::with_capacity(grouped.len());
@@ -307,7 +317,12 @@ pub(super) fn summarize_rows(
     for (key, group_rows) in grouped {
         let group = summarize_group(&key, &group_rows)?;
         if let Some(expected) = expect_trials
-            && group.trials.len() != expected
+            && (group.trials.len() != expected
+                || group
+                    .trials
+                    .iter()
+                    .copied()
+                    .ne(1..=u64::try_from(expected)?))
         {
             let lane = &group.key.lane;
             let engine = &group.key.engine;
@@ -315,7 +330,7 @@ pub(super) fn summarize_rows(
             let workload = &group.key.workload;
             let observed = group.trials.len();
             problems.push(format!(
-                "{lane}/{engine}/{durability}/{workload}: {observed} trials, expected {expected}"
+                "{lane}/{engine}/{durability}/{workload}: {observed} trials, expected {expected}; IDs: {:?}", group.trials
             ));
         }
         summary.push(group);

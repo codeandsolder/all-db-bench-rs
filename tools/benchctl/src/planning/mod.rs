@@ -136,6 +136,44 @@ fn case_paths(run_dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
+fn verify_case_coverage<K: Ord + std::fmt::Debug>(
+    plan: &Value,
+    rows: &[Value],
+    key: impl Fn(&Value) -> Result<K>,
+) -> Result<()> {
+    let cases = plan
+        .get("cases")
+        .and_then(Value::as_array)
+        .context("plan cases must be an array")?;
+    let mut expected = BTreeSet::new();
+    for case in cases {
+        if !expected.insert(key(case)?) {
+            bail!("duplicate planned case identity");
+        }
+    }
+    if i64::try_from(expected.len())? != get_i64(plan, "case_count")? {
+        bail!("plan case count mismatch");
+    }
+    for row in rows {
+        let identity = key(row)?;
+        if !expected.remove(&identity) {
+            bail!("duplicate or unplanned measurement: {identity:?}");
+        }
+    }
+    if !expected.is_empty() {
+        bail!("missing {} planned measurements", expected.len());
+    }
+    Ok(())
+}
+
+pub fn verify_plan_results(plan: &Value, rows: &[Value], lane: &str) -> Result<()> {
+    match lane {
+        "kv-concurrency" => verify_case_coverage(plan, rows, kv_identity::result_key),
+        "record-concurrency" => record_calibration::verify_results(plan, rows),
+        _ => bail!("unsupported concurrency result lane: {lane}"),
+    }
+}
+
 fn load_calibration_cases<K: Ord + std::fmt::Debug>(
     plan: &Value,
     paths: &[PathBuf],
@@ -336,6 +374,61 @@ mod calibration_case_tests {
     use super::{TestDir, get_i64, load_calibration_cases, write_json};
     use anyhow::Result;
     use serde_json::json;
+
+    #[test]
+    fn completed_results_must_match_exact_plan_dimensions() -> Result<()> {
+        use super::verify_plan_results;
+        for lane in ["kv-concurrency", "record-concurrency"] {
+            let first = json!({
+                "scenario": "test", "engine": "test", "durability": "sync",
+                "workload": "point-read", "records": 100, "ops": 200,
+                "clients": 1, "trial": 1, "state_evolution": "growth",
+                "write_pattern": "append", "bounded_churn_slots": 0,
+                "payload_bytes": 512, "txn_size": 100,
+                "read_materialization": "full-record-v1", "write_materialization": "no-return-v1"
+            });
+            let mut second = first.clone();
+            second["trial"] = json!(2);
+            let plan = json!({"case_count": 2, "cases": [first, second]});
+            let result = |mut case: serde_json::Value| -> Result<serde_json::Value> {
+                let ops = case
+                    .as_object_mut()
+                    .ok_or_else(|| anyhow::anyhow!("case object"))?
+                    .remove("ops")
+                    .ok_or_else(|| anyhow::anyhow!("ops"))?;
+                case["ops_requested"] = ops;
+                Ok(case)
+            };
+            let first = result(first)?;
+            let second = result(second)?;
+            verify_plan_results(&plan, &[first.clone(), second.clone()], lane)?;
+            assert!(verify_plan_results(&plan, &[first.clone(), first.clone()], lane).is_err());
+            assert!(verify_plan_results(&plan, std::slice::from_ref(&first), lane).is_err());
+            for (field, invalid) in [
+                ("records", json!(101)),
+                ("clients", json!(2)),
+                ("ops_requested", json!(201)),
+                ("state_evolution", json!("bounded")),
+                ("trial", json!(3)),
+            ] {
+                let mut bad = second.clone();
+                bad[field] = invalid;
+                assert!(
+                    verify_plan_results(&plan, &[first.clone(), bad], lane).is_err(),
+                    "{lane} {field}"
+                );
+            }
+            let (field, invalid) = if lane == "kv-concurrency" {
+                ("bounded_churn_slots", json!(4))
+            } else {
+                ("payload_bytes", json!(256))
+            };
+            let mut bad = second;
+            bad[field] = invalid;
+            assert!(verify_plan_results(&plan, &[first, bad], lane).is_err());
+        }
+        Ok(())
+    }
 
     #[test]
     fn calibration_requires_exact_complete_positive_results() -> Result<()> {

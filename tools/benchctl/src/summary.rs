@@ -9,22 +9,61 @@ use serde_json::{Value, json};
 use std::{fs, path::Path};
 
 fn read_rows(input: &Path) -> Result<Vec<Value>> {
-    let content =
-        fs::read_to_string(input).with_context(|| format!("failed to read {}", input.display()))?;
-    let mut rows = Vec::new();
-    for (index, line) in content.lines().enumerate() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        rows.push(
-            serde_json::from_str(line)
-                .with_context(|| format!("invalid JSON at {}:{}", input.display(), index + 1))?,
-        );
-    }
+    let rows = crate::json_io::read_ndjson(input)?;
     if rows.is_empty() {
         bail!("no measurements");
     }
     Ok(rows)
+}
+
+pub fn verify_result_evidence(
+    rows: &[Value],
+    summary: &Value,
+    lane: &str,
+    expected_rows: usize,
+    expected_trials: usize,
+) -> Result<()> {
+    if expected_rows == 0
+        || expected_trials == 0
+        || rows.len() != expected_rows
+        || rows
+            .iter()
+            .any(|row| row.get("lane").and_then(Value::as_str) != Some(lane))
+    {
+        bail!("result count or lane mismatch");
+    }
+    let (groups, problems) = summarize_rows(rows, Some(expected_trials))?;
+    if !problems.is_empty() || groups.len().checked_mul(expected_trials) != Some(expected_rows) {
+        bail!("incomplete measurement groups: {problems:?}");
+    }
+    let recorded = summary
+        .get("groups")
+        .and_then(Value::as_array)
+        .context("missing summary groups")?;
+    if summary.get("row_count").and_then(Value::as_u64) != Some(u64::try_from(expected_rows)?)
+        || summary.get("group_count").and_then(Value::as_u64) != Some(u64::try_from(groups.len())?)
+        || recorded.len() != groups.len()
+        || summary
+            .get("problems")
+            .and_then(Value::as_array)
+            .is_none_or(|items| !items.is_empty())
+    {
+        bail!("summary count or problems mismatch");
+    }
+    for (group, record) in groups.iter().zip(recorded) {
+        let identity = serde_json::to_value(&group.key)?;
+        let fields = identity
+            .as_object()
+            .context("group key must be an object")?;
+        if fields
+            .iter()
+            .any(|(key, value)| record.get(key) != Some(value))
+            || record.get("trials") != Some(&json!(group.trials))
+        {
+            bail!("summary group identity or trials mismatch");
+        }
+    }
+    Ok(())
 }
 
 pub fn summarize_file(
@@ -276,6 +315,35 @@ mod tests {
         assert!(encoded["settle_cpu_ns_median"].is_null());
         assert!(encoded.get("key").is_none());
         assert!(encoded.get("process").is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_duplicate_partial_and_invalid_timing() {
+        let row = kv_row(1, "growth", 0, 1, 100.0);
+        assert!(summarize_rows(&[row.clone(), row.clone()], Some(2)).is_err());
+        for (key, value) in [
+            ("ops_completed", json!(1)),
+            ("trial", json!(0)),
+            ("elapsed_s", json!(0)),
+            ("ops_per_s", json!(-1)),
+        ] {
+            let mut bad = row.clone();
+            bad[key] = value;
+            assert!(summarize_rows(&[bad], Some(1)).is_err(), "{key}");
+        }
+    }
+
+    #[test]
+    fn wrong_trial_sequence_is_reported_even_with_correct_count() -> Result<()> {
+        let (_, problems) = summarize_rows(
+            &[
+                kv_row(1, "growth", 0, 2, 100.0),
+                kv_row(1, "growth", 0, 3, 100.0),
+            ],
+            Some(2),
+        )?;
+        assert_eq!(problems.len(), 1);
         Ok(())
     }
 
