@@ -22,14 +22,7 @@ use std::{
     time::Instant,
 };
 
-use super::concurrency_clients::{
-    ClientOps, FjallClient, HeedClient, ManifoldClient, ParityClient, RedbClient, SledClient,
-    SurrealClient, TurboClient,
-};
-#[cfg(feature = "kv-experimental")]
-use super::concurrency_clients::{JammClient, LsmClient, RoughClient};
-#[cfg(feature = "kv-external")]
-use super::concurrency_clients::{MdbxClient, PersyClient, RocksClient};
+use super::backend_ops::{BackendOps, ManifoldHandle, ParityHandle, TurboHandle};
 
 mod workload;
 use workload::{ClientRun, run_client, verify_bounded_churn_state};
@@ -208,7 +201,7 @@ struct AggregateRun {
     system_delta: SystemDelta,
 }
 
-fn run_clients<C: ClientOps>(
+fn run_clients<C: BackendOps + Clone + Send + 'static>(
     prototype: C,
     args: &Args,
     runtime: &tokio::runtime::Handle,
@@ -288,7 +281,7 @@ fn run_clients<C: ClientOps>(
     })
 }
 
-fn run_clients_without_starving_runtime<C: ClientOps>(
+fn run_clients_without_starving_runtime<C: BackendOps + Clone + Send + 'static>(
     prototype: C,
     args: &Args,
 ) -> Result<AggregateRun> {
@@ -302,96 +295,99 @@ async fn dispatch(engine: Engine, args: &Args) -> Result<(&'static str, Aggregat
             let shared = Arc::new(db);
             Ok((
                 "Arc<redb::Database>",
-                run_clients_without_starving_runtime(RedbClient(shared), args)?,
+                run_clients_without_starving_runtime(shared, args)?,
             ))
         }
-        Engine::Fjall { db, keyspace } => Ok((
+        Engine::Fjall(handle) => Ok((
             "native Clone handles",
-            run_clients_without_starving_runtime(FjallClient { db, keyspace }, args)?,
+            run_clients_without_starving_runtime(handle, args)?,
         )),
         Engine::Surrealkv(tree) => {
-            let run = run_clients_without_starving_runtime(SurrealClient(tree.clone()), args)?;
+            let run = run_clients_without_starving_runtime(tree.clone(), args)?;
             // The last handle's Drop schedules an asynchronous shutdown. Wait for
             // it explicitly before the caller measures/removes the database files.
             tree.close().await?;
             Ok(("native Clone handle", run))
         }
-        Engine::Heed { env, db } => Ok((
+        Engine::Heed(handle) => Ok((
             "native Clone Env/Database handles",
-            run_clients_without_starving_runtime(HeedClient { env, db }, args)?,
+            run_clients_without_starving_runtime(handle, args)?,
         )),
         Engine::Sled(db) => Ok((
             "one native sled::Db clone per client; handle is Send+Clone but !Sync",
-            run_clients_without_starving_runtime(SledClient(*db), args)?,
+            run_clients_without_starving_runtime(*db, args)?,
         )),
         Engine::Lkv(_) => bail!(
             "lkv concurrency unsupported: write transactions require &mut Database and 0.2.1 exposes no cloneable/shared writer handle; benchmark-side mutex would fake concurrency"
         ),
-        Engine::Manifold { _db: db, cf } => {
-            let shared = Arc::new(db);
+        Engine::Manifold(handle) => {
+            let shared = Arc::new(handle.owner);
             Ok((
                 "shared Arc<ColumnFamilyDatabase> owner + native ColumnFamily clones",
-                run_clients_without_starving_runtime(ManifoldClient { _db: shared, cf }, args)?,
+                run_clients_without_starving_runtime(
+                    ManifoldHandle {
+                        owner: shared,
+                        cf: handle.cf,
+                    },
+                    args,
+                )?,
             ))
         }
         Engine::Turbokv(mut slot) => {
-            let db = slot.take().context("TurboKV missing database handle")?;
+            let TurboHandle(db) = slot.take().context("TurboKV missing database handle")?;
             let shared = Arc::new(db);
-            let run = run_clients_without_starving_runtime(TurboClient(Arc::clone(&shared)), args)?;
+            let run = run_clients_without_starving_runtime(TurboHandle(Arc::clone(&shared)), args)?;
             let db = Arc::try_unwrap(shared)
                 .map_err(|_| anyhow::anyhow!("TurboKV client retained shared handle"))?;
             db.close().await?;
             Ok(("Arc<turbokv::Db>", run))
         }
-        Engine::ParitydbHash(db) => Ok((
-            "Arc<parity_db::Db> hash column",
-            run_clients_without_starving_runtime(
-                ParityClient {
-                    db: Arc::new(db),
-                    ordered: false,
-                },
-                args,
-            )?,
-        )),
-        Engine::ParitydbBtree(db) => Ok((
-            "Arc<parity_db::Db> B-tree column",
-            run_clients_without_starving_runtime(
-                ParityClient {
-                    db: Arc::new(db),
-                    ordered: true,
-                },
-                args,
-            )?,
-        )),
+        Engine::Paritydb(handle) => {
+            let description = if handle.ordered {
+                "Arc<parity_db::Db> B-tree column"
+            } else {
+                "Arc<parity_db::Db> hash column"
+            };
+            Ok((
+                description,
+                run_clients_without_starving_runtime(
+                    ParityHandle {
+                        db: Arc::new(handle.db),
+                        ordered: handle.ordered,
+                    },
+                    args,
+                )?,
+            ))
+        }
         #[cfg(feature = "kv-external")]
         Engine::Rocksdb(db) => Ok((
             "Arc<rocksdb::DB>",
-            run_clients_without_starving_runtime(RocksClient(Arc::new(db)), args)?,
+            run_clients_without_starving_runtime(Arc::new(db), args)?,
         )),
         #[cfg(feature = "kv-external")]
         Engine::Mdbx(db) => Ok((
             "Arc<libmdbx::Database>",
-            run_clients_without_starving_runtime(MdbxClient(Arc::new(db)), args)?,
+            run_clients_without_starving_runtime(Arc::new(db), args)?,
         )),
         #[cfg(feature = "kv-external")]
         Engine::Persy(db) => Ok((
             "native Persy clone per client",
-            run_clients_without_starving_runtime(PersyClient(db), args)?,
+            run_clients_without_starving_runtime(db, args)?,
         )),
         #[cfg(feature = "kv-experimental")]
         Engine::Roughdb(db) => Ok((
             "Arc<roughdb::Db>",
-            run_clients_without_starving_runtime(RoughClient(Arc::new(db)), args)?,
+            run_clients_without_starving_runtime(Arc::new(db), args)?,
         )),
         #[cfg(feature = "kv-experimental")]
         Engine::Jammdb(db) => Ok((
             "native jammdb::DB clone per client",
-            run_clients_without_starving_runtime(JammClient(db), args)?,
+            run_clients_without_starving_runtime(db, args)?,
         )),
         #[cfg(feature = "kv-experimental")]
         Engine::Lsmdb(db) => Ok((
             "Arc<lsm_db::Lsm>",
-            run_clients_without_starving_runtime(LsmClient(Arc::new(db)), args)?,
+            run_clients_without_starving_runtime(Arc::new(db), args)?,
         )),
     }
 }

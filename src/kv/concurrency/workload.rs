@@ -1,6 +1,6 @@
 use super::{Args, StateEvolution};
 use crate::kv::{
-    concurrency_clients::ClientOps,
+    backend_ops::{BackendOps, RetryMode},
     data::{key, mix_u64, sample_existing_id, sample_read_id, value},
     metrics::{hist, record},
     types::{AccessPattern, KeyShape, Workload, WritePattern},
@@ -27,7 +27,7 @@ pub(super) struct ClientRun {
     clippy::too_many_lines,
     reason = "the per-client workload state machine is clearer as one exhaustive workload match"
 )]
-pub(super) async fn run_client<C: ClientOps>(
+pub(super) async fn run_client<C: BackendOps + Send>(
     engine: &mut C,
     args: &Args,
     client: usize,
@@ -65,7 +65,7 @@ pub(super) async fn run_client<C: ClientOps>(
                     args.workload,
                 );
                 let t = Instant::now();
-                let got = engine.get(&make_key(id)).await?;
+                let got = engine.read(&make_key(id)).await?;
                 record(&mut read_hist, t.elapsed());
                 if got.is_some() != expect_hit {
                     bail!("client {client} point-read mismatch id={id} expected_hit={expect_hit}");
@@ -94,7 +94,7 @@ pub(super) async fn run_client<C: ClientOps>(
                 let end_id = start_id + args.scan_len;
                 let t = Instant::now();
                 let n = engine
-                    .scan_count(&make_key(start_id), &make_key(end_id))
+                    .count_range(&make_key(start_id), &make_key(end_id))
                     .await?;
                 record(&mut read_hist, t.elapsed());
                 if n != usize::try_from(args.scan_len)? {
@@ -142,8 +142,11 @@ pub(super) async fn run_client<C: ClientOps>(
                     ));
                 }
                 let t = Instant::now();
-                write_conflict_retries = write_conflict_retries
-                    .saturating_add(engine.write_batch(args.durability, &puts, &[]).await?);
+                write_conflict_retries = write_conflict_retries.saturating_add(
+                    engine
+                        .commit(args.durability, &puts, &[], RetryMode::Concurrent)
+                        .await?,
+                );
                 record(&mut write_hist, t.elapsed());
                 writes += n as u64;
                 done += n as u64;
@@ -160,8 +163,11 @@ pub(super) async fn run_client<C: ClientOps>(
                     dels.push(make_key(offset + done + local as u64));
                 }
                 let t = Instant::now();
-                write_conflict_retries = write_conflict_retries
-                    .saturating_add(engine.write_batch(args.durability, &[], &dels).await?);
+                write_conflict_retries = write_conflict_retries.saturating_add(
+                    engine
+                        .commit(args.durability, &[], &dels, RetryMode::Concurrent)
+                        .await?,
+                );
                 record(&mut write_hist, t.elapsed());
                 deletes += n as u64;
                 done += n as u64;
@@ -314,7 +320,7 @@ pub(super) async fn run_client<C: ClientOps>(
                     match unit {
                         Unit::Read(k) => {
                             let t = Instant::now();
-                            let _ = engine.get(&k).await?;
+                            let _ = engine.read(&k).await?;
                             record(&mut read_hist, t.elapsed());
                             reads += 1;
                             done += 1;
@@ -326,7 +332,9 @@ pub(super) async fn run_client<C: ClientOps>(
                             let n = puts.len() + dels.len();
                             let t = Instant::now();
                             write_conflict_retries = write_conflict_retries.saturating_add(
-                                engine.write_batch(args.durability, &puts, &dels).await?,
+                                engine
+                                    .commit(args.durability, &puts, &dels, RetryMode::Concurrent)
+                                    .await?,
                             );
                             record(&mut write_hist, t.elapsed());
                             writes += puts.len() as u64;
@@ -355,7 +363,7 @@ pub(super) async fn run_client<C: ClientOps>(
     })
 }
 
-pub(super) async fn verify_bounded_churn_state<C: ClientOps>(
+pub(super) async fn verify_bounded_churn_state<C: BackendOps + Send>(
     client: &mut C,
     args: &Args,
 ) -> Result<()> {
@@ -366,11 +374,11 @@ pub(super) async fn verify_bounded_churn_state<C: ClientOps>(
             .saturating_add(args.bounded_churn_slots)
             .saturating_add(slot);
         let a = client
-            .get(&key(a_id, args.key_bytes, args.key_shape, args.seed))
+            .read(&key(a_id, args.key_bytes, args.key_shape, args.seed))
             .await?
             .is_some();
         let b = client
-            .get(&key(b_id, args.key_bytes, args.key_shape, args.seed))
+            .read(&key(b_id, args.key_bytes, args.key_shape, args.seed))
             .await?
             .is_some();
         if a == b {

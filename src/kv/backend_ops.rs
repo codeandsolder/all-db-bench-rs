@@ -1,19 +1,18 @@
-#![expect(
-    clippy::unused_async_trait_impl,
-    reason = "ClientOps intentionally presents one async interface across synchronous and asynchronous storage engines"
-)]
-
 use anyhow::{Result, bail};
-use std::sync::Arc;
+use std::{
+    borrow::Borrow,
+    future::{Future, ready},
+    sync::Arc,
+};
 
 use fjall::{Database as FjallDb, Keyspace, PersistMode};
 use heed::{Database as HeedDb, Env as HeedEnv, types::Bytes};
 use manifold::{
-    Durability as ManifoldDurability,
+    Durability as ManifoldDurability, TableDefinition as ManifoldTableDefinition,
     column_family::{ColumnFamily as ManifoldCf, ColumnFamilyDatabase as ManifoldDb},
 };
 use parity_db::Db as ParityDb;
-use redb::{Database as RedbDb, Durability as RedbDurability, ReadableDatabase};
+use redb::{Database as RedbDb, Durability as RedbDurability, ReadableDatabase, TableDefinition};
 use surrealkv::{
     Durability as SurrealDurability, Error as SurrealError, LSMIterator, Mode as SurrealMode,
     Tree as SurrealTree,
@@ -45,39 +44,127 @@ use roughdb::{
     WriteOptions as RoughWriteOptions,
 };
 
-use super::{
-    engine::{MANIFOLD_TABLE, REDB_TABLE},
-    types::Durability,
-};
+use super::types::Durability;
 
-pub(super) trait ClientOps: Clone + Send + 'static {
-    async fn get(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>>;
-    async fn write_batch(
+const REDB_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("kv");
+const MANIFOLD_TABLE: ManifoldTableDefinition<&[u8], &[u8]> = ManifoldTableDefinition::new("kv");
+
+/// Only concurrent workloads may retry typed transaction conflicts. Retry time
+/// remains inside the measured transaction and all successful retries are counted.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum RetryMode {
+    SingleAttempt,
+    Concurrent,
+}
+
+/// Native backend operations through an exclusively borrowed client handle.
+/// The native database may still be shared by other independently owned clients.
+/// Reads and range scans materialize the same data in both benchmark lanes.
+pub(super) trait BackendOps {
+    fn read(&mut self, key: &[u8]) -> impl Future<Output = Result<Option<Vec<u8>>>>;
+    fn commit(
         &mut self,
         durability: Durability,
         puts: &[(Vec<u8>, Vec<u8>)],
         deletes: &[Vec<u8>],
-    ) -> Result<u64>;
-    async fn scan_count(&mut self, start: &[u8], end: &[u8]) -> Result<usize>;
+        mode: RetryMode,
+    ) -> impl Future<Output = Result<u64>>;
+    fn count_range(&mut self, start: &[u8], end: &[u8]) -> impl Future<Output = Result<usize>>;
+}
+
+/// Synchronous storage engines execute their native transaction directly.
+/// A ready future exposes the result to the shared asynchronous harness without
+/// an executor hop, blocking adapter, or unnecessary asynchronous state machine.
+trait SyncBackend {
+    fn read_sync(&self, key: &[u8]) -> Result<Option<Vec<u8>>>;
+    fn commit_sync(
+        &self,
+        durability: Durability,
+        puts: &[(Vec<u8>, Vec<u8>)],
+        deletes: &[Vec<u8>],
+    ) -> Result<()>;
+    fn count_range_sync(&self, start: &[u8], end: &[u8]) -> Result<usize>;
+}
+
+impl<B: SyncBackend> BackendOps for B {
+    fn read(&mut self, key: &[u8]) -> impl Future<Output = Result<Option<Vec<u8>>>> {
+        ready(self.read_sync(key))
+    }
+
+    fn commit(
+        &mut self,
+        durability: Durability,
+        puts: &[(Vec<u8>, Vec<u8>)],
+        deletes: &[Vec<u8>],
+        _mode: RetryMode,
+    ) -> impl Future<Output = Result<u64>> {
+        ready(self.commit_sync(durability, puts, deletes).map(|()| 0))
+    }
+
+    fn count_range(&mut self, start: &[u8], end: &[u8]) -> impl Future<Output = Result<usize>> {
+        ready(self.count_range_sync(start, end))
+    }
+}
+
+impl<B: SyncBackend> SyncBackend for Arc<B> {
+    fn read_sync(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+        self.as_ref().read_sync(key)
+    }
+
+    fn commit_sync(
+        &self,
+        durability: Durability,
+        puts: &[(Vec<u8>, Vec<u8>)],
+        deletes: &[Vec<u8>],
+    ) -> Result<()> {
+        self.as_ref().commit_sync(durability, puts, deletes)
+    }
+
+    fn count_range_sync(&self, start: &[u8], end: &[u8]) -> Result<usize> {
+        self.as_ref().count_range_sync(start, end)
+    }
 }
 
 #[derive(Clone)]
-pub(super) struct RedbClient(pub(super) Arc<RedbDb>);
+pub(super) struct FjallHandle {
+    pub(super) db: FjallDb,
+    pub(super) keyspace: Keyspace,
+}
 
-impl ClientOps for RedbClient {
-    async fn get(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        let txn = self.0.begin_read()?;
+#[derive(Clone)]
+pub(super) struct HeedHandle {
+    pub(super) env: HeedEnv,
+    pub(super) db: HeedDb<'static, Bytes, Bytes>,
+}
+
+// The column family must retain its database owner. Only concurrent runs
+// share that owner via Arc; single-client runs keep direct ownership.
+#[derive(Clone)]
+pub(super) struct ManifoldHandle<D: Borrow<ManifoldDb>> {
+    pub(super) owner: D,
+    pub(super) cf: ManifoldCf,
+}
+
+#[derive(Clone)]
+pub(super) struct ParityHandle<D> {
+    pub(super) db: D,
+    pub(super) ordered: bool,
+}
+
+impl SyncBackend for RedbDb {
+    fn read_sync(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+        let txn = self.begin_read()?;
         let table = txn.open_table(REDB_TABLE)?;
         Ok(table.get(key)?.map(|v| v.value().to_vec()))
     }
 
-    async fn write_batch(
-        &mut self,
+    fn commit_sync(
+        &self,
         durability: Durability,
         puts: &[(Vec<u8>, Vec<u8>)],
         deletes: &[Vec<u8>],
-    ) -> Result<u64> {
-        let mut txn = self.0.begin_write()?;
+    ) -> Result<()> {
+        let mut txn = self.begin_write()?;
         txn.set_durability(match durability {
             Durability::Relaxed => RedbDurability::None,
             Durability::Sync => RedbDurability::Immediate,
@@ -92,11 +179,11 @@ impl ClientOps for RedbClient {
             }
         }
         txn.commit()?;
-        Ok(0)
+        Ok(())
     }
 
-    async fn scan_count(&mut self, start: &[u8], end: &[u8]) -> Result<usize> {
-        let txn = self.0.begin_read()?;
+    fn count_range_sync(&self, start: &[u8], end: &[u8]) -> Result<usize> {
+        let txn = self.begin_read()?;
         let table = txn.open_table(REDB_TABLE)?;
         let mut n = 0usize;
         for item in table.range(start..end)? {
@@ -107,23 +194,17 @@ impl ClientOps for RedbClient {
     }
 }
 
-#[derive(Clone)]
-pub(super) struct FjallClient {
-    pub(super) db: FjallDb,
-    pub(super) keyspace: Keyspace,
-}
-
-impl ClientOps for FjallClient {
-    async fn get(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+impl SyncBackend for FjallHandle {
+    fn read_sync(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
         Ok(self.keyspace.get(key)?.map(|v| v.to_vec()))
     }
 
-    async fn write_batch(
-        &mut self,
+    fn commit_sync(
+        &self,
         durability: Durability,
         puts: &[(Vec<u8>, Vec<u8>)],
         deletes: &[Vec<u8>],
-    ) -> Result<u64> {
+    ) -> Result<()> {
         let mut batch = self.db.batch();
         for (k, v) in puts {
             batch.insert(&self.keyspace, k.as_slice(), v.as_slice());
@@ -136,10 +217,10 @@ impl ClientOps for FjallClient {
             Durability::Relaxed => PersistMode::Buffer,
             Durability::Sync => PersistMode::SyncAll,
         })?;
-        Ok(0)
+        Ok(())
     }
 
-    async fn scan_count(&mut self, start: &[u8], end: &[u8]) -> Result<usize> {
+    fn count_range_sync(&self, start: &[u8], end: &[u8]) -> Result<usize> {
         let mut n = 0usize;
         for item in self.keyspace.range(start..end) {
             let _ = item.into_inner()?;
@@ -149,25 +230,25 @@ impl ClientOps for FjallClient {
     }
 }
 
-#[derive(Clone)]
-pub(super) struct SurrealClient(pub(super) SurrealTree);
-
-impl ClientOps for SurrealClient {
-    async fn get(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        let txn = self.0.begin_with_mode(SurrealMode::ReadOnly)?;
-        Ok(txn.get(key)?)
+impl BackendOps for SurrealTree {
+    fn read(&mut self, key: &[u8]) -> impl Future<Output = Result<Option<Vec<u8>>>> {
+        ready((|| {
+            let txn = self.begin_with_mode(SurrealMode::ReadOnly)?;
+            Ok(txn.get(key)?)
+        })())
     }
 
-    async fn write_batch(
+    async fn commit(
         &mut self,
         durability: Durability,
         puts: &[(Vec<u8>, Vec<u8>)],
         deletes: &[Vec<u8>],
+        mode: RetryMode,
     ) -> Result<u64> {
         const MAX_CONFLICT_RETRIES: u64 = 10_000;
         let mut retries = 0u64;
         loop {
-            let mut txn = self.0.begin()?;
+            let mut txn = self.begin()?;
             txn.set_durability(match durability {
                 Durability::Relaxed => SurrealDurability::Eventual,
                 Durability::Sync => SurrealDurability::Immediate,
@@ -181,7 +262,7 @@ impl ClientOps for SurrealClient {
             match txn.commit().await {
                 Ok(()) => return Ok(retries),
                 Err(SurrealError::TransactionWriteConflict | SurrealError::TransactionRetry)
-                    if retries < MAX_CONFLICT_RETRIES =>
+                    if mode == RetryMode::Concurrent && retries < MAX_CONFLICT_RETRIES =>
                 {
                     retries += 1;
                     if retries <= 8 {
@@ -195,42 +276,38 @@ impl ClientOps for SurrealClient {
         }
     }
 
-    async fn scan_count(&mut self, start: &[u8], end: &[u8]) -> Result<usize> {
-        let txn = self.0.begin_with_mode(SurrealMode::ReadOnly)?;
-        let mut iter = txn.range(start, end)?;
-        let mut n = 0usize;
-        iter.seek_first()?;
-        while iter.valid() {
-            let _ = iter.value()?;
-            n += 1;
-            if !iter.next()? {
-                break;
+    fn count_range(&mut self, start: &[u8], end: &[u8]) -> impl Future<Output = Result<usize>> {
+        ready((|| {
+            let txn = self.begin_with_mode(SurrealMode::ReadOnly)?;
+            let mut iter = txn.range(start, end)?;
+            let mut n = 0usize;
+            iter.seek_first()?;
+            while iter.valid() {
+                let _ = iter.value()?;
+                n += 1;
+                if !iter.next()? {
+                    break;
+                }
             }
-        }
-        drop(iter);
-        drop(txn);
-        Ok(n)
+            drop(iter);
+            drop(txn);
+            Ok(n)
+        })())
     }
 }
 
-#[derive(Clone)]
-pub(super) struct HeedClient {
-    pub(super) env: HeedEnv,
-    pub(super) db: HeedDb<'static, Bytes, Bytes>,
-}
-
-impl ClientOps for HeedClient {
-    async fn get(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+impl SyncBackend for HeedHandle {
+    fn read_sync(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
         let txn = self.env.read_txn()?;
         Ok(self.db.get(&txn, key)?.map(ToOwned::to_owned))
     }
 
-    async fn write_batch(
-        &mut self,
+    fn commit_sync(
+        &self,
         _durability: Durability,
         puts: &[(Vec<u8>, Vec<u8>)],
         deletes: &[Vec<u8>],
-    ) -> Result<u64> {
+    ) -> Result<()> {
         let mut txn = self.env.write_txn()?;
         for (k, v) in puts {
             self.db.put(&mut txn, k.as_slice(), v.as_slice())?;
@@ -239,10 +316,10 @@ impl ClientOps for HeedClient {
             self.db.delete(&mut txn, k.as_slice())?;
         }
         txn.commit()?;
-        Ok(0)
+        Ok(())
     }
 
-    async fn scan_count(&mut self, start: &[u8], end: &[u8]) -> Result<usize> {
+    fn count_range_sync(&self, start: &[u8], end: &[u8]) -> Result<usize> {
         let txn = self.env.read_txn()?;
         let range = (
             std::ops::Bound::Included(start),
@@ -257,20 +334,17 @@ impl ClientOps for HeedClient {
     }
 }
 
-#[derive(Clone)]
-pub(super) struct SledClient(pub(super) sled::Db);
-
-impl ClientOps for SledClient {
-    async fn get(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        Ok(self.0.get(key)?.map(|v| v.to_vec()))
+impl SyncBackend for sled::Db {
+    fn read_sync(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+        Ok(self.get(key)?.map(|v| v.to_vec()))
     }
 
-    async fn write_batch(
-        &mut self,
+    fn commit_sync(
+        &self,
         durability: Durability,
         puts: &[(Vec<u8>, Vec<u8>)],
         deletes: &[Vec<u8>],
-    ) -> Result<u64> {
+    ) -> Result<()> {
         let mut batch = sled::Batch::default();
         for (k, v) in puts {
             batch.insert(k.as_slice(), v.as_slice());
@@ -278,16 +352,16 @@ impl ClientOps for SledClient {
         for k in deletes {
             batch.remove(k.as_slice());
         }
-        self.0.apply_batch(batch)?;
+        self.apply_batch(batch)?;
         if durability == Durability::Sync {
-            self.0.flush()?;
+            self.flush()?;
         }
-        Ok(0)
+        Ok(())
     }
 
-    async fn scan_count(&mut self, start: &[u8], end: &[u8]) -> Result<usize> {
+    fn count_range_sync(&self, start: &[u8], end: &[u8]) -> Result<usize> {
         let mut n = 0usize;
-        for item in self.0.range(start..end) {
+        for item in self.range(start..end) {
             let _ = item?;
             n += 1;
         }
@@ -295,25 +369,19 @@ impl ClientOps for SledClient {
     }
 }
 
-#[derive(Clone)]
-pub(super) struct ManifoldClient {
-    pub(super) _db: Arc<ManifoldDb>,
-    pub(super) cf: ManifoldCf,
-}
-
-impl ClientOps for ManifoldClient {
-    async fn get(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+impl<D: Borrow<ManifoldDb>> SyncBackend for ManifoldHandle<D> {
+    fn read_sync(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
         let txn = self.cf.begin_read()?;
         let table = txn.open_table(MANIFOLD_TABLE)?;
         Ok(table.get(key)?.map(|v| v.value().to_vec()))
     }
 
-    async fn write_batch(
-        &mut self,
+    fn commit_sync(
+        &self,
         _durability: Durability,
         puts: &[(Vec<u8>, Vec<u8>)],
         deletes: &[Vec<u8>],
-    ) -> Result<u64> {
+    ) -> Result<()> {
         let mut txn = self.cf.begin_write()?;
         txn.set_durability(ManifoldDurability::Immediate)?;
         {
@@ -326,10 +394,10 @@ impl ClientOps for ManifoldClient {
             }
         }
         txn.commit()?;
-        Ok(0)
+        Ok(())
     }
 
-    async fn scan_count(&mut self, start: &[u8], end: &[u8]) -> Result<usize> {
+    fn count_range_sync(&self, start: &[u8], end: &[u8]) -> Result<usize> {
         let txn = self.cf.begin_read()?;
         let table = txn.open_table(MANIFOLD_TABLE)?;
         let mut n = 0usize;
@@ -341,19 +409,22 @@ impl ClientOps for ManifoldClient {
     }
 }
 
+// TurboKV close consumes the owned database. Concurrent clients retain
+// an Arc instead, which is unwrapped after the worker snapshot.
 #[derive(Clone)]
-pub(super) struct TurboClient(pub(super) Arc<TurboDb>);
+pub(super) struct TurboHandle<D: Borrow<TurboDb>>(pub(super) D);
 
-impl ClientOps for TurboClient {
-    async fn get(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        Ok(self.0.get(key).await?)
+impl<D: Borrow<TurboDb>> BackendOps for TurboHandle<D> {
+    async fn read(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+        Ok(self.0.borrow().get(key).await?)
     }
 
-    async fn write_batch(
+    async fn commit(
         &mut self,
         _durability: Durability,
         puts: &[(Vec<u8>, Vec<u8>)],
         deletes: &[Vec<u8>],
+        _mode: RetryMode,
     ) -> Result<u64> {
         let mut batch = TurboBatch::new();
         for (k, v) in puts {
@@ -362,32 +433,26 @@ impl ClientOps for TurboClient {
         for k in deletes {
             batch.delete(k.as_slice());
         }
-        self.0.write_batch(&batch).await?;
+        self.0.borrow().write_batch(&batch).await?;
         Ok(0)
     }
 
-    async fn scan_count(&mut self, start: &[u8], end: &[u8]) -> Result<usize> {
-        Ok(self.0.range(start, end).await?.len())
+    async fn count_range(&mut self, start: &[u8], end: &[u8]) -> Result<usize> {
+        Ok(self.0.borrow().range(start, end).await?.len())
     }
 }
 
-#[derive(Clone)]
-pub(super) struct ParityClient {
-    pub(super) db: Arc<ParityDb>,
-    pub(super) ordered: bool,
-}
-
-impl ClientOps for ParityClient {
-    async fn get(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        Ok(self.db.get(0, key)?)
+impl<D: Borrow<ParityDb>> SyncBackend for ParityHandle<D> {
+    fn read_sync(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+        Ok(self.db.borrow().get(0, key)?)
     }
 
-    async fn write_batch(
-        &mut self,
+    fn commit_sync(
+        &self,
         _durability: Durability,
         puts: &[(Vec<u8>, Vec<u8>)],
         deletes: &[Vec<u8>],
-    ) -> Result<u64> {
+    ) -> Result<()> {
         let mut changes = Vec::with_capacity(puts.len() + deletes.len());
         for (k, v) in puts {
             changes.push((0u8, k.clone(), Some(v.clone())));
@@ -395,15 +460,15 @@ impl ClientOps for ParityClient {
         for k in deletes {
             changes.push((0u8, k.clone(), None));
         }
-        self.db.commit(changes)?;
-        Ok(0)
+        self.db.borrow().commit(changes)?;
+        Ok(())
     }
 
-    async fn scan_count(&mut self, start: &[u8], end: &[u8]) -> Result<usize> {
+    fn count_range_sync(&self, start: &[u8], end: &[u8]) -> Result<usize> {
         if !self.ordered {
             bail!("ParityDB hash-column mode has no ordered range iterator");
         }
-        let mut iter = self.db.iter(0)?;
+        let mut iter = self.db.borrow().iter(0)?;
         iter.seek(start)?;
         let mut n = 0usize;
         while let Some((k, _v)) = iter.next()? {
@@ -417,21 +482,17 @@ impl ClientOps for ParityClient {
 }
 
 #[cfg(feature = "kv-external")]
-#[derive(Clone)]
-pub(super) struct RocksClient(pub(super) Arc<RocksDb>);
-
-#[cfg(feature = "kv-external")]
-impl ClientOps for RocksClient {
-    async fn get(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        Ok(self.0.get(key)?.map(|v| v.to_vec()))
+impl SyncBackend for RocksDb {
+    fn read_sync(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+        Ok(self.get(key)?.map(|v| v.to_vec()))
     }
 
-    async fn write_batch(
-        &mut self,
+    fn commit_sync(
+        &self,
         durability: Durability,
         puts: &[(Vec<u8>, Vec<u8>)],
         deletes: &[Vec<u8>],
-    ) -> Result<u64> {
+    ) -> Result<()> {
         let mut batch = RocksBatch::default();
         for (k, v) in puts {
             batch.put(k, v);
@@ -441,16 +502,13 @@ impl ClientOps for RocksClient {
         }
         let mut opts = RocksWriteOptions::default();
         opts.set_sync(durability == Durability::Sync);
-        self.0.write_opt(batch, &opts)?;
-        Ok(0)
+        self.write_opt(batch, &opts)?;
+        Ok(())
     }
 
-    async fn scan_count(&mut self, start: &[u8], end: &[u8]) -> Result<usize> {
+    fn count_range_sync(&self, start: &[u8], end: &[u8]) -> Result<usize> {
         let mut n = 0usize;
-        for item in self
-            .0
-            .iterator(RocksIteratorMode::From(start, RocksDirection::Forward))
-        {
+        for item in self.iterator(RocksIteratorMode::From(start, RocksDirection::Forward)) {
             let (k, _) = item?;
             if k.as_ref() >= end {
                 break;
@@ -462,24 +520,20 @@ impl ClientOps for RocksClient {
 }
 
 #[cfg(feature = "kv-external")]
-#[derive(Clone)]
-pub(super) struct MdbxClient(pub(super) Arc<MdbxDb<NoWriteMap>>);
-
-#[cfg(feature = "kv-external")]
-impl ClientOps for MdbxClient {
-    async fn get(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        let txn = self.0.begin_ro_txn()?;
+impl SyncBackend for MdbxDb<NoWriteMap> {
+    fn read_sync(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+        let txn = self.begin_ro_txn()?;
         let table = txn.open_table(None)?;
         Ok(txn.get::<Vec<u8>>(&table, key)?)
     }
 
-    async fn write_batch(
-        &mut self,
+    fn commit_sync(
+        &self,
         _durability: Durability,
         puts: &[(Vec<u8>, Vec<u8>)],
         deletes: &[Vec<u8>],
-    ) -> Result<u64> {
-        let txn = self.0.begin_rw_txn()?;
+    ) -> Result<()> {
+        let txn = self.begin_rw_txn()?;
         let table = txn.create_table(None, MdbxTableFlags::default())?;
         for (k, v) in puts {
             txn.put(&table, k, v, MdbxWriteFlags::UPSERT)?;
@@ -488,11 +542,11 @@ impl ClientOps for MdbxClient {
             let _ = txn.del(&table, k, None)?;
         }
         txn.commit()?;
-        Ok(0)
+        Ok(())
     }
 
-    async fn scan_count(&mut self, start: &[u8], end: &[u8]) -> Result<usize> {
-        let txn = self.0.begin_ro_txn()?;
+    fn count_range_sync(&self, start: &[u8], end: &[u8]) -> Result<usize> {
+        let txn = self.begin_ro_txn()?;
         let table = txn.open_table(None)?;
         let mut cursor = txn.cursor(&table)?;
         let mut n = 0usize;
@@ -508,24 +562,22 @@ impl ClientOps for MdbxClient {
 }
 
 #[cfg(feature = "kv-external")]
-#[derive(Clone)]
-pub(super) struct PersyClient(pub(super) Persy);
-
-#[cfg(feature = "kv-external")]
-impl ClientOps for PersyClient {
-    async fn get(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        let key = PersyByteVec::from(key.to_vec());
-        Ok(self
-            .0
-            .one::<PersyByteVec, PersyByteVec>("kv", &key)?
-            .map(Vec::<u8>::from))
+impl BackendOps for Persy {
+    fn read(&mut self, key: &[u8]) -> impl Future<Output = Result<Option<Vec<u8>>>> {
+        ready((|| {
+            let key = PersyByteVec::from(key.to_vec());
+            Ok(self
+                .one::<PersyByteVec, PersyByteVec>("kv", &key)?
+                .map(Vec::<u8>::from))
+        })())
     }
 
-    async fn write_batch(
+    async fn commit(
         &mut self,
         durability: Durability,
         puts: &[(Vec<u8>, Vec<u8>)],
         deletes: &[Vec<u8>],
+        mode: RetryMode,
     ) -> Result<u64> {
         const MAX_LOCK_TIMEOUT_RETRIES: u64 = 100;
         let jitter_seed = puts
@@ -537,10 +589,10 @@ impl ClientOps for PersyClient {
         let mut retries = 0u64;
         loop {
             let mut tx = match durability {
-                Durability::Relaxed => self
-                    .0
-                    .begin_with(PersyTxConfig::new().set_background_sync(true))?,
-                Durability::Sync => self.0.begin()?,
+                Durability::Relaxed => {
+                    self.begin_with(PersyTxConfig::new().set_background_sync(true))?
+                }
+                Durability::Sync => self.begin()?,
             };
             for (k, v) in puts {
                 tx.put::<PersyByteVec, PersyByteVec>(
@@ -557,6 +609,7 @@ impl ClientOps for PersyClient {
                     prepared.commit()?;
                     return Ok(retries);
                 }
+                Err(error) if mode == RetryMode::SingleAttempt => return Err(error.into()),
                 Err(error) => match error.error() {
                     PersyPrepareError::TransactionTimeout => {
                         retries = retries.saturating_add(1);
@@ -577,34 +630,32 @@ impl ClientOps for PersyClient {
         }
     }
 
-    async fn scan_count(&mut self, start: &[u8], end: &[u8]) -> Result<usize> {
-        let range = PersyByteVec::from(start.to_vec())..PersyByteVec::from(end.to_vec());
-        let mut n = 0usize;
-        for (_k, values) in self.0.range::<PersyByteVec, PersyByteVec, _>("kv", range)? {
-            if values.into_iter().next().is_some() {
-                n += 1;
+    fn count_range(&mut self, start: &[u8], end: &[u8]) -> impl Future<Output = Result<usize>> {
+        ready((|| {
+            let range = PersyByteVec::from(start.to_vec())..PersyByteVec::from(end.to_vec());
+            let mut n = 0usize;
+            for (_k, values) in self.range::<PersyByteVec, PersyByteVec, _>("kv", range)? {
+                if values.into_iter().next().is_some() {
+                    n += 1;
+                }
             }
-        }
-        Ok(n)
+            Ok(n)
+        })())
     }
 }
 
 #[cfg(feature = "kv-experimental")]
-#[derive(Clone)]
-pub(super) struct RoughClient(pub(super) Arc<RoughDb>);
-
-#[cfg(feature = "kv-experimental")]
-impl ClientOps for RoughClient {
-    async fn get(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        Ok(self.0.get(key)?)
+impl SyncBackend for RoughDb {
+    fn read_sync(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+        Ok(self.get(key)?)
     }
 
-    async fn write_batch(
-        &mut self,
+    fn commit_sync(
+        &self,
         durability: Durability,
         puts: &[(Vec<u8>, Vec<u8>)],
         deletes: &[Vec<u8>],
-    ) -> Result<u64> {
+    ) -> Result<()> {
         let mut batch = RoughBatch::new();
         for (k, v) in puts {
             batch.put(k, v);
@@ -612,17 +663,17 @@ impl ClientOps for RoughClient {
         for k in deletes {
             batch.delete(k);
         }
-        self.0.write(
+        self.write(
             &RoughWriteOptions {
                 sync: durability == Durability::Sync,
             },
             batch,
         )?;
-        Ok(0)
+        Ok(())
     }
 
-    async fn scan_count(&mut self, start: &[u8], end: &[u8]) -> Result<usize> {
-        let mut iter = self.0.new_iterator(&RoughReadOptions::default())?;
+    fn count_range_sync(&self, start: &[u8], end: &[u8]) -> Result<usize> {
+        let mut iter = self.new_iterator(&RoughReadOptions::default())?;
         iter.seek(start);
         let mut n = 0usize;
         for item in iter.forward() {
@@ -637,13 +688,9 @@ impl ClientOps for RoughClient {
 }
 
 #[cfg(feature = "kv-experimental")]
-#[derive(Clone)]
-pub(super) struct JammClient(pub(super) JammDb);
-
-#[cfg(feature = "kv-experimental")]
-impl ClientOps for JammClient {
-    async fn get(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        let tx = self.0.tx(false)?;
+impl SyncBackend for JammDb {
+    fn read_sync(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+        let tx = self.tx(false)?;
         let bucket = tx.get_bucket("kv")?;
         Ok(match bucket.get(key) {
             Some(JammData::KeyValue(kv)) => Some(kv.value().to_vec()),
@@ -652,16 +699,16 @@ impl ClientOps for JammClient {
         })
     }
 
-    async fn write_batch(
-        &mut self,
+    fn commit_sync(
+        &self,
         durability: Durability,
         puts: &[(Vec<u8>, Vec<u8>)],
         deletes: &[Vec<u8>],
-    ) -> Result<u64> {
+    ) -> Result<()> {
         if durability == Durability::Relaxed {
             bail!("jammdb relaxed mode unsupported");
         }
-        let tx = self.0.tx(true)?;
+        let tx = self.tx(true)?;
         let bucket = tx.get_bucket("kv")?;
         for (k, v) in puts {
             bucket.put(k.as_slice(), v.as_slice())?;
@@ -672,11 +719,11 @@ impl ClientOps for JammClient {
             }
         }
         tx.commit()?;
-        Ok(0)
+        Ok(())
     }
 
-    async fn scan_count(&mut self, start: &[u8], end: &[u8]) -> Result<usize> {
-        let tx = self.0.tx(false)?;
+    fn count_range_sync(&self, start: &[u8], end: &[u8]) -> Result<usize> {
+        let tx = self.tx(false)?;
         let bucket = tx.get_bucket("kv")?;
         let mut cursor = bucket.cursor();
         cursor.seek(start);
@@ -695,21 +742,17 @@ impl ClientOps for JammClient {
 }
 
 #[cfg(feature = "kv-experimental")]
-#[derive(Clone)]
-pub(super) struct LsmClient(pub(super) Arc<LsmDb>);
-
-#[cfg(feature = "kv-experimental")]
-impl ClientOps for LsmClient {
-    async fn get(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        Ok(self.0.get(key)?)
+impl SyncBackend for LsmDb {
+    fn read_sync(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+        Ok(self.get(key)?)
     }
 
-    async fn write_batch(
-        &mut self,
+    fn commit_sync(
+        &self,
         durability: Durability,
         puts: &[(Vec<u8>, Vec<u8>)],
         deletes: &[Vec<u8>],
-    ) -> Result<u64> {
+    ) -> Result<()> {
         if durability == Durability::Relaxed {
             bail!("lsm-db relaxed mode unsupported in durable build");
         }
@@ -720,11 +763,11 @@ impl ClientOps for LsmClient {
         for k in deletes {
             batch.delete(k);
         }
-        self.0.write(batch)?;
-        Ok(0)
+        self.write(batch)?;
+        Ok(())
     }
 
-    async fn scan_count(&mut self, start: &[u8], end: &[u8]) -> Result<usize> {
-        Ok(self.0.scan(start.to_vec()..end.to_vec())?.count())
+    fn count_range_sync(&self, start: &[u8], end: &[u8]) -> Result<usize> {
+        Ok(self.scan(start.to_vec()..end.to_vec())?.count())
     }
 }
