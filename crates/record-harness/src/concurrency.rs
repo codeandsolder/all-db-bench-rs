@@ -1,4 +1,5 @@
 use all_db_bench_common::{
+    client_summary::{ClientSummary, ClientTiming, SetupTimings},
     concurrency::{WorkPartition, WorkerMeasurement, partition_work, run_workers},
     metrics::{ProcDelta, SystemDelta, SystemSnapshot},
     record_payload::{PayloadPattern, payload_for},
@@ -8,7 +9,11 @@ use clap::{Args as ClapArgs, ValueEnum};
 use hdrhistogram::Histogram;
 use rand::{RngExt, SeedableRng, rngs::SmallRng};
 use serde::Serialize;
-use std::{fs, path::PathBuf, time::Instant};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    time::Instant,
+};
 
 use crate::{
     Durability, Quantiles, READ_MATERIALIZATION, RecordData, WRITE_MATERIALIZATION, Workload,
@@ -60,12 +65,7 @@ pub struct ConcurrencyArgs {
 }
 
 #[derive(Debug, Serialize)]
-struct ClientMeasurement {
-    client: usize,
-    ops_requested: u64,
-    ops_completed: u64,
-    elapsed_s: f64,
-    ops_per_s: f64,
+struct ClientWorkload {
     reads: u64,
     writes: u64,
     transactions: u64,
@@ -76,10 +76,7 @@ struct ClientMeasurement {
 
 #[derive(Debug)]
 struct ClientRun {
-    client: usize,
-    ops_requested: u64,
-    ops_completed: u64,
-    elapsed_s: f64,
+    timing: ClientTiming,
     reads: u64,
     writes: u64,
     transactions: u64,
@@ -109,9 +106,8 @@ struct Measurement<K> {
     trial: u32,
     seed: u64,
     scenario: String,
-    open_s: f64,
-    prefill_s: f64,
-    warmup_s: f64,
+    #[serde(flatten)]
+    setup: SetupTimings,
     client_setup_s: f64,
     elapsed_s: f64,
     ops_per_s: f64,
@@ -121,14 +117,8 @@ struct Measurement<K> {
     write_conflict_retries: u64,
     operation_latency: Quantiles,
     transaction_latency: Quantiles,
-    client_elapsed_s_min: f64,
-    client_elapsed_s_median: f64,
-    client_elapsed_s_max: f64,
-    client_ops_per_s_min: f64,
-    client_ops_per_s_median: f64,
-    client_ops_per_s_max: f64,
-    client_throughput_max_min_ratio: f64,
-    client_measurements: Vec<ClientMeasurement>,
+    #[serde(flatten)]
+    client_summary: ClientSummary<ClientWorkload>,
     db_bytes: u64,
     peak_rss_kib: u64,
     measured_process: ProcDelta,
@@ -411,10 +401,12 @@ async fn run_client<B: RecordBackend>(
     }
 
     Ok(ClientRun {
-        client,
-        ops_requested: ops,
-        ops_completed: done,
-        elapsed_s: started.elapsed().as_secs_f64(),
+        timing: ClientTiming {
+            client,
+            ops_requested: ops,
+            ops_completed: done,
+            elapsed_s: started.elapsed().as_secs_f64(),
+        },
         reads,
         writes,
         transactions,
@@ -444,8 +436,8 @@ fn run_clients<B: RecordBackend>(
     clients: Vec<B>,
     args: &ConcurrencyArgs,
     runtime: &tokio::runtime::Handle,
+    partitions: Vec<WorkPartition>,
 ) -> Result<AggregateRun> {
-    let partitions = partition_ops(args)?;
     if clients.len() != args.clients {
         bail!("client handle count mismatch");
     }
@@ -486,7 +478,7 @@ fn run_clients<B: RecordBackend>(
     for c in &client_runs {
         op_hist += &c.operation_hist;
         tx_hist += &c.transaction_hist;
-        completed += c.ops_completed;
+        completed += c.timing.ops_completed;
         reads += c.reads;
         writes += c.writes;
         transactions += c.transactions;
@@ -510,25 +502,75 @@ fn run_clients<B: RecordBackend>(
     })
 }
 
-fn median(mut values: Vec<f64>) -> f64 {
-    values.sort_by(f64::total_cmp);
-    let n = values.len();
-    if n.is_multiple_of(2) {
-        f64::midpoint(values[n / 2 - 1], values[n / 2])
-    } else {
-        values[n / 2]
-    }
+fn report_measurement<B: RecordBackend>(
+    engine_kind: B::Kind,
+    args: &ConcurrencyArgs,
+    path: &Path,
+    setup: SetupTimings,
+    client_setup_s: f64,
+    concurrency_handle: &'static str,
+    run: AggregateRun,
+) -> Result<Measurement<B::Kind>> {
+    let db_bytes = dir_size(path);
+    let client_summary = ClientSummary::from_clients(run.clients.into_iter().map(|client| {
+        (
+            client.timing,
+            ClientWorkload {
+                reads: client.reads,
+                writes: client.writes,
+                transactions: client.transactions,
+                write_conflict_retries: client.write_conflict_retries,
+                operation_latency: quantiles(&client.operation_hist),
+                transaction_latency: quantiles(&client.transaction_hist),
+            },
+        )
+    }))?;
+
+    Ok(Measurement {
+        format_version: 8,
+        lane: "record-concurrency",
+        engine: engine_kind,
+        engine_version: B::version(engine_kind),
+        durability: args.durability,
+        durability_mapping: B::mapping(engine_kind, args.durability),
+        workload: args.workload,
+        state_evolution: args.state_evolution,
+        records: args.records,
+        ops_requested: args.ops,
+        ops_completed: run.completed,
+        clients: args.clients,
+        payload_bytes: args.payload_bytes,
+        txn_size: args.txn_size,
+        read_materialization: READ_MATERIALIZATION,
+        write_materialization: WRITE_MATERIALIZATION,
+        trial: args.trial,
+        seed: args.seed,
+        scenario: args.scenario.clone(),
+        setup,
+        client_setup_s,
+        elapsed_s: run.elapsed_s,
+        ops_per_s: count_as_f64(run.completed) / run.elapsed_s.max(f64::MIN_POSITIVE),
+        reads: run.reads,
+        writes: run.writes,
+        transactions: run.transactions,
+        write_conflict_retries: run.write_conflict_retries,
+        operation_latency: quantiles(&run.operation_hist),
+        transaction_latency: quantiles(&run.transaction_hist),
+        client_summary,
+        db_bytes,
+        peak_rss_kib: peak_rss_kib(),
+        measured_process: run.process,
+        system_before: run.system_before,
+        system_after: run.system_after,
+        measured_system_delta: run.system_delta,
+        path: path.display().to_string(),
+        db_kept: args.keep_db,
+        warmup_reads: args.warmup_reads,
+        concurrency_handle,
+    })
 }
 
-/// Run the shared record-concurrency benchmark harness.
-///
-/// # Errors
-/// Returns an error for invalid benchmark arguments, backend failures, thread failures, or result I/O failures.
-#[expect(
-    clippy::too_many_lines,
-    reason = "the top-level harness intentionally keeps benchmark phase ordering visible in one linear orchestration"
-)]
-pub async fn run<B: RecordBackend>(engine_kind: B::Kind, args: ConcurrencyArgs) -> Result<()> {
+fn validate_args(args: &ConcurrencyArgs) -> Result<Vec<WorkPartition>> {
     if args.records == 0 {
         bail!("--records must be greater than zero");
     }
@@ -549,7 +591,15 @@ pub async fn run<B: RecordBackend>(engine_kind: B::Kind, args: ConcurrencyArgs) 
     {
         bail!("bounded write-burst requires txn-size <= records");
     }
-    let _ = partition_ops(&args)?;
+    partition_ops(args)
+}
+
+/// Run the shared record-concurrency benchmark harness.
+///
+/// # Errors
+/// Returns an error for invalid benchmark arguments, backend failures, thread failures, or result I/O failures.
+pub async fn run<B: RecordBackend>(engine_kind: B::Kind, args: ConcurrencyArgs) -> Result<()> {
+    let partitions = validate_args(&args)?;
 
     let durability = &args.durability;
     let workload = &args.workload;
@@ -591,7 +641,7 @@ pub async fn run<B: RecordBackend>(engine_kind: B::Kind, args: ConcurrencyArgs) 
     let client_setup_s = client_setup_started.elapsed().as_secs_f64();
     drop(engine);
     let runtime = tokio::runtime::Handle::current();
-    let run = tokio::task::block_in_place(|| run_clients(clients, &args, &runtime))?;
+    let run = tokio::task::block_in_place(|| run_clients(clients, &args, &runtime, partitions))?;
     if run.completed != args.ops {
         bail!(
             "record concurrency completed {} operations, expected {}",
@@ -600,85 +650,19 @@ pub async fn run<B: RecordBackend>(engine_kind: B::Kind, args: ConcurrencyArgs) 
         );
     }
 
-    let db_bytes = dir_size(&path);
-    let mut client_elapsed = Vec::with_capacity(run.clients.len());
-    let mut client_rates = Vec::with_capacity(run.clients.len());
-    let mut client_measurements = Vec::with_capacity(run.clients.len());
-    for c in run.clients {
-        let rate = count_as_f64(c.ops_completed) / c.elapsed_s.max(f64::MIN_POSITIVE);
-        client_elapsed.push(c.elapsed_s);
-        client_rates.push(rate);
-        client_measurements.push(ClientMeasurement {
-            client: c.client,
-            ops_requested: c.ops_requested,
-            ops_completed: c.ops_completed,
-            elapsed_s: c.elapsed_s,
-            ops_per_s: rate,
-            reads: c.reads,
-            writes: c.writes,
-            transactions: c.transactions,
-            write_conflict_retries: c.write_conflict_retries,
-            operation_latency: quantiles(&c.operation_hist),
-            transaction_latency: quantiles(&c.transaction_hist),
-        });
-    }
-    let elapsed_min = client_elapsed.iter().copied().fold(f64::INFINITY, f64::min);
-    let elapsed_max = client_elapsed.iter().copied().fold(0.0, f64::max);
-    let rate_min = client_rates.iter().copied().fold(f64::INFINITY, f64::min);
-    let rate_max = client_rates.iter().copied().fold(0.0, f64::max);
-
-    let result = Measurement {
-        format_version: 8,
-        lane: "record-concurrency",
-        engine: engine_kind,
-        engine_version: B::version(engine_kind),
-        durability: args.durability,
-        durability_mapping: B::mapping(engine_kind, args.durability),
-        workload: args.workload,
-        state_evolution: args.state_evolution,
-        records: args.records,
-        ops_requested: args.ops,
-        ops_completed: run.completed,
-        clients: args.clients,
-        payload_bytes: args.payload_bytes,
-        txn_size: args.txn_size,
-        read_materialization: READ_MATERIALIZATION,
-        write_materialization: WRITE_MATERIALIZATION,
-        trial: args.trial,
-        seed: args.seed,
-        scenario: args.scenario.clone(),
-        open_s,
-        prefill_s,
-        warmup_s,
+    let result = report_measurement::<B>(
+        engine_kind,
+        &args,
+        &path,
+        SetupTimings {
+            open: open_s,
+            prefill: prefill_s,
+            warmup: warmup_s,
+        },
         client_setup_s,
-        elapsed_s: run.elapsed_s,
-        ops_per_s: count_as_f64(run.completed) / run.elapsed_s.max(f64::MIN_POSITIVE),
-        reads: run.reads,
-        writes: run.writes,
-        transactions: run.transactions,
-        write_conflict_retries: run.write_conflict_retries,
-        operation_latency: quantiles(&run.operation_hist),
-        transaction_latency: quantiles(&run.transaction_hist),
-        client_elapsed_s_min: elapsed_min,
-        client_elapsed_s_median: median(client_elapsed),
-        client_elapsed_s_max: elapsed_max,
-        client_ops_per_s_min: rate_min,
-        client_ops_per_s_median: median(client_rates),
-        client_ops_per_s_max: rate_max,
-        client_throughput_max_min_ratio: rate_max / rate_min.max(f64::MIN_POSITIVE),
-        client_measurements,
-        db_bytes,
-        peak_rss_kib: peak_rss_kib(),
-        measured_process: run.process,
-        system_before: run.system_before,
-        system_after: run.system_after,
-        measured_system_delta: run.system_delta,
-        path: path.display().to_string(),
-        db_kept: args.keep_db,
-        warmup_reads: args.warmup_reads,
         concurrency_handle,
-    };
-
+        run,
+    )?;
     let line = serde_json::to_string(&result)?;
     if args.output == "-" {
         println!("{line}");

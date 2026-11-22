@@ -1,3 +1,4 @@
+pub mod client_summary;
 pub mod concurrency;
 pub mod measurement;
 pub mod metrics;

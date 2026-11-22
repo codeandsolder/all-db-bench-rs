@@ -6,6 +6,7 @@ use crate::kv::{
     types::{AccessPattern, KeyShape, Workload, WritePattern},
     workload::{bounded_churn_swap, mixed_epoch_targets},
 };
+use all_db_bench_common::client_summary::ClientTiming;
 use anyhow::{Result, bail};
 use hdrhistogram::Histogram;
 use rand::{RngExt, SeedableRng, rngs::SmallRng, seq::SliceRandom};
@@ -13,10 +14,7 @@ use std::time::Instant;
 
 #[derive(Debug)]
 pub(super) struct ClientRun {
-    pub(super) client: usize,
-    pub(super) ops_requested: u64,
-    pub(super) ops_completed: u64,
-    pub(super) elapsed_s: f64,
+    pub(super) timing: ClientTiming,
     pub(super) reads: u64,
     pub(super) writes: u64,
     pub(super) deletes: u64,
@@ -342,10 +340,12 @@ pub(super) async fn run_client<C: ClientOps>(
     }
 
     Ok(ClientRun {
-        client,
-        ops_requested: ops,
-        ops_completed: done,
-        elapsed_s: started.elapsed().as_secs_f64(),
+        timing: ClientTiming {
+            client,
+            ops_requested: ops,
+            ops_completed: done,
+            elapsed_s: started.elapsed().as_secs_f64(),
+        },
         reads,
         writes,
         deletes,
