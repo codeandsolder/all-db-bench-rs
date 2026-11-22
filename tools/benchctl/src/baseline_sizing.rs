@@ -426,10 +426,54 @@ fn percent(value: f64, digits: usize) -> String {
     format!("{percentage:.digits$}%")
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
-)]
+fn render_audit_group(group: &Value) -> Result<String> {
+    let suggested = group.get("suggested_effective_ops").and_then(|value| {
+        if value.is_null() {
+            None
+        } else {
+            value_i64(Some(value)).ok()
+        }
+    });
+    let runner = group.get("runner_ops_override").and_then(|value| {
+        if value.is_null() {
+            None
+        } else {
+            value_i64(Some(value)).ok()
+        }
+    });
+    let suggested_trials = group.get("suggested_trials").and_then(|value| {
+        if value.is_null() {
+            None
+        } else {
+            value_i64(Some(value)).ok()
+        }
+    });
+    let trials = group
+        .get("trials")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    let status = group.get("status").and_then(Value::as_str).unwrap_or("");
+    let strategy = group
+        .get("resize_strategy")
+        .and_then(Value::as_str)
+        .unwrap_or("—");
+    let engine = field_string(group, "engine");
+    let durability = field_string(group, "durability");
+    let workload = field_string(group, "workload");
+    let ops = comma_int(value_i64(group.get("ops_requested"))?);
+    let measured_total_s = value_f64(group.get("measured_total_s"))?;
+    let median_elapsed_s = value_f64(group.get("median_elapsed_s"))?;
+    let cv = percent(value_f64(group.get("throughput_cv"))?, 1);
+    let spread = percent(value_f64(group.get("throughput_relative_spread"))?, 1);
+    let suggested_ops = suggested.map_or_else(|| "—".to_owned(), comma_int);
+    let suggested_trials =
+        suggested_trials.map_or_else(|| "—".to_owned(), |value| value.to_string());
+    let runner_ops = runner.map_or_else(|| "—".to_owned(), comma_int);
+    Ok(format!(
+        "| {status} | {strategy} | {engine} | {durability} | {workload} | {ops} | {trials} | {measured_total_s:.3} | {median_elapsed_s:.3} | {cv} | {spread} | {suggested_ops} | {suggested_trials} | {runner_ops} |"
+    ))
+}
+
 pub fn render_audit_markdown(report: &Value) -> Result<String> {
     let counts = report
         .get("counts")
@@ -515,51 +559,7 @@ pub fn render_audit_markdown(report: &Value) -> Result<String> {
             .then_with(|| field_string(left, "workload").cmp(&field_string(right, "workload")))
     });
     for group in &groups {
-        let suggested = group.get("suggested_effective_ops").and_then(|value| {
-            if value.is_null() {
-                None
-            } else {
-                value_i64(Some(value)).ok()
-            }
-        });
-        let runner = group.get("runner_ops_override").and_then(|value| {
-            if value.is_null() {
-                None
-            } else {
-                value_i64(Some(value)).ok()
-            }
-        });
-        let suggested_trials = group.get("suggested_trials").and_then(|value| {
-            if value.is_null() {
-                None
-            } else {
-                value_i64(Some(value)).ok()
-            }
-        });
-        let trials = group
-            .get("trials")
-            .and_then(Value::as_array)
-            .map_or(0, Vec::len);
-        let status = group.get("status").and_then(Value::as_str).unwrap_or("");
-        let strategy = group
-            .get("resize_strategy")
-            .and_then(Value::as_str)
-            .unwrap_or("—");
-        let engine = field_string(group, "engine");
-        let durability = field_string(group, "durability");
-        let workload = field_string(group, "workload");
-        let ops = comma_int(value_i64(group.get("ops_requested"))?);
-        let measured_total_s = value_f64(group.get("measured_total_s"))?;
-        let median_elapsed_s = value_f64(group.get("median_elapsed_s"))?;
-        let cv = percent(value_f64(group.get("throughput_cv"))?, 1);
-        let spread = percent(value_f64(group.get("throughput_relative_spread"))?, 1);
-        let suggested_ops = suggested.map_or_else(|| "—".to_owned(), comma_int);
-        let suggested_trials =
-            suggested_trials.map_or_else(|| "—".to_owned(), |value| value.to_string());
-        let runner_ops = runner.map_or_else(|| "—".to_owned(), comma_int);
-        lines.push(format!(
-            "| {status} | {strategy} | {engine} | {durability} | {workload} | {ops} | {trials} | {measured_total_s:.3} | {median_elapsed_s:.3} | {cv} | {spread} | {suggested_ops} | {suggested_trials} | {runner_ops} |"
-        ));
+        lines.push(render_audit_group(group)?);
     }
     if let Some(problems) = report.get("problems").and_then(Value::as_array)
         && !problems.is_empty()

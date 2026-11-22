@@ -105,42 +105,123 @@ fn insert_positive(
     Ok(())
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
-)]
-pub fn support_identity(
+fn validate_lane_identity(
+    identity: &mut Map<String, Value>,
     support: &Value,
     expected_lane: &str,
-    repo: Option<&Path>,
-    runner_name: Option<&str>,
-    expected_admission: &str,
     label: &str,
-) -> Result<Value> {
-    if support.get("lane").and_then(Value::as_str) != Some(expected_lane) {
-        bail!(
-            "unexpected lane in {label}: {:?}",
-            support.get("lane").unwrap_or(&Value::Null)
-        );
+) -> Result<()> {
+    match expected_lane {
+        "kv-concurrency" => {
+            insert_positive(identity, support, "persy_lock_timeout_ms", label)?;
+            if identity["persy_lock_timeout_ms"].as_f64() != Some(250.0) {
+                bail!("unexpected persy_lock_timeout_ms in {label}");
+            }
+            let protocol = scalar_string(
+                required(support, "prepared_db_protocol", label)?,
+                "prepared_db_protocol",
+                label,
+            )?;
+            if protocol != "case-private-clean-close-v1" {
+                bail!("unexpected prepared_db_protocol in {label}: {protocol:?}");
+            }
+            identity.insert("prepared_db_protocol".to_owned(), json!(protocol));
+        }
+        "record-concurrency" => {
+            for key in [
+                "surrealdb_rocksdb_binary_sha256",
+                "surrealdb_rocksdb_source_commit",
+                "rocks_build_profile",
+                "read_materialization",
+                "write_materialization",
+            ] {
+                insert_text(identity, support, key, label)?;
+            }
+            if !is_lower_hex(
+                identity["surrealdb_rocksdb_binary_sha256"]
+                    .as_str()
+                    .context("internal rocks binary identity type")?,
+                64,
+            ) {
+                bail!("malformed surrealdb_rocksdb_binary_sha256 in {label}");
+            }
+            if !is_lower_hex(
+                identity["surrealdb_rocksdb_source_commit"]
+                    .as_str()
+                    .context("internal rocks source identity type")?,
+                40,
+            ) {
+                bail!("malformed surrealdb_rocksdb_source_commit in {label}");
+            }
+            if identity["rocks_build_profile"].as_str() != Some("external") {
+                bail!("unexpected rocks_build_profile in {label}");
+            }
+            if identity["read_materialization"].as_str() != Some("full-record-v1") {
+                bail!("unexpected read_materialization in {label}");
+            }
+            if identity["write_materialization"].as_str() != Some("no-return-v1") {
+                bail!("unexpected write_materialization in {label}");
+            }
+        }
+        _ => bail!("unsupported concurrency lane: {expected_lane:?}"),
     }
-    if support.get("profile").and_then(Value::as_str) != Some("quick") {
-        bail!(
-            "unexpected profile in {label}: {:?}",
-            support.get("profile").unwrap_or(&Value::Null)
-        );
+
+    Ok(())
+}
+
+fn validate_runtime_provenance(
+    identity: &Map<String, Value>,
+    repo: &Path,
+    runner_name: &str,
+    label: &str,
+) -> Result<()> {
+    for (key, path) in [
+        ("runner_sha256", repo.join("scripts").join(runner_name)),
+        (
+            "concurrency_runner_common_sha256",
+            repo.join("scripts/concurrency-runner-common.sh"),
+        ),
+        (
+            "continuous_noise_common_sha256",
+            repo.join("scripts/continuous-noise-runner-common.sh"),
+        ),
+        (
+            "concurrency_policy_sha256",
+            repo.join("scripts/concurrency-matrix-policy.sh"),
+        ),
+        (
+            "noise_guard_sha256",
+            repo.join("tools/benchctl/src/noise.rs"),
+        ),
+        (
+            "continuous_noise_guard_sha256",
+            repo.join("tools/benchctl/src/noise.rs"),
+        ),
+    ] {
+        let actual = sha256(&path)?;
+        if identity[key].as_str() != Some(actual.as_str()) {
+            bail!(
+                "runtime provenance mismatch for {key} in {label}: {:?} != {actual}",
+                identity[key]
+            );
+        }
     }
-    if support.get("admission_policy").and_then(Value::as_str) != Some(expected_admission) {
+    let head = git_head(repo)?;
+    if identity["harness_commit"].as_str() != Some(head.as_str()) {
         bail!(
-            "unexpected admission policy in {label}: {:?}; expected {expected_admission:?}",
-            support.get("admission_policy").unwrap_or(&Value::Null)
+            "runtime provenance mismatch for harness_commit in {label}: {:?} != {head}",
+            identity["harness_commit"]
         );
     }
 
-    let mut identity = Map::new();
-    identity.insert("lane".to_owned(), json!(expected_lane));
-    identity.insert("profile".to_owned(), json!("quick"));
-    identity.insert("admission_policy".to_owned(), json!(expected_admission));
+    Ok(())
+}
 
+fn validate_common_identity(
+    identity: &mut Map<String, Value>,
+    support: &Value,
+    label: &str,
+) -> Result<()> {
     for key in [
         "runner_sha256",
         "concurrency_runner_common_sha256",
@@ -157,7 +238,7 @@ pub fn support_identity(
         "benchmark_source_commit",
         "harness_commit",
     ] {
-        insert_text(&mut identity, support, key, label)?;
+        insert_text(identity, support, key, label)?;
     }
 
     for key in [
@@ -201,7 +282,7 @@ pub fn support_identity(
         "case_min_free_gib",
         "case_timeout_s",
     ] {
-        insert_positive(&mut identity, support, key, label)?;
+        insert_positive(identity, support, key, label)?;
     }
     for (key, expected) in EXPECTED_CONTINUOUS {
         if identity[key].as_f64() != Some(expected) {
@@ -217,101 +298,51 @@ pub fn support_identity(
         bail!("concurrency free-space floor below 10 GiB in {label}");
     }
 
-    match expected_lane {
-        "kv-concurrency" => {
-            insert_positive(&mut identity, support, "persy_lock_timeout_ms", label)?;
-            if identity["persy_lock_timeout_ms"].as_f64() != Some(250.0) {
-                bail!("unexpected persy_lock_timeout_ms in {label}");
-            }
-            let protocol = scalar_string(
-                required(support, "prepared_db_protocol", label)?,
-                "prepared_db_protocol",
-                label,
-            )?;
-            if protocol != "case-private-clean-close-v1" {
-                bail!("unexpected prepared_db_protocol in {label}: {protocol:?}");
-            }
-            identity.insert("prepared_db_protocol".to_owned(), json!(protocol));
-        }
-        "record-concurrency" => {
-            for key in [
-                "surrealdb_rocksdb_binary_sha256",
-                "surrealdb_rocksdb_source_commit",
-                "rocks_build_profile",
-                "read_materialization",
-                "write_materialization",
-            ] {
-                insert_text(&mut identity, support, key, label)?;
-            }
-            if !is_lower_hex(
-                identity["surrealdb_rocksdb_binary_sha256"]
-                    .as_str()
-                    .context("internal rocks binary identity type")?,
-                64,
-            ) {
-                bail!("malformed surrealdb_rocksdb_binary_sha256 in {label}");
-            }
-            if !is_lower_hex(
-                identity["surrealdb_rocksdb_source_commit"]
-                    .as_str()
-                    .context("internal rocks source identity type")?,
-                40,
-            ) {
-                bail!("malformed surrealdb_rocksdb_source_commit in {label}");
-            }
-            if identity["rocks_build_profile"].as_str() != Some("external") {
-                bail!("unexpected rocks_build_profile in {label}");
-            }
-            if identity["read_materialization"].as_str() != Some("full-record-v1") {
-                bail!("unexpected read_materialization in {label}");
-            }
-            if identity["write_materialization"].as_str() != Some("no-return-v1") {
-                bail!("unexpected write_materialization in {label}");
-            }
-        }
-        _ => bail!("unsupported concurrency lane: {expected_lane:?}"),
+    Ok(())
+}
+
+pub fn support_identity(
+    support: &Value,
+    expected_lane: &str,
+    repo: Option<&Path>,
+    runner_name: Option<&str>,
+    expected_admission: &str,
+    label: &str,
+) -> Result<Value> {
+    if support.get("lane").and_then(Value::as_str) != Some(expected_lane) {
+        bail!(
+            "unexpected lane in {label}: {:?}",
+            support.get("lane").unwrap_or(&Value::Null)
+        );
+    }
+    if support.get("profile").and_then(Value::as_str) != Some("quick") {
+        bail!(
+            "unexpected profile in {label}: {:?}",
+            support.get("profile").unwrap_or(&Value::Null)
+        );
+    }
+    if support.get("admission_policy").and_then(Value::as_str) != Some(expected_admission) {
+        bail!(
+            "unexpected admission policy in {label}: {:?}; expected {expected_admission:?}",
+            support.get("admission_policy").unwrap_or(&Value::Null)
+        );
     }
 
+    let mut identity = Map::new();
+    identity.insert("lane".to_owned(), json!(expected_lane));
+    identity.insert("profile".to_owned(), json!("quick"));
+    identity.insert("admission_policy".to_owned(), json!(expected_admission));
+
+    validate_common_identity(&mut identity, support, label)?;
+    validate_lane_identity(&mut identity, support, expected_lane, label)?;
+
     if let Some(repo) = repo {
-        let runner_name = runner_name.context("runner_name is required when repo is provided")?;
-        for (key, path) in [
-            ("runner_sha256", repo.join("scripts").join(runner_name)),
-            (
-                "concurrency_runner_common_sha256",
-                repo.join("scripts/concurrency-runner-common.sh"),
-            ),
-            (
-                "continuous_noise_common_sha256",
-                repo.join("scripts/continuous-noise-runner-common.sh"),
-            ),
-            (
-                "concurrency_policy_sha256",
-                repo.join("scripts/concurrency-matrix-policy.sh"),
-            ),
-            (
-                "noise_guard_sha256",
-                repo.join("tools/benchctl/src/noise.rs"),
-            ),
-            (
-                "continuous_noise_guard_sha256",
-                repo.join("tools/benchctl/src/noise.rs"),
-            ),
-        ] {
-            let actual = sha256(&path)?;
-            if identity[key].as_str() != Some(actual.as_str()) {
-                bail!(
-                    "runtime provenance mismatch for {key} in {label}: {:?} != {actual}",
-                    identity[key]
-                );
-            }
-        }
-        let head = git_head(repo)?;
-        if identity["harness_commit"].as_str() != Some(head.as_str()) {
-            bail!(
-                "runtime provenance mismatch for harness_commit in {label}: {:?} != {head}",
-                identity["harness_commit"]
-            );
-        }
+        validate_runtime_provenance(
+            &identity,
+            repo,
+            runner_name.context("runner_name is required when repo is provided")?,
+            label,
+        )?;
     }
 
     Ok(Value::Object(identity))

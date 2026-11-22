@@ -165,10 +165,91 @@ fn optional_number(row: Option<&Value>, key: &str) -> Result<Value> {
         .map_or_else(|| Ok(Value::Null), number)
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
-)]
+fn summarize_family(
+    mut rows: Vec<Value>,
+    support: &Value,
+    allow_incomplete: bool,
+    problems: &mut Vec<String>,
+) -> Result<Value> {
+    rows.sort_by_key(|row| value_i64(row.get("clients")).unwrap_or(i64::MIN));
+    let first = rows.first().context("empty concurrency family")?;
+    let expected = expected_clients(support, required_str(first, "scenario")?)?;
+    let actual: Vec<i64> = rows
+        .iter()
+        .map(|row| required_i64(row, "clients"))
+        .collect::<Result<_>>()?;
+    let expected_set = expected
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
+    let actual_set = actual
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
+    let missing = expected_set
+        .difference(&actual_set)
+        .copied()
+        .collect::<Vec<_>>();
+    let has_extra = actual_set.difference(&expected_set).next().is_some();
+    let duplicate = actual.len() != actual_set.len();
+    let complete = missing.is_empty() && !has_extra && !duplicate;
+    if !complete && !allow_incomplete {
+        problems.push(format!(
+            "{}/{}/{}/{}: clients={actual:?}, expected={expected:?}",
+            required_str(first, "engine")?,
+            required_str(first, "scenario")?,
+            required_str(first, "workload")?,
+            required_str(first, "durability")?,
+        ));
+    }
+    let mut by_client = BTreeMap::new();
+    for row in &rows {
+        by_client.insert(required_i64(row, "clients")?, row);
+    }
+    let base = by_client.get(&1).copied();
+    let max_client = *expected
+        .iter()
+        .max()
+        .context("expected client set is empty")?;
+    let max_row = by_client.get(&max_client).copied();
+    let mut rates = Map::new();
+    for (client, row) in &by_client {
+        rates.insert(
+            client.to_string(),
+            number(required_f64(row, "ops_per_s_median")?)?,
+        );
+    }
+    Ok(json!({
+        "scenario": optional_clone(first, "scenario"),
+        "engine": optional_clone(first, "engine"),
+        "engine_version": optional_clone(first, "engine_version"),
+        "durability": optional_clone(first, "durability"),
+        "workload": optional_clone(first, "workload"),
+        "records": optional_clone(first, "records"),
+        "ops_requested": optional_clone(first, "ops_requested"),
+        "value_bytes": optional_clone(first, "value_bytes"),
+        "state_evolution": first.get("state_evolution").cloned().unwrap_or_else(|| json!("growth")),
+        "bounded_churn_slots": first.get("bounded_churn_slots").cloned().unwrap_or_else(|| json!(0)),
+        "txn_size": optional_clone(first, "txn_size"),
+        "scan_len": optional_clone(first, "scan_len"),
+        "expected_clients": expected,
+        "observed_clients": actual,
+        "missing_clients": missing,
+        "complete": complete,
+        "ops_per_s_by_client": rates,
+        "c1_ops_per_s": optional_number(base, "ops_per_s_median")?,
+        "max_clients": max_client,
+        "max_client_ops_per_s": optional_number(max_row, "ops_per_s_median")?,
+        "speedup_at_max_clients": max_row.and_then(|row| row.get("speedup_vs_c1")).cloned().unwrap_or(Value::Null),
+        "parallel_efficiency_at_max_clients": max_row.and_then(|row| row.get("parallel_efficiency_vs_c1")).cloned().unwrap_or(Value::Null),
+        "p99_read_or_op_multiplier_at_max_clients": max_row.and_then(|row| row.get("p99_read_multiplier_vs_c1")).cloned().unwrap_or(Value::Null),
+        "p99_write_txn_multiplier_at_max_clients": max_row.and_then(|row| row.get("p99_write_txn_multiplier_vs_c1")).cloned().unwrap_or(Value::Null),
+        "client_max_min_ratio_at_max_clients": max_row.and_then(|row| row.get("client_throughput_max_min_ratio_median")).cloned().unwrap_or(Value::Null),
+        "cpu_cores_at_max_clients": max_row.and_then(|row| row.get("cpu_cores_median")).cloned().unwrap_or(Value::Null),
+        "conflict_retries_per_k_write_ops_at_max_clients": max_row.and_then(|row| row.get("write_conflict_retries_per_k_write_ops_median")).cloned().unwrap_or(Value::Null),
+    }))
+}
+
 fn build_report(
     summary: &Value,
     support: &Value,
@@ -232,85 +313,13 @@ fn build_report(
     }
 
     let mut families = Vec::new();
-    for mut rows in grouped.into_values() {
-        rows.sort_by_key(|row| value_i64(row.get("clients")).unwrap_or(i64::MIN));
-        let first = rows.first().context("empty concurrency family")?;
-        let expected = expected_clients(support, required_str(first, "scenario")?)?;
-        let actual: Vec<i64> = rows
-            .iter()
-            .map(|row| required_i64(row, "clients"))
-            .collect::<Result<_>>()?;
-        let expected_set = expected
-            .iter()
-            .copied()
-            .collect::<std::collections::BTreeSet<_>>();
-        let actual_set = actual
-            .iter()
-            .copied()
-            .collect::<std::collections::BTreeSet<_>>();
-        let missing = expected_set
-            .difference(&actual_set)
-            .copied()
-            .collect::<Vec<_>>();
-        let has_extra = actual_set.difference(&expected_set).next().is_some();
-        let duplicate = actual.len() != actual_set.len();
-        let complete = missing.is_empty() && !has_extra && !duplicate;
-        if !complete && !allow_incomplete {
-            problems.push(format!(
-                "{}/{}/{}/{}: clients={actual:?}, expected={expected:?}",
-                required_str(first, "engine")?,
-                required_str(first, "scenario")?,
-                required_str(first, "workload")?,
-                required_str(first, "durability")?,
-            ));
-        }
-        let mut by_client = BTreeMap::new();
-        for row in &rows {
-            by_client.insert(required_i64(row, "clients")?, row);
-        }
-        let base = by_client.get(&1).copied();
-        let max_client = *expected
-            .iter()
-            .max()
-            .context("expected client set is empty")?;
-        let max_row = by_client.get(&max_client).copied();
-        let mut rates = Map::new();
-        for (client, row) in &by_client {
-            rates.insert(
-                client.to_string(),
-                number(required_f64(row, "ops_per_s_median")?)?,
-            );
-        }
-        let family = json!({
-            "scenario": optional_clone(first, "scenario"),
-            "engine": optional_clone(first, "engine"),
-            "engine_version": optional_clone(first, "engine_version"),
-            "durability": optional_clone(first, "durability"),
-            "workload": optional_clone(first, "workload"),
-            "records": optional_clone(first, "records"),
-            "ops_requested": optional_clone(first, "ops_requested"),
-            "value_bytes": optional_clone(first, "value_bytes"),
-            "state_evolution": first.get("state_evolution").cloned().unwrap_or_else(|| json!("growth")),
-            "bounded_churn_slots": first.get("bounded_churn_slots").cloned().unwrap_or_else(|| json!(0)),
-            "txn_size": optional_clone(first, "txn_size"),
-            "scan_len": optional_clone(first, "scan_len"),
-            "expected_clients": expected,
-            "observed_clients": actual,
-            "missing_clients": missing,
-            "complete": complete,
-            "ops_per_s_by_client": rates,
-            "c1_ops_per_s": optional_number(base, "ops_per_s_median")?,
-            "max_clients": max_client,
-            "max_client_ops_per_s": optional_number(max_row, "ops_per_s_median")?,
-            "speedup_at_max_clients": max_row.and_then(|row| row.get("speedup_vs_c1")).cloned().unwrap_or(Value::Null),
-            "parallel_efficiency_at_max_clients": max_row.and_then(|row| row.get("parallel_efficiency_vs_c1")).cloned().unwrap_or(Value::Null),
-            "p99_read_or_op_multiplier_at_max_clients": max_row.and_then(|row| row.get("p99_read_multiplier_vs_c1")).cloned().unwrap_or(Value::Null),
-            "p99_write_txn_multiplier_at_max_clients": max_row.and_then(|row| row.get("p99_write_txn_multiplier_vs_c1")).cloned().unwrap_or(Value::Null),
-            "client_max_min_ratio_at_max_clients": max_row.and_then(|row| row.get("client_throughput_max_min_ratio_median")).cloned().unwrap_or(Value::Null),
-            "cpu_cores_at_max_clients": max_row.and_then(|row| row.get("cpu_cores_median")).cloned().unwrap_or(Value::Null),
-            "conflict_retries_per_k_write_ops_at_max_clients": max_row.and_then(|row| row.get("write_conflict_retries_per_k_write_ops_median")).cloned().unwrap_or(Value::Null),
-        });
-        families.push(family);
+    for rows in grouped.into_values() {
+        families.push(summarize_family(
+            rows,
+            support,
+            allow_incomplete,
+            &mut problems,
+        )?);
     }
     families.sort_by(|left, right| {
         ["scenario", "workload", "durability", "engine"]
