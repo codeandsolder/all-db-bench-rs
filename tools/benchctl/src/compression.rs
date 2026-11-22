@@ -309,29 +309,115 @@ fn latency_p99(row: &Value, field: &str) -> Option<f64> {
     nested_f64(row, &[field, "p99_us"])
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
-)]
-fn summarize_group(key: &GroupKey, rows: &[&Value]) -> Result<SummaryGroup> {
-    let mut trials = Vec::with_capacity(rows.len());
-    let mut ops_per_s = Vec::with_capacity(rows.len());
-    let mut cpu_ns_per_op = Vec::with_capacity(rows.len());
-    let mut apparent = Vec::with_capacity(rows.len());
-    let mut allocated = Vec::with_capacity(rows.len());
-    let mut logical = Vec::with_capacity(rows.len());
-    let mut logical_per_allocated = Vec::with_capacity(rows.len());
-    let mut device_reads = Vec::with_capacity(rows.len());
-    let mut device_writes = Vec::with_capacity(rows.len());
-    let mut process_reads_per_op = Vec::with_capacity(rows.len());
-    let mut process_writes_per_op = Vec::with_capacity(rows.len());
-    let mut zfs_used = Vec::new();
-    let mut zfs_logical = Vec::new();
-    let mut zfs_direct_write = Vec::new();
-    let mut zfs_arc_write = Vec::new();
-    let mut p99_read = Vec::new();
-    let mut p99_write = Vec::new();
+struct TrialSamples {
+    trials: Vec<u64>,
+    ops_per_s: Vec<f64>,
+    cpu_ns_per_op: Vec<f64>,
+    apparent: Vec<f64>,
+    allocated: Vec<f64>,
+    logical: Vec<f64>,
+    logical_per_allocated: Vec<f64>,
+    device_reads: Vec<f64>,
+    device_writes: Vec<f64>,
+    process_reads_per_op: Vec<f64>,
+    process_writes_per_op: Vec<f64>,
+    zfs_used: Vec<f64>,
+    zfs_logical: Vec<f64>,
+    zfs_direct_write: Vec<f64>,
+    zfs_arc_write: Vec<f64>,
+    p99_read: Vec<f64>,
+    p99_write: Vec<f64>,
+}
 
+impl TrialSamples {
+    fn collect(key: &GroupKey, rows: &[&Value], allocation_reliable: bool) -> Result<Self> {
+        let mut samples = Self {
+            trials: Vec::with_capacity(rows.len()),
+            ops_per_s: Vec::with_capacity(rows.len()),
+            cpu_ns_per_op: Vec::with_capacity(rows.len()),
+            apparent: Vec::with_capacity(rows.len()),
+            allocated: Vec::with_capacity(rows.len()),
+            logical: Vec::with_capacity(rows.len()),
+            logical_per_allocated: Vec::with_capacity(rows.len()),
+            device_reads: Vec::with_capacity(rows.len()),
+            device_writes: Vec::with_capacity(rows.len()),
+            process_reads_per_op: Vec::with_capacity(rows.len()),
+            process_writes_per_op: Vec::with_capacity(rows.len()),
+            zfs_used: Vec::new(),
+            zfs_logical: Vec::new(),
+            zfs_direct_write: Vec::new(),
+            zfs_arc_write: Vec::new(),
+            p99_read: Vec::new(),
+            p99_write: Vec::new(),
+        };
+        for row in rows {
+            samples.trials.push(req_u64(row, "trial")?);
+            samples.ops_per_s.push(req_f64(row, "ops_per_s")?);
+            let completed = req_u64(row, "ops_completed")?.max(1);
+            let cpu_ns = nested_f64(row, &["measured_process", "cpu_runtime_ns"])
+                .context("missing measured_process.cpu_runtime_ns")?;
+            samples.cpu_ns_per_op.push(cpu_ns / int_as_f64!(completed));
+
+            let apparent_bytes =
+                nested_f64(row, &["compression_storage", "footprint", "apparent_bytes"])
+                    .context("missing compression_storage.footprint.apparent_bytes")?;
+            samples.apparent.push(apparent_bytes);
+            let logical_bytes = int_as_f64!(logical_live_bytes(row, key));
+            samples.logical.push(logical_bytes);
+
+            if allocation_reliable {
+                let allocated_bytes = nested_f64(
+                    row,
+                    &["compression_storage", "footprint", "allocated_block_bytes"],
+                )
+                .context("missing compression_storage.footprint.allocated_block_bytes")?;
+                samples.allocated.push(allocated_bytes);
+                if allocated_bytes != 0.0 {
+                    samples
+                        .logical_per_allocated
+                        .push(logical_bytes / allocated_bytes);
+                }
+            }
+
+            let (read_bytes, write_bytes) = device_bytes(row);
+            samples.device_reads.push(int_as_f64!(read_bytes));
+            samples.device_writes.push(int_as_f64!(write_bytes));
+            let process_read = nested_f64(row, &["measured_process", "read_bytes"]).unwrap_or(0.0);
+            let process_write =
+                nested_f64(row, &["measured_process", "write_bytes"]).unwrap_or(0.0);
+            samples
+                .process_reads_per_op
+                .push(process_read / int_as_f64!(completed));
+            samples
+                .process_writes_per_op
+                .push(process_write / int_as_f64!(completed));
+
+            if let Some(value) = nested_delta(row, "dataset_snapshot", "used") {
+                samples.zfs_used.push(value);
+            }
+            if let Some(value) = nested_delta(row, "dataset_snapshot", "logicalused") {
+                samples.zfs_logical.push(value);
+            }
+            if let Some(value) = nested_delta(row, "storage_counters", "direct_write_bytes") {
+                samples.zfs_direct_write.push(value);
+            }
+            if let Some(value) = nested_delta(row, "storage_counters", "arc_write_bytes") {
+                samples.zfs_arc_write.push(value);
+            }
+            if let Some(value) = latency_p99(row, "read_latency") {
+                samples.p99_read.push(value);
+            }
+            if let Some(value) = latency_p99(row, "write_txn_latency") {
+                samples.p99_write.push(value);
+            }
+        }
+        samples.trials.sort_unstable();
+
+        Ok(samples)
+    }
+}
+
+fn summarize_group(key: &GroupKey, rows: &[&Value]) -> Result<SummaryGroup> {
     let allocation_reliable = rows.iter().all(|row| {
         nested(
             row,
@@ -345,62 +431,7 @@ fn summarize_group(key: &GroupKey, rows: &[&Value]) -> Result<SummaryGroup> {
         .unwrap_or(true)
     });
 
-    for row in rows {
-        trials.push(req_u64(row, "trial")?);
-        ops_per_s.push(req_f64(row, "ops_per_s")?);
-        let completed = req_u64(row, "ops_completed")?.max(1);
-        let cpu_ns = nested_f64(row, &["measured_process", "cpu_runtime_ns"])
-            .context("missing measured_process.cpu_runtime_ns")?;
-        cpu_ns_per_op.push(cpu_ns / int_as_f64!(completed));
-
-        let apparent_bytes =
-            nested_f64(row, &["compression_storage", "footprint", "apparent_bytes"])
-                .context("missing compression_storage.footprint.apparent_bytes")?;
-        apparent.push(apparent_bytes);
-        let logical_bytes = int_as_f64!(logical_live_bytes(row, key));
-        logical.push(logical_bytes);
-
-        if allocation_reliable {
-            let allocated_bytes = nested_f64(
-                row,
-                &["compression_storage", "footprint", "allocated_block_bytes"],
-            )
-            .context("missing compression_storage.footprint.allocated_block_bytes")?;
-            allocated.push(allocated_bytes);
-            if allocated_bytes != 0.0 {
-                logical_per_allocated.push(logical_bytes / allocated_bytes);
-            }
-        }
-
-        let (read_bytes, write_bytes) = device_bytes(row);
-        device_reads.push(int_as_f64!(read_bytes));
-        device_writes.push(int_as_f64!(write_bytes));
-        let process_read = nested_f64(row, &["measured_process", "read_bytes"]).unwrap_or(0.0);
-        let process_write = nested_f64(row, &["measured_process", "write_bytes"]).unwrap_or(0.0);
-        process_reads_per_op.push(process_read / int_as_f64!(completed));
-        process_writes_per_op.push(process_write / int_as_f64!(completed));
-
-        if let Some(value) = nested_delta(row, "dataset_snapshot", "used") {
-            zfs_used.push(value);
-        }
-        if let Some(value) = nested_delta(row, "dataset_snapshot", "logicalused") {
-            zfs_logical.push(value);
-        }
-        if let Some(value) = nested_delta(row, "storage_counters", "direct_write_bytes") {
-            zfs_direct_write.push(value);
-        }
-        if let Some(value) = nested_delta(row, "storage_counters", "arc_write_bytes") {
-            zfs_arc_write.push(value);
-        }
-        if let Some(value) = latency_p99(row, "read_latency") {
-            p99_read.push(value);
-        }
-        if let Some(value) = latency_p99(row, "write_txn_latency") {
-            p99_write.push(value);
-        }
-    }
-    trials.sort_unstable();
-
+    let samples = TrialSamples::collect(key, rows, allocation_reliable)?;
     Ok(SummaryGroup {
         lane: key.lane.clone(),
         engine: key.engine.clone(),
@@ -415,32 +446,32 @@ fn summarize_group(key: &GroupKey, rows: &[&Value]) -> Result<SummaryGroup> {
         payload_bytes: (key.lane == "record-compression").then_some(key.bytes),
         payload_pattern: (key.lane == "record-compression").then(|| key.pattern.clone()),
         settle_ms: key.settle_ms,
-        trials,
-        ops_per_s_median: median(ops_per_s),
-        cpu_ns_per_op_median: median(cpu_ns_per_op),
-        db_apparent_bytes_median: median(apparent),
+        trials: samples.trials,
+        ops_per_s_median: median(samples.ops_per_s),
+        cpu_ns_per_op_median: median(samples.cpu_ns_per_op),
+        db_apparent_bytes_median: median(samples.apparent),
         db_allocated_block_bytes_median: if allocation_reliable {
-            median(allocated)
+            median(samples.allocated)
         } else {
             None
         },
         db_allocated_block_bytes_reliable: allocation_reliable,
-        logical_live_bytes_median: median(logical),
+        logical_live_bytes_median: median(samples.logical),
         logical_live_per_allocated_byte_median: if allocation_reliable {
-            median(logical_per_allocated)
+            median(samples.logical_per_allocated)
         } else {
             None
         },
-        lifecycle_device_read_bytes_median: median(device_reads),
-        lifecycle_device_write_bytes_median: median(device_writes),
-        zfs_dataset_used_delta_median: median(zfs_used),
-        zfs_dataset_logicalused_delta_median: median(zfs_logical),
-        zfs_pool_direct_write_bytes_delta_median: median(zfs_direct_write),
-        zfs_pool_arc_write_bytes_delta_median: median(zfs_arc_write),
-        measured_process_read_bytes_per_op_median: median(process_reads_per_op),
-        measured_process_write_bytes_per_op_median: median(process_writes_per_op),
-        p99_read_us_median: median(p99_read),
-        p99_write_txn_us_median: median(p99_write),
+        lifecycle_device_read_bytes_median: median(samples.device_reads),
+        lifecycle_device_write_bytes_median: median(samples.device_writes),
+        zfs_dataset_used_delta_median: median(samples.zfs_used),
+        zfs_dataset_logicalused_delta_median: median(samples.zfs_logical),
+        zfs_pool_direct_write_bytes_delta_median: median(samples.zfs_direct_write),
+        zfs_pool_arc_write_bytes_delta_median: median(samples.zfs_arc_write),
+        measured_process_read_bytes_per_op_median: median(samples.process_reads_per_op),
+        measured_process_write_bytes_per_op_median: median(samples.process_writes_per_op),
+        p99_read_us_median: median(samples.p99_read),
+        p99_write_txn_us_median: median(samples.p99_write),
         vs_none: None,
         vs_hex_random: None,
     })

@@ -380,12 +380,16 @@ fn run_utilities(command: UtilitiesCommand) -> Result<()> {
             rocks_concurrency_bin,
             rocks_sustained_bin,
         } => record_smoke::run(record_smoke::RecordSmokeArgs {
-            bench_bin: &bench_bin,
-            concurrency_bin: &concurrency_bin,
-            sustained_bin: &sustained_bin,
-            rocks_bench_bin: &rocks_bench_bin,
-            rocks_concurrency_bin: &rocks_concurrency_bin,
-            rocks_sustained_bin: &rocks_sustained_bin,
+            standard: record_smoke::RecordBinaries {
+                bench: &bench_bin,
+                concurrency: &concurrency_bin,
+                sustained: &sustained_bin,
+            },
+            rocks: record_smoke::RecordBinaries {
+                bench: &rocks_bench_bin,
+                concurrency: &rocks_concurrency_bin,
+                sustained: &rocks_sustained_bin,
+            },
         }),
         UtilitiesCommand::CheckExternalNoise {
             ignore_nice_at_least,
