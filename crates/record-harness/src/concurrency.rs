@@ -1,5 +1,6 @@
 use all_db_bench_common::{
-    metrics::{ProcDelta, ProcSnapshot, SystemDelta, SystemSnapshot},
+    concurrency::{WorkPartition, WorkerMeasurement, partition_work, run_workers},
+    metrics::{ProcDelta, SystemDelta, SystemSnapshot},
     record_payload::{PayloadPattern, payload_for},
 };
 use anyhow::{Context, Result, bail};
@@ -7,13 +8,7 @@ use clap::{Args as ClapArgs, ValueEnum};
 use hdrhistogram::Histogram;
 use rand::{RngExt, SeedableRng, rngs::SmallRng};
 use serde::Serialize;
-use std::{
-    fs,
-    path::PathBuf,
-    sync::{Arc, Barrier, Condvar, Mutex, mpsc},
-    thread,
-    time::Instant,
-};
+use std::{fs, path::PathBuf, time::Instant};
 
 use crate::{
     Durability, Quantiles, READ_MATERIALIZATION, RecordData, WRITE_MATERIALIZATION, Workload,
@@ -172,44 +167,22 @@ async fn prefill<B: RecordBackend>(engine: &B, args: &ConcurrencyArgs) -> Result
     Ok(())
 }
 
-fn partition_ops(args: &ConcurrencyArgs) -> Result<Vec<(u64, u64)>> {
+fn partition_ops(args: &ConcurrencyArgs) -> Result<Vec<WorkPartition>> {
     if args.clients == 0 || args.clients as u64 > args.ops {
         bail!("--clients must be in 1..=ops");
     }
     if matches!(args.workload, Workload::WriteBurst) {
         let txn = args.txn_size as u64;
-        if !args.ops.is_multiple_of(txn) {
+        if txn == 0 || !args.ops.is_multiple_of(txn) {
             bail!("write-burst requires --ops to be a multiple of --txn-size");
         }
-        let transactions = args.ops / txn;
-        if args.clients as u64 > transactions {
+        if args.clients as u64 > args.ops / txn {
             bail!("write-burst requires at least one full transaction per client");
         }
-        let base = transactions / args.clients as u64;
-        let extra = transactions % args.clients as u64;
-        let mut offset = 0u64;
-        return Ok((0..args.clients)
-            .map(|client| {
-                let n_tx = base + u64::from((client as u64) < extra);
-                let ops = n_tx * txn;
-                let out = (ops, offset);
-                offset += ops;
-                out
-            })
-            .collect());
+        partition_work(args.ops, args.clients, txn)
+    } else {
+        partition_work(args.ops, args.clients, 1)
     }
-
-    let base = args.ops / args.clients as u64;
-    let extra = args.ops % args.clients as u64;
-    let mut offset = 0u64;
-    Ok((0..args.clients)
-        .map(|client| {
-            let ops = base + u64::from((client as u64) < extra);
-            let out = (ops, offset);
-            offset += ops;
-            out
-        })
-        .collect())
 }
 
 const fn bounded_record_id(records: u64, logical_op: u64) -> u64 {
@@ -467,10 +440,6 @@ struct AggregateRun {
     system_delta: SystemDelta,
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "thread launch, synchronized measurement, join, and aggregation form one concurrency protocol"
-)]
 fn run_clients<B: RecordBackend>(
     clients: Vec<B>,
     args: &ConcurrencyArgs,
@@ -480,78 +449,33 @@ fn run_clients<B: RecordBackend>(
     if clients.len() != args.clients {
         bail!("client handle count mismatch");
     }
-    let start_barrier = Arc::new(Barrier::new(args.clients + 1));
-    let release = Arc::new((Mutex::new(false), Condvar::new()));
-    let (tx, rx) = mpsc::channel::<(usize, Result<ClientRun>)>();
-    let mut joins = Vec::with_capacity(args.clients);
+    let tasks = clients
+        .into_iter()
+        .zip(partitions)
+        .enumerate()
+        .map(|(client_index, (engine, partition))| {
+            let args = args.clone();
+            let runtime = runtime.clone();
+            move || {
+                runtime.block_on(run_client(
+                    &engine,
+                    &args,
+                    client_index,
+                    partition.count,
+                    partition.offset,
+                ))
+            }
+        })
+        .collect();
+    let WorkerMeasurement {
+        clients: client_runs,
+        elapsed_s,
+        process,
+        system_before,
+        system_after,
+        system_delta,
+    } = run_workers("recordbench", tasks)?;
 
-    for (client_index, (engine, (ops, offset))) in clients.into_iter().zip(partitions).enumerate() {
-        let thread_args = args.clone();
-        let start_barrier = Arc::clone(&start_barrier);
-        let release = Arc::clone(&release);
-        let tx = tx.clone();
-        let runtime = runtime.clone();
-        joins.push(
-            thread::Builder::new()
-                .name(format!("recordbench-c{client_index}"))
-                .spawn(move || {
-                    start_barrier.wait();
-                    let outcome = runtime.block_on(run_client(
-                        &engine,
-                        &thread_args,
-                        client_index,
-                        ops,
-                        offset,
-                    ));
-                    let _ = tx.send((client_index, outcome));
-                    let (lock, cv) = &*release;
-                    let mut released = lock
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    while !*released {
-                        released = cv
-                            .wait(released)
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    }
-                    drop(released);
-                })?,
-        );
-    }
-    drop(tx);
-
-    let system_before = SystemSnapshot::capture();
-    let process_before = ProcSnapshot::capture();
-    let started = Instant::now();
-    start_barrier.wait();
-
-    let mut client_runs = Vec::with_capacity(args.clients);
-    let receive_result: Result<()> = (|| {
-        for _ in 0..args.clients {
-            let (client, result) = rx
-                .recv()
-                .context("client result channel closed before all clients completed")?;
-            client_runs.push(result.with_context(|| format!("client {client} failed"))?);
-        }
-        Ok(())
-    })();
-    let elapsed = started.elapsed();
-    let process_after = ProcSnapshot::capture();
-    let system_after = SystemSnapshot::capture();
-
-    {
-        let (lock, cv) = &*release;
-        *lock
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
-        cv.notify_all();
-    }
-    for join in joins {
-        join.join()
-            .map_err(|_| anyhow::anyhow!("record concurrency client thread panicked"))?;
-    }
-    receive_result?;
-
-    client_runs.sort_by_key(|r| r.client);
     let mut op_hist = hist()?;
     let mut tx_hist = hist()?;
     let mut completed = 0u64;
@@ -578,9 +502,9 @@ fn run_clients<B: RecordBackend>(
         operation_hist: op_hist,
         transaction_hist: tx_hist,
         clients: client_runs,
-        elapsed_s: elapsed.as_secs_f64(),
-        process: process_before.delta(&process_after, elapsed),
-        system_delta: system_before.delta(&system_after),
+        elapsed_s,
+        process,
+        system_delta,
         system_before,
         system_after,
     })
@@ -777,22 +701,11 @@ pub async fn run<B: RecordBackend>(engine_kind: B::Kind, args: ConcurrencyArgs) 
 mod bounded_tests {
     use super::bounded_record_id;
 
-    fn partition(total: u64, clients: usize) -> Vec<(u64, u64)> {
-        let base = total / clients as u64;
-        let extra = total % clients as u64;
-        let mut offset = 0;
-        (0..clients)
-            .map(|client| {
-                let count = base + u64::from((client as u64) < extra);
-                let out = (count, offset);
-                offset += count;
-                out
-            })
-            .collect()
-    }
+    use all_db_bench_common::concurrency::partition_work;
+    use anyhow::Result;
 
     #[test]
-    fn bounded_stream_is_identical_across_client_counts() {
+    fn bounded_stream_is_identical_across_client_counts() -> Result<()> {
         let records = 64;
         let total = 513;
         let serial: Vec<_> = (0..total)
@@ -800,10 +713,14 @@ mod bounded_tests {
             .collect();
         for clients in [1, 2, 4, 8] {
             let mut parallel = Vec::new();
-            for (count, offset) in partition(total, clients) {
-                parallel.extend((0..count).map(|local| bounded_record_id(records, offset + local)));
+            for partition in partition_work(total, clients, 1)? {
+                parallel.extend(
+                    (0..partition.count)
+                        .map(|local| bounded_record_id(records, partition.offset + local)),
+                );
             }
             assert_eq!(parallel, serial);
         }
+        Ok(())
     }
 }

@@ -2,24 +2,19 @@ use super::{
     engine::Engine,
     lifecycle::{DatasetSpec, prefill, warm_existing_reads},
     metrics::{
-        ProcDelta, ProcSnapshot, Quantiles, SystemDelta, SystemSnapshot, count_as_f64, dir_size,
-        hist, peak_rss_kib, quantiles,
+        ProcDelta, Quantiles, SystemDelta, SystemSnapshot, count_as_f64, dir_size, hist,
+        peak_rss_kib, quantiles,
     },
     types::{
         AccessPattern, Durability, EngineKind, KeyShape, ValuePattern, Workload, WritePattern,
     },
 };
+use all_db_bench_common::concurrency::{WorkerMeasurement, partition_work, run_workers};
 use anyhow::{Context, Result, bail};
 use clap::{Parser, ValueEnum};
 use hdrhistogram::Histogram;
 use serde::Serialize;
-use std::{
-    fs,
-    path::PathBuf,
-    sync::{Arc, Barrier, Condvar, Mutex, mpsc},
-    thread,
-    time::Instant,
-};
+use std::{fs, path::PathBuf, sync::Arc, time::Instant};
 
 use super::concurrency_clients::{
     ClientOps, FjallClient, HeedClient, ManifoldClient, ParityClient, RedbClient, SledClient,
@@ -198,118 +193,47 @@ struct AggregateRun {
     system_delta: SystemDelta,
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "thread launch, synchronized measurement, join, and aggregation form one concurrency protocol"
-)]
 fn run_clients<C: ClientOps>(
     prototype: C,
     args: &Args,
     runtime: &tokio::runtime::Handle,
 ) -> Result<AggregateRun> {
-    let start_barrier = Arc::new(Barrier::new(args.clients + 1));
-    let release = Arc::new((Mutex::new(false), Condvar::new()));
-    let (tx, rx) = mpsc::channel::<(usize, Result<ClientRun>)>();
-    let base_ops = args.ops / args.clients as u64;
-    let extra = args.ops % args.clients as u64;
     let use_churn_pool = args.state_evolution == StateEvolution::Bounded
         && matches!(args.workload, Workload::Balanced | Workload::Churn);
-    let base_slots = if use_churn_pool {
-        args.bounded_churn_slots / args.clients as u64
+    let slots = if use_churn_pool {
+        args.bounded_churn_slots
     } else {
         0
     };
-    let extra_slots = if use_churn_pool {
-        args.bounded_churn_slots % args.clients as u64
-    } else {
-        0
-    };
-    let mut offset = 0u64;
-    let mut slot_offset = 0u64;
-    let mut joins = Vec::with_capacity(args.clients);
-
-    for client in 0..args.clients {
-        let ops = base_ops + u64::from((client as u64) < extra);
-        let client_offset = offset;
-        offset = offset.saturating_add(ops);
-        let client_slots = base_slots + u64::from((client as u64) < extra_slots);
-        let client_slot_start = slot_offset;
-        slot_offset = slot_offset.saturating_add(client_slots);
-
-        let mut engine = prototype.clone();
-        let thread_args = args.clone();
-        let start_barrier = Arc::clone(&start_barrier);
-        let release = Arc::clone(&release);
-        let tx = tx.clone();
-        let runtime = runtime.clone();
-        joins.push(
-            thread::Builder::new()
-                .name(format!("dbbench-c{client}"))
-                .spawn(move || {
-                    let outcome = {
-                        start_barrier.wait();
-                        runtime.block_on(run_client(
-                            &mut engine,
-                            &thread_args,
-                            client,
-                            ops,
-                            client_offset,
-                            client_slot_start,
-                            client_slots,
-                        ))
-                    };
-                    let _ = tx.send((client, outcome));
-
-                    // Keep the task/TID alive until the coordinator has captured its
-                    // process-after snapshot. This avoids losing schedstat deltas.
-                    let (lock, cv) = &*release;
-                    let mut released = lock
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    while !*released {
-                        released = cv
-                            .wait(released)
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    }
-                    drop(released);
-                })?,
-        );
-    }
-    drop(tx);
-
-    let system_before = SystemSnapshot::capture();
-    let process_before = ProcSnapshot::capture();
-    let started = Instant::now();
-    start_barrier.wait();
-
-    let mut client_runs = Vec::with_capacity(args.clients);
-    let receive_result: Result<()> = (|| {
-        for _ in 0..args.clients {
-            let (client, result) = rx
-                .recv()
-                .context("client result channel closed before all clients completed")?;
-            client_runs.push(result.with_context(|| format!("client {client} failed"))?);
-        }
-        Ok(())
-    })();
-    let elapsed = started.elapsed();
-
-    let process_after = ProcSnapshot::capture();
-    let system_after = SystemSnapshot::capture();
-
-    {
-        let (lock, cv) = &*release;
-        *lock
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
-        cv.notify_all();
-    }
-
-    for join in joins {
-        join.join()
-            .map_err(|_| anyhow::anyhow!("concurrency client thread panicked"))?;
-    }
-    receive_result?;
+    let tasks = partition_work(args.ops, args.clients, 1)?
+        .into_iter()
+        .zip(partition_work(slots, args.clients, 1)?)
+        .enumerate()
+        .map(|(client, (ops, slots))| {
+            let mut engine = prototype.clone();
+            let args = args.clone();
+            let runtime = runtime.clone();
+            move || {
+                runtime.block_on(run_client(
+                    &mut engine,
+                    &args,
+                    client,
+                    ops.count,
+                    ops.offset,
+                    slots.offset,
+                    slots.count,
+                ))
+            }
+        })
+        .collect();
+    let WorkerMeasurement {
+        clients: client_runs,
+        elapsed_s,
+        process,
+        system_before,
+        system_after,
+        system_delta,
+    } = run_workers("dbbench", tasks)?;
 
     let bounded_state_verified = if args.verify_bounded_state {
         let mut verifier = prototype;
@@ -319,7 +243,6 @@ fn run_clients<C: ClientOps>(
         false
     };
 
-    client_runs.sort_by_key(|r| r.client);
     let mut read_hist = hist()?;
     let mut write_hist = hist()?;
     let mut completed = 0u64;
@@ -348,9 +271,9 @@ fn run_clients<C: ClientOps>(
         write_hist,
         clients: client_runs,
         bounded_state_verified,
-        elapsed_s: elapsed.as_secs_f64(),
-        process: process_before.delta(&process_after, elapsed),
-        system_delta: system_before.delta(&system_after),
+        elapsed_s,
+        process,
+        system_delta,
         system_before,
         system_after,
     })
