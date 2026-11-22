@@ -240,24 +240,24 @@ fn field_string(row: &Value, field: &str) -> String {
 }
 
 #[derive(Serialize)]
-struct TrialStatistics {
+pub struct TrialStatistics {
     trials: Vec<i64>,
     #[serde(rename = "median_elapsed_s")]
-    median_elapsed: f64,
+    pub(super) median_elapsed: f64,
     #[serde(rename = "measured_total_s")]
-    measured_total: f64,
+    pub(super) measured_total: f64,
     #[serde(rename = "min_elapsed_s")]
     min_elapsed: f64,
     #[serde(rename = "max_elapsed_s")]
     max_elapsed: f64,
     #[serde(rename = "median_ops_per_s")]
     median_rate: f64,
-    throughput_cv: f64,
-    throughput_relative_spread: f64,
+    pub(super) throughput_cv: f64,
+    pub(super) throughput_relative_spread: f64,
 }
 
 impl TrialStatistics {
-    fn from_rows(rows: &[&Value]) -> Result<Self> {
+    pub(super) fn from_rows(rows: &[&Value]) -> Result<Self> {
         let mut trials = Vec::with_capacity(rows.len());
         let mut elapsed = Vec::with_capacity(rows.len());
         let mut rates = Vec::with_capacity(rows.len());
