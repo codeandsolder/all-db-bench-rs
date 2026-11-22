@@ -19,18 +19,21 @@ struct GroupKey {
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
-#[expect(
-    clippy::struct_field_names,
-    reason = "ratio suffix is part of the explicit comparison-metric vocabulary"
-)]
 struct Ratios {
-    throughput_ratio: Option<f64>,
-    cpu_ns_per_op_ratio: Option<f64>,
-    apparent_bytes_ratio: Option<f64>,
-    allocated_block_bytes_ratio: Option<f64>,
-    device_write_bytes_ratio: Option<f64>,
-    zfs_dataset_used_ratio: Option<f64>,
-    zfs_dataset_logicalused_ratio: Option<f64>,
+    #[serde(rename = "throughput_ratio")]
+    throughput: Option<f64>,
+    #[serde(rename = "cpu_ns_per_op_ratio")]
+    cpu_ns_per_op: Option<f64>,
+    #[serde(rename = "apparent_bytes_ratio")]
+    apparent_bytes: Option<f64>,
+    #[serde(rename = "allocated_block_bytes_ratio")]
+    allocated_block_bytes: Option<f64>,
+    #[serde(rename = "device_write_bytes_ratio")]
+    device_write_bytes: Option<f64>,
+    #[serde(rename = "zfs_dataset_used_ratio")]
+    zfs_dataset_used: Option<f64>,
+    #[serde(rename = "zfs_dataset_logicalused_ratio")]
+    zfs_dataset_logicalused: Option<f64>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -492,13 +495,13 @@ fn same_baseline_dimensions(left: &SummaryGroup, right: &SummaryGroup) -> bool {
 
 fn ratios(item: &SummaryGroup, baseline: &SummaryGroup) -> Ratios {
     Ratios {
-        throughput_ratio: ratio(item.ops_per_s_median, baseline.ops_per_s_median),
-        cpu_ns_per_op_ratio: ratio(item.cpu_ns_per_op_median, baseline.cpu_ns_per_op_median),
-        apparent_bytes_ratio: ratio(
+        throughput: ratio(item.ops_per_s_median, baseline.ops_per_s_median),
+        cpu_ns_per_op: ratio(item.cpu_ns_per_op_median, baseline.cpu_ns_per_op_median),
+        apparent_bytes: ratio(
             item.db_apparent_bytes_median,
             baseline.db_apparent_bytes_median,
         ),
-        allocated_block_bytes_ratio: if item.db_allocated_block_bytes_reliable
+        allocated_block_bytes: if item.db_allocated_block_bytes_reliable
             && baseline.db_allocated_block_bytes_reliable
         {
             ratio(
@@ -508,15 +511,15 @@ fn ratios(item: &SummaryGroup, baseline: &SummaryGroup) -> Ratios {
         } else {
             None
         },
-        device_write_bytes_ratio: ratio(
+        device_write_bytes: ratio(
             item.lifecycle_device_write_bytes_median,
             baseline.lifecycle_device_write_bytes_median,
         ),
-        zfs_dataset_used_ratio: ratio(
+        zfs_dataset_used: ratio(
             item.zfs_dataset_used_delta_median,
             baseline.zfs_dataset_used_delta_median,
         ),
-        zfs_dataset_logicalused_ratio: ratio(
+        zfs_dataset_logicalused: ratio(
             item.zfs_dataset_logicalused_delta_median,
             baseline.zfs_dataset_logicalused_delta_median,
         ),
@@ -583,9 +586,9 @@ fn markdown(summary: &[SummaryGroup], lane: &str) -> String {
             let ratios = item.vs_none.as_ref();
             let physical = ratios.and_then(|values| {
                 if item.zfs_dataset_used_delta_median.is_some() {
-                    values.zfs_dataset_used_ratio
+                    values.zfs_dataset_used
                 } else {
-                    values.allocated_block_bytes_ratio
+                    values.allocated_block_bytes
                 }
             });
             lines.push(format!(
@@ -607,8 +610,8 @@ fn markdown(summary: &[SummaryGroup], lane: &str) -> String {
                     item.lifecycle_device_write_bytes_median.map(bytes_to_mib),
                     2
                 ),
-                fnum(ratios.and_then(|values| values.throughput_ratio), 3),
-                fnum(ratios.and_then(|values| values.cpu_ns_per_op_ratio), 3),
+                fnum(ratios.and_then(|values| values.throughput), 3),
+                fnum(ratios.and_then(|values| values.cpu_ns_per_op), 3),
                 fnum(physical, 3),
             ));
         }
@@ -626,9 +629,9 @@ fn markdown(summary: &[SummaryGroup], lane: &str) -> String {
             let ratios = item.vs_hex_random.as_ref();
             let physical = ratios.and_then(|values| {
                 if item.zfs_dataset_used_delta_median.is_some() {
-                    values.zfs_dataset_used_ratio
+                    values.zfs_dataset_used
                 } else {
-                    values.allocated_block_bytes_ratio
+                    values.allocated_block_bytes
                 }
             });
             lines.push(format!(
@@ -646,8 +649,8 @@ fn markdown(summary: &[SummaryGroup], lane: &str) -> String {
                     item.lifecycle_device_write_bytes_median.map(bytes_to_mib),
                     2
                 ),
-                fnum(ratios.and_then(|values| values.throughput_ratio), 3),
-                fnum(ratios.and_then(|values| values.cpu_ns_per_op_ratio), 3),
+                fnum(ratios.and_then(|values| values.throughput), 3),
+                fnum(ratios.and_then(|values| values.cpu_ns_per_op), 3),
                 fnum(physical, 3),
             ));
         }
@@ -782,10 +785,15 @@ mod tests {
             .find(|item| item.engine_compression.as_deref() == Some("lz4"))
             .context("missing lz4 group")?;
         let ratios = lz4.vs_none.as_ref().context("missing none baseline")?;
-        assert_eq!(ratios.throughput_ratio, Some(1.25));
-        assert_eq!(ratios.cpu_ns_per_op_ratio, Some(1.25));
-        assert_eq!(ratios.allocated_block_bytes_ratio, Some(0.5));
-        assert_eq!(ratios.device_write_bytes_ratio, Some(0.4));
+        assert_eq!(ratios.throughput, Some(1.25));
+        assert_eq!(ratios.cpu_ns_per_op, Some(1.25));
+        assert_eq!(ratios.allocated_block_bytes, Some(0.5));
+        assert_eq!(ratios.device_write_bytes, Some(0.4));
+        let encoded = serde_json::to_value(ratios)?;
+        assert_eq!(encoded["throughput_ratio"], 1.25);
+        assert_eq!(encoded["allocated_block_bytes_ratio"], 0.5);
+        assert_eq!(encoded["device_write_bytes_ratio"], 0.4);
+        assert_eq!(encoded.as_object().context("ratio object")?.len(), 7);
         Ok(())
     }
 
@@ -834,9 +842,9 @@ mod tests {
         assert!(!compressed.db_allocated_block_bytes_reliable);
         assert_eq!(compressed.db_allocated_block_bytes_median, None);
         assert_eq!(compressed.logical_live_per_allocated_byte_median, None);
-        assert_eq!(ratios.allocated_block_bytes_ratio, None);
-        assert_eq!(ratios.zfs_dataset_used_ratio, Some(0.5));
-        assert_eq!(ratios.zfs_dataset_logicalused_ratio, Some(0.6));
+        assert_eq!(ratios.allocated_block_bytes, None);
+        assert_eq!(ratios.zfs_dataset_used, Some(0.5));
+        assert_eq!(ratios.zfs_dataset_logicalused, Some(0.6));
         Ok(())
     }
 
@@ -893,7 +901,7 @@ mod tests {
             .vs_hex_random
             .as_ref()
             .context("missing hex-random baseline")?;
-        assert_eq!(ratios.apparent_bytes_ratio, Some(0.25));
+        assert_eq!(ratios.apparent_bytes, Some(0.25));
         Ok(())
     }
 }

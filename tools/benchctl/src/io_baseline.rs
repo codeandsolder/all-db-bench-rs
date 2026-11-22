@@ -52,10 +52,62 @@ fn fmt(value: Option<&Value>, digits: usize) -> String {
     value.to_string()
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
-)]
+struct DirectionMetrics {
+    iops: f64,
+    mbps: f64,
+    p99_us: Option<f64>,
+    submitted_bytes: f64,
+    backing_ratio: Option<f64>,
+    direct_ratio: Option<f64>,
+}
+
+impl DirectionMetrics {
+    fn from_job(job: &Value, storage: &Value, direction: &str) -> Self {
+        let data = &job[direction];
+        let submitted_bytes = as_f64(data.get("io_bytes"), 0.0);
+        Self {
+            iops: as_f64(data.get("iops"), 0.0),
+            mbps: as_f64(data.get("bw_bytes"), 0.0) / 1_000_000.0,
+            p99_us: fio_p99_us(data),
+            submitted_bytes,
+            backing_ratio: ratio(
+                storage
+                    .get(format!("storage_{direction}_bytes"))
+                    .and_then(Value::as_f64),
+                Some(submitted_bytes),
+            ),
+            direct_ratio: ratio(
+                storage
+                    .get(format!("zfs_direct_{direction}_bytes"))
+                    .and_then(Value::as_f64),
+                Some(submitted_bytes),
+            ),
+        }
+    }
+
+    fn insert_fields(&self, row: &mut Map<String, Value>, direction: &str) {
+        for (field, value) in [
+            (format!("fio_{direction}_iops"), json!(self.iops)),
+            (format!("fio_{direction}_mbps"), json!(self.mbps)),
+            (format!("fio_{direction}_p99_us"), json!(self.p99_us)),
+            (
+                format!("fio_submitted_{direction}_bytes"),
+                json!(self.submitted_bytes),
+            ),
+            (
+                format!("backing_{direction}_bytes_per_submitted_{direction}_byte"),
+                json!(self.backing_ratio),
+            ),
+            (
+                format!("zfs_direct_{direction}_bytes_per_submitted_{direction}_byte"),
+                json!(self.direct_ratio),
+            ),
+        ] {
+            row.insert(field, value);
+        }
+    }
+}
+
 fn summarize_one(
     run: &Path,
     filename: &str,
@@ -100,47 +152,7 @@ fn summarize_one(
         )?;
     }
 
-    let read = job.get("read").cloned().unwrap_or_else(|| json!({}));
-    let write = job.get("write").cloned().unwrap_or_else(|| json!({}));
-    let submitted_read = as_f64(read.get("io_bytes"), 0.0);
-    let submitted_write = as_f64(write.get("io_bytes"), 0.0);
     let storage = load_storage_delta(&storage_path)?;
-    let direct_read_ratio = ratio(
-        storage.get("zfs_direct_read_bytes").and_then(Value::as_f64),
-        Some(submitted_read),
-    );
-    let direct_write_ratio = ratio(
-        storage
-            .get("zfs_direct_write_bytes")
-            .and_then(Value::as_f64),
-        Some(submitted_write),
-    );
-
-    if calibration_direction.is_some() && filesystem == Some("zfs") {
-        if calibration_direction == Some("read")
-            && direct_read_ratio.is_none_or(|value| value < 0.90)
-        {
-            problems.push(format!(
-                "{}: ZFS direct-read bytes cover only {direct_read_ratio:?} of fio submitted reads",
-                fio_path
-                    .file_name()
-                    .and_then(|value| value.to_str())
-                    .unwrap_or(filename)
-            ));
-        }
-        if calibration_direction == Some("write")
-            && direct_write_ratio.is_none_or(|value| value < 0.90)
-        {
-            problems.push(format!(
-                "{}: ZFS direct-write bytes cover only {direct_write_ratio:?} of fio submitted writes",
-                fio_path
-                    .file_name()
-                    .and_then(|value| value.to_str())
-                    .unwrap_or(filename)
-            ));
-        }
-    }
-
     let mut row = Map::new();
     row.insert(
         "name".to_owned(),
@@ -153,61 +165,25 @@ fn summarize_one(
     );
     row.insert(
         "authoritative_pressure_calibration".to_owned(),
-        calibration_direction.map_or(Value::Null, |value| json!(value)),
+        json!(calibration_direction),
     );
-    row.insert(
-        "fio_read_iops".to_owned(),
-        json!(as_f64(read.get("iops"), 0.0)),
-    );
-    row.insert(
-        "fio_write_iops".to_owned(),
-        json!(as_f64(write.get("iops"), 0.0)),
-    );
-    row.insert(
-        "fio_read_mbps".to_owned(),
-        json!(as_f64(read.get("bw_bytes"), 0.0) / 1_000_000.0),
-    );
-    row.insert(
-        "fio_write_mbps".to_owned(),
-        json!(as_f64(write.get("bw_bytes"), 0.0) / 1_000_000.0),
-    );
-    row.insert(
-        "fio_read_p99_us".to_owned(),
-        fio_p99_us(&read).map_or(Value::Null, |value| json!(value)),
-    );
-    row.insert(
-        "fio_write_p99_us".to_owned(),
-        fio_p99_us(&write).map_or(Value::Null, |value| json!(value)),
-    );
-    row.insert("fio_submitted_read_bytes".to_owned(), json!(submitted_read));
-    row.insert(
-        "fio_submitted_write_bytes".to_owned(),
-        json!(submitted_write),
-    );
-    row.insert(
-        "backing_read_bytes_per_submitted_read_byte".to_owned(),
-        ratio(
-            storage.get("storage_read_bytes").and_then(Value::as_f64),
-            Some(submitted_read),
-        )
-        .map_or(Value::Null, |value| json!(value)),
-    );
-    row.insert(
-        "backing_write_bytes_per_submitted_write_byte".to_owned(),
-        ratio(
-            storage.get("storage_write_bytes").and_then(Value::as_f64),
-            Some(submitted_write),
-        )
-        .map_or(Value::Null, |value| json!(value)),
-    );
-    row.insert(
-        "zfs_direct_read_bytes_per_submitted_read_byte".to_owned(),
-        direct_read_ratio.map_or(Value::Null, |value| json!(value)),
-    );
-    row.insert(
-        "zfs_direct_write_bytes_per_submitted_write_byte".to_owned(),
-        direct_write_ratio.map_or(Value::Null, |value| json!(value)),
-    );
+    for direction in ["read", "write"] {
+        let metrics = DirectionMetrics::from_job(job, &storage, direction);
+        if calibration_direction == Some(direction)
+            && filesystem == Some("zfs")
+            && metrics.direct_ratio.is_none_or(|value| value < 0.90)
+        {
+            problems.push(format!(
+                "{}: ZFS direct-{direction} bytes cover only {:?} of fio submitted {direction}s",
+                fio_path
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or(filename),
+                metrics.direct_ratio
+            ));
+        }
+        metrics.insert_fields(&mut row, direction);
+    }
     if let Some(storage_object) = storage.as_object() {
         for (key, value) in storage_object {
             row.insert(key.clone(), value.clone());
@@ -261,37 +237,7 @@ fn markdown(rows: &[Value]) -> String {
     lines.join("\n") + "\n"
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
-)]
-pub fn run(args: IoBaselineArgs<'_>) -> Result<i32> {
-    let run = args.run_dir;
-    let support = read_json(&run.join("support.json"))?;
-    if as_i64(support.get("calibration_protocol_version"), 0) != 4 {
-        bail!("storage baseline must use calibration protocol 4");
-    }
-    let pressure = support
-        .get("pressure_calibration")
-        .and_then(Value::as_object)
-        .context("support.json missing pressure_calibration")?;
-    let read_file = pressure
-        .get("read")
-        .and_then(Value::as_object)
-        .and_then(|value| value.get("file"))
-        .and_then(Value::as_str)
-        .context("pressure calibration read file missing")?;
-    let write_file = pressure
-        .get("write")
-        .and_then(Value::as_object)
-        .and_then(|value| value.get("file"))
-        .and_then(Value::as_str)
-        .context("pressure calibration write file missing")?;
-    let authoritative = std::collections::BTreeMap::from([
-        (read_file.to_owned(), "read"),
-        (write_file.to_owned(), "write"),
-    ]);
-
+fn declared_tests(support: &Value) -> Result<Vec<String>> {
     let declared = support
         .get("tests")
         .and_then(Value::as_array)
@@ -313,34 +259,16 @@ pub fn run(args: IoBaselineArgs<'_>) -> Result<i32> {
         bail!("storage baseline support.json contains duplicate test filenames");
     }
 
-    let filesystem = support.get("filesystem").and_then(Value::as_str);
-    let mut rows = Vec::new();
-    let mut problems = Vec::new();
-    let warnings: Vec<String> = Vec::new();
-    for filename in &declared_names {
-        let fio_path = run.join(filename);
-        if !fio_path.is_file() {
-            problems.push(format!("missing declared fio result {filename}"));
-            continue;
-        }
-        let storage_path = run.join("storage").join(filename);
-        if !storage_path.is_file() {
-            problems.push(format!("missing storage sidecar for {filename}"));
-            continue;
-        }
-        match summarize_one(
-            run,
-            filename,
-            pressure,
-            &authoritative,
-            filesystem,
-            &mut problems,
-        ) {
-            Ok(row) => rows.push(row),
-            Err(error) => problems.push(format!("{filename}: {error}")),
-        }
-    }
+    Ok(declared_names)
+}
 
+fn summarize_capacity(
+    rows: &[Value],
+    read_file: &str,
+    write_file: &str,
+    pressure: &Map<String, Value>,
+    problems: &mut Vec<String>,
+) -> Result<Value> {
     let read_name = Path::new(read_file)
         .file_stem()
         .and_then(|value| value.to_str())
@@ -371,18 +299,79 @@ pub fn run(args: IoBaselineArgs<'_>) -> Result<i32> {
         }
     }
 
+    Ok(json!({
+        "read_iops": read_row.and_then(|row| row.get("fio_read_iops")).and_then(Value::as_f64),
+        "write_iops": write_row.and_then(|row| row.get("fio_write_iops")).and_then(Value::as_f64),
+        "composite_iops": composite,
+        "read_fraction": as_f64(pressure.get("read_fraction"), 0.0),
+        "write_fraction": as_f64(pressure.get("write_fraction"), 0.0),
+    }))
+}
+
+pub fn run(args: IoBaselineArgs<'_>) -> Result<i32> {
+    let run = args.run_dir;
+    let support = read_json(&run.join("support.json"))?;
+    if as_i64(support.get("calibration_protocol_version"), 0) != 4 {
+        bail!("storage baseline must use calibration protocol 4");
+    }
+    let pressure = support
+        .get("pressure_calibration")
+        .and_then(Value::as_object)
+        .context("support.json missing pressure_calibration")?;
+    let read_file = pressure
+        .get("read")
+        .and_then(Value::as_object)
+        .and_then(|value| value.get("file"))
+        .and_then(Value::as_str)
+        .context("pressure calibration read file missing")?;
+    let write_file = pressure
+        .get("write")
+        .and_then(Value::as_object)
+        .and_then(|value| value.get("file"))
+        .and_then(Value::as_str)
+        .context("pressure calibration write file missing")?;
+    let authoritative = std::collections::BTreeMap::from([
+        (read_file.to_owned(), "read"),
+        (write_file.to_owned(), "write"),
+    ]);
+
+    let declared_names = declared_tests(&support)?;
+    let filesystem = support.get("filesystem").and_then(Value::as_str);
+    let mut rows = Vec::new();
+    let mut problems = Vec::new();
+    let warnings: Vec<String> = Vec::new();
+    for filename in &declared_names {
+        let fio_path = run.join(filename);
+        if !fio_path.is_file() {
+            problems.push(format!("missing declared fio result {filename}"));
+            continue;
+        }
+        let storage_path = run.join("storage").join(filename);
+        if !storage_path.is_file() {
+            problems.push(format!("missing storage sidecar for {filename}"));
+            continue;
+        }
+        match summarize_one(
+            run,
+            filename,
+            pressure,
+            &authoritative,
+            filesystem,
+            &mut problems,
+        ) {
+            Ok(row) => rows.push(row),
+            Err(error) => problems.push(format!("{filename}: {error}")),
+        }
+    }
+
+    let capacity = summarize_capacity(&rows, read_file, write_file, pressure, &mut problems)?;
+
     let result = json!({
         "support": support,
         "test_count": rows.len(),
         "problems": problems,
         "warnings": warnings,
-        "pressure_calibration": {
-            "read_iops": read_row.and_then(|row| row.get("fio_read_iops")).and_then(Value::as_f64),
-            "write_iops": write_row.and_then(|row| row.get("fio_write_iops")).and_then(Value::as_f64),
-            "composite_iops": composite,
-            "read_fraction": as_f64(pressure.get("read_fraction"), 0.0),
-            "write_fraction": as_f64(pressure.get("write_fraction"), 0.0),
-        },
+        "pressure_calibration": capacity,
         "tests": rows,
     });
 
@@ -412,13 +401,47 @@ pub fn run(args: IoBaselineArgs<'_>) -> Result<i32> {
 
 #[cfg(test)]
 mod tests {
-    use super::fmt;
+    use super::{DirectionMetrics, fmt, summarize_capacity};
+    use anyhow::Result;
+    use serde_json::Map;
     use serde_json::json;
 
     #[test]
     fn formatting_matches_python_summary_contract() {
         assert_eq!(fmt(Some(&json!(12.34567)), 3), "12.346");
         assert_eq!(fmt(Some(&Value::Null), 3), "—");
+    }
+
+    #[test]
+    fn directional_metrics_preserve_report_keys_and_units() -> Result<()> {
+        let job = json!({"read": {"iops": 100.0, "bw_bytes": 4_000_000, "io_bytes": 1000,
+                                    "clat_ns": {"percentile": {"99.000000": 5000}}}});
+        let storage = json!({"storage_read_bytes": 2000, "zfs_direct_read_bytes": 900});
+        let mut row = Map::new();
+        DirectionMetrics::from_job(&job, &storage, "read").insert_fields(&mut row, "read");
+        DirectionMetrics::from_job(&job, &storage, "write").insert_fields(&mut row, "write");
+        assert_eq!(row["fio_read_iops"], 100.0);
+        assert_eq!(row["fio_read_mbps"], 4.0);
+        assert_eq!(row["fio_read_p99_us"], 5.0);
+        assert_eq!(row["backing_read_bytes_per_submitted_read_byte"], 2.0);
+        assert_eq!(row["zfs_direct_read_bytes_per_submitted_read_byte"], 0.9);
+        assert_eq!(row["fio_write_iops"], 0.0);
+        assert!(row["fio_write_p99_us"].is_null());
+        assert!(row["zfs_direct_write_bytes_per_submitted_write_byte"].is_null());
+        let capacity = json!({"read_fraction": 0.5, "write_fraction": 0.5});
+        let mut problems = Vec::new();
+        let report = summarize_capacity(
+            &[],
+            "r.json",
+            "w.json",
+            capacity
+                .as_object()
+                .ok_or_else(|| anyhow::anyhow!("capacity object"))?,
+            &mut problems,
+        )?;
+        assert!(report["composite_iops"].is_null());
+        assert_eq!(problems.len(), 1);
+        Ok(())
     }
 
     use serde_json::Value;
