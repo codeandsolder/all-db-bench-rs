@@ -69,8 +69,8 @@ fi
 if [[ -n "${ROCKS_BENCH_BIN_SHA256:-}" ]]; then ROCKS_BIN_SHA="$ROCKS_BENCH_BIN_SHA256"; else ROCKS_BIN_SHA=$(sha256sum "$ROCKS_BIN" | awk '{print $1}'); fi
 RUNNER_SHA=$(sha256sum "$ROOT/scripts/run-record-concurrency-matrix.sh" | awk '{print $1}')
 CONCURRENCY_POLICY_SHA=$(sha256sum "$ROOT/scripts/concurrency-matrix-policy.sh" | awk '{print $1}')
-NOISE_SHA=$(sha256sum "$ROOT/tools/benchctl/src/noise.rs" | awk '{print $1}')
-CONTINUOUS_NOISE_SHA=$(sha256sum "$ROOT/tools/benchctl/src/noise.rs" | awk '{print $1}')
+NOISE_SHA=$("$ROOT/scripts/noise-source-sha256.sh" "$ROOT")
+CONTINUOUS_NOISE_SHA=$NOISE_SHA
 CONCURRENCY_RUNNER_COMMON_SHA=$(sha256sum "$ROOT/scripts/concurrency-runner-common.sh" | awk '{print $1}')
 CONTINUOUS_NOISE_COMMON_SHA=$(sha256sum "$ROOT/scripts/continuous-noise-runner-common.sh" | awk '{print $1}')
 HOST_NAME=$(hostname); MACHINE_ID_SHA256=$("$ROOT/scripts/host-machine-id-sha256.sh")

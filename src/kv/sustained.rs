@@ -1,31 +1,21 @@
+use super::backend_ops::{BackendOps, RetryMode};
 use super::{
     data::{key, sample_existing_id, value},
     engine::Engine,
     lifecycle::{DatasetSpec, prefill},
-    metrics::{
-        ProcDelta, ProcSnapshot, Quantiles, SettleMeasurement, SystemDelta, SystemSnapshot,
-        count_as_f64, dir_size, hist, measure_settle, peak_rss_kib, quantiles, record,
-    },
+    metrics::{dir_size, measure_settle, peak_rss_kib},
     types::{AccessPattern, Durability, EngineKind, KeyShape, ValuePattern, Workload},
 };
-use anyhow::{Context, Result, bail};
-use clap::{Parser, ValueEnum};
-use rand::{RngExt, SeedableRng, rngs::SmallRng, seq::SliceRandom};
-use serde::Serialize;
-use std::{
-    fs,
-    path::{Path, PathBuf},
-    time::{Duration, Instant},
+use all_db_bench_common::run_directory::{ReportMode, finish_database, prepare_database};
+use all_db_bench_common::{
+    measurement::SetupTimings,
+    sustained::{Foreground, MutationStream, SustainedEvidence, SustainedPattern, WorkPlan},
 };
-
-#[derive(Clone, Copy, Debug, Serialize, ValueEnum)]
-#[serde(rename_all = "kebab-case")]
-enum SustainedPattern {
-    Append,
-    UpdateUniform,
-    UpdateHot95,
-    Churn,
-}
+use anyhow::{Result, bail};
+use clap::Parser;
+use rand::{RngExt, SeedableRng, rngs::SmallRng};
+use serde::Serialize;
+use std::{path::PathBuf, time::Instant};
 
 #[derive(Debug, Parser)]
 #[command(about = "Fixed-work windowed sustained-write/compaction benchmark")]
@@ -73,23 +63,6 @@ struct Args {
 }
 
 #[derive(Debug, Serialize)]
-struct WindowMeasurement {
-    index: u64,
-    ops_start: u64,
-    ops_end: u64,
-    ops_completed: u64,
-    elapsed_s: f64,
-    ops_per_s: f64,
-    puts: u64,
-    deletes: u64,
-    transactions: u64,
-    logical_mutated_bytes: u64,
-    transaction_latency: Quantiles,
-    process: ProcDelta,
-    system: SystemDelta,
-}
-
-#[derive(Debug, Serialize)]
 struct Measurement {
     format_version: u32,
     lane: String,
@@ -100,7 +73,6 @@ struct Measurement {
     pattern: SustainedPattern,
     records: u64,
     ops_requested: u64,
-    ops_completed: u64,
     window_ops: u64,
     value_bytes: usize,
     value_pattern: ValuePattern,
@@ -110,32 +82,8 @@ struct Measurement {
     trial: u32,
     seed: u64,
     scenario: String,
-    open_s: f64,
-    prefill_s: f64,
-    warmup_s: f64,
-    elapsed_s: f64,
-    active_elapsed_s: f64,
-    instrumentation_s: f64,
-    instrumentation_fraction_of_wall: f64,
-    ops_per_s: f64,
-    active_ops_per_s: f64,
-    puts: u64,
-    deletes: u64,
-    transactions: u64,
-    logical_mutated_bytes: u64,
-    transaction_latency: Quantiles,
-    db_bytes_before: u64,
-    db_bytes_after_foreground: u64,
-    db_bytes_final: u64,
-    windows: Vec<WindowMeasurement>,
-    post_workload_settle: Option<SettleMeasurement>,
-    measured_process: ProcDelta,
-    system_before: SystemSnapshot,
-    system_after: SystemSnapshot,
-    measured_system_delta: SystemDelta,
-    peak_rss_kib: u64,
-    path: String,
-    db_kept: bool,
+    #[serde(flatten)]
+    evidence: SustainedEvidence,
 }
 
 async fn warm_reads(engine: &mut Engine, args: &Args) -> Result<()> {
@@ -143,71 +91,31 @@ async fn warm_reads(engine: &mut Engine, args: &Args) -> Result<()> {
     for _ in 0..args.records.min(args.warmup_reads) {
         let id = rng.random_range(0..args.records);
         let _ = engine
-            .get(&key(id, args.key_bytes, args.key_shape, args.seed))
+            .read(&key(id, args.key_bytes, args.key_shape, args.seed))
             .await?;
     }
     Ok(())
 }
 
-/// Run the sustained-write benchmark and emit windowed measurements.
-///
-/// # Errors
-/// Returns an error for invalid arguments, backend failures, or result I/O failures.
-#[expect(
-    clippy::too_many_lines,
-    reason = "the sustained harness keeps one explicit phase/window state machine to preserve measurement semantics"
-)]
-pub async fn run() -> Result<()> {
-    let args = Args::parse();
-    if args.records == 0 || args.ops == 0 || args.window_ops == 0 || args.txn_size == 0 {
-        bail!("records, ops, window-ops and txn-size must all be greater than zero");
-    }
-    if args.key_bytes < 8 {
-        bail!("--key-bytes must be at least 8");
-    }
-    if args.window_ops < args.txn_size as u64
-        || !args.window_ops.is_multiple_of(args.txn_size as u64)
-    {
-        bail!(
-            "--window-ops must be a positive multiple of --txn-size so window boundaries do not manufacture partial transactions"
-        );
-    }
-    if !args.ops.is_multiple_of(args.txn_size as u64) {
-        bail!(
-            "--ops must be a multiple of --txn-size so the final transaction is not silently shortened"
-        );
-    }
-    if matches!(args.engine, EngineKind::ManifoldWal) {
-        bail!(
-            "manifold-wal is a known-broken recovery diagnostic and is excluded from sustained rankings"
-        );
-    }
+fn prepare_path(args: &Args) -> Result<PathBuf> {
+    let name = format!(
+        "sustained-{:?}-{:?}-{:?}-n{}-o{}-w{}-v{}-tx{}-t{}",
+        args.engine,
+        args.durability,
+        args.pattern,
+        args.records,
+        args.ops,
+        args.window_ops,
+        args.value_bytes,
+        args.txn_size,
+        args.trial
+    )
+    .to_lowercase()
+    .replace('_', "-");
+    prepare_database(&args.root, &name, false)
+}
 
-    let mapping = args.engine.durability_mapping(args.durability)?;
-    let path = args.root.join(
-        format!(
-            "sustained-{:?}-{:?}-{:?}-n{}-o{}-w{}-v{}-tx{}-t{}",
-            args.engine,
-            args.durability,
-            args.pattern,
-            args.records,
-            args.ops,
-            args.window_ops,
-            args.value_bytes,
-            args.txn_size,
-            args.trial
-        )
-        .to_lowercase()
-        .replace('_', "-"),
-    );
-    if path.exists() {
-        fs::remove_dir_all(&path).context("remove stale sustained-run directory")?;
-    }
-    fs::create_dir_all(&path)?;
-
-    let open_started = Instant::now();
-    let mut engine = Engine::open(args.engine, args.durability, &path).await?;
-    let open_s = open_started.elapsed().as_secs_f64();
+async fn prepare_data(engine: &mut Engine, args: &Args, open_s: f64) -> Result<SetupTimings> {
     let dataset = DatasetSpec {
         records: args.records,
         key_bytes: args.key_bytes,
@@ -218,184 +126,109 @@ pub async fn run() -> Result<()> {
         durability: args.durability,
     };
     let prefill_started = Instant::now();
-    prefill(&mut engine, dataset, 0).await?;
+    prefill(engine, dataset, 0).await?;
     let prefill_s = prefill_started.elapsed().as_secs_f64();
     let warmup_started = Instant::now();
-    warm_reads(&mut engine, &args).await?;
+    warm_reads(engine, args).await?;
     let warmup_s = warmup_started.elapsed().as_secs_f64();
 
-    let db_bytes_before = dir_size(&path);
-    let process_before = ProcSnapshot::capture();
-    let system_before = SystemSnapshot::capture();
-    let foreground_started = Instant::now();
-    let mut rng = SmallRng::seed_from_u64(args.seed ^ u64::from(args.trial) ^ 0x5155_5354);
-    let mut next_id = args.records;
-    let mut done = 0u64;
-    let mut puts_total = 0u64;
-    let mut deletes_total = 0u64;
-    let mut txn_total = 0u64;
-    let mut logical_bytes_total = 0u64;
-    let mut total_hist = hist()?;
-    let mut windows = Vec::new();
-    let mut active_elapsed = Duration::ZERO;
+    Ok(SetupTimings {
+        open: open_s,
+        prefill: prefill_s,
+        warmup: warmup_s,
+    })
+}
 
-    while done < args.ops {
-        let window_start_ops = done;
-        let window_target = args.ops.min(done.saturating_add(args.window_ops));
-        let window_proc_before = ProcSnapshot::capture();
-        let window_sys_before = SystemSnapshot::capture();
-        let window_started = Instant::now();
-        let mut window_hist = hist()?;
-        let mut window_puts = 0u64;
-        let mut window_deletes = 0u64;
-        let mut window_txns = 0u64;
-        let mut window_logical_bytes = 0u64;
+fn report(args: &Args, mapping: String, evidence: SustainedEvidence) -> Measurement {
+    Measurement {
+        format_version: 6,
+        lane: String::from("kv-sustained"),
+        engine: args.engine,
+        engine_version: args.engine.version().to_string(),
+        durability: args.durability,
+        durability_mapping: mapping,
+        pattern: args.pattern,
+        records: args.records,
+        ops_requested: args.ops,
+        window_ops: args.window_ops,
+        value_bytes: args.value_bytes,
+        value_pattern: args.value_pattern,
+        key_bytes: args.key_bytes,
+        key_shape: args.key_shape,
+        txn_size: args.txn_size,
+        trial: args.trial,
+        seed: args.seed,
+        scenario: args.scenario.clone(),
+        evidence,
+    }
+}
 
-        if matches!(args.pattern, SustainedPattern::Churn) {
-            #[derive(Clone, Copy)]
-            enum ChurnOp {
-                Update,
-                Insert,
-                Delete,
-            }
-
-            while done < window_target {
-                let epoch = (window_target - done).min(1_000);
-                let update_count = epoch * 40 / 100;
-                let insert_count = epoch * 30 / 100;
-                let delete_count = epoch - update_count - insert_count;
-                let epoch = usize::try_from(epoch)?;
-                let mut specs = Vec::with_capacity(epoch);
-                specs.extend(std::iter::repeat_n(
-                    ChurnOp::Update,
-                    usize::try_from(update_count)?,
-                ));
-                specs.extend(std::iter::repeat_n(
-                    ChurnOp::Insert,
-                    usize::try_from(insert_count)?,
-                ));
-                specs.extend(std::iter::repeat_n(
-                    ChurnOp::Delete,
-                    usize::try_from(delete_count)?,
-                ));
-                specs.shuffle(&mut rng);
-
-                for chunk in specs.chunks(args.txn_size) {
-                    let mut puts = Vec::with_capacity(chunk.len());
-                    let mut deletes = Vec::with_capacity(chunk.len());
-                    for (op_offset, spec) in chunk.iter().enumerate() {
-                        let salt = args.seed ^ done ^ op_offset as u64;
-                        match spec {
-                            ChurnOp::Update => {
-                                let id = rng.random_range(0..args.records);
-                                puts.push((
-                                    key(id, args.key_bytes, args.key_shape, args.seed),
-                                    value(id, args.value_bytes, salt, args.value_pattern),
-                                ));
-                            }
-                            ChurnOp::Insert => {
-                                let id = next_id;
-                                next_id += 1;
-                                puts.push((
-                                    key(id, args.key_bytes, args.key_shape, args.seed),
-                                    value(id, args.value_bytes, salt, args.value_pattern),
-                                ));
-                            }
-                            ChurnOp::Delete => {
-                                let id = rng.random_range(0..args.records);
-                                deletes.push(key(id, args.key_bytes, args.key_shape, args.seed));
-                            }
-                        }
-                    }
-                    let put_count = puts.len() as u64;
-                    let delete_count = deletes.len() as u64;
-                    let logical_bytes = put_count
-                        .saturating_mul((args.key_bytes + args.value_bytes) as u64)
-                        + delete_count.saturating_mul(args.key_bytes as u64);
-                    let t = Instant::now();
-                    engine.write_batch(args.durability, &puts, &deletes).await?;
-                    let latency = t.elapsed();
-                    record(&mut window_hist, latency);
-                    record(&mut total_hist, latency);
-                    done += chunk.len() as u64;
-                    window_puts += put_count;
-                    window_deletes += delete_count;
-                    window_txns += 1;
-                    window_logical_bytes = window_logical_bytes.saturating_add(logical_bytes);
-                }
-            }
-        } else {
-            while done < window_target {
-                let n = usize::try_from(window_target - done)?.min(args.txn_size);
-                let mut puts = Vec::with_capacity(n);
-                for op_offset in 0..n {
-                    let salt = args.seed ^ done ^ op_offset as u64;
-                    let id = match args.pattern {
-                        SustainedPattern::Append => {
-                            let id = next_id;
-                            next_id += 1;
-                            id
-                        }
-                        SustainedPattern::UpdateUniform => rng.random_range(0..args.records),
-                        SustainedPattern::UpdateHot95 => sample_existing_id(
-                            &mut rng,
-                            args.records,
-                            AccessPattern::Hot95,
-                            Workload::WriteBurst,
-                        ),
-                        SustainedPattern::Churn => unreachable!(),
-                    };
-                    puts.push((
-                        key(id, args.key_bytes, args.key_shape, args.seed),
-                        value(id, args.value_bytes, salt, args.value_pattern),
-                    ));
-                }
-
-                let put_count = puts.len() as u64;
-                let logical_bytes =
-                    put_count.saturating_mul((args.key_bytes + args.value_bytes) as u64);
-                let t = Instant::now();
-                engine.write_batch(args.durability, &puts, &[]).await?;
-                let latency = t.elapsed();
-                record(&mut window_hist, latency);
-                record(&mut total_hist, latency);
-                done += n as u64;
-                window_puts += put_count;
-                window_txns += 1;
-                window_logical_bytes = window_logical_bytes.saturating_add(logical_bytes);
-            }
-        }
-
-        let elapsed = window_started.elapsed();
-        active_elapsed += elapsed;
-        let window_proc_after = ProcSnapshot::capture();
-        let window_sys_after = SystemSnapshot::capture();
-        let window_completed = done - window_start_ops;
-        windows.push(WindowMeasurement {
-            index: windows.len() as u64,
-            ops_start: window_start_ops,
-            ops_end: done,
-            ops_completed: window_completed,
-            elapsed_s: elapsed.as_secs_f64(),
-            ops_per_s: count_as_f64(window_completed)
-                / elapsed.as_secs_f64().max(f64::MIN_POSITIVE),
-            puts: window_puts,
-            deletes: window_deletes,
-            transactions: window_txns,
-            logical_mutated_bytes: window_logical_bytes,
-            transaction_latency: quantiles(&window_hist),
-            process: window_proc_before.delta(&window_proc_after, elapsed),
-            system: window_sys_before.delta(&window_sys_after),
-        });
-        puts_total += window_puts;
-        deletes_total += window_deletes;
-        txn_total += window_txns;
-        logical_bytes_total = logical_bytes_total.saturating_add(window_logical_bytes);
+/// Run the sustained-write benchmark and emit windowed measurements.
+///
+/// # Errors
+/// Returns an error for invalid arguments, backend failures, or result I/O failures.
+pub async fn run() -> Result<()> {
+    let args = Args::parse();
+    let plan = WorkPlan::new(args.records, args.ops, args.window_ops, args.txn_size)?;
+    if args.key_bytes < 8 {
+        bail!("--key-bytes must be at least 8");
+    }
+    if matches!(args.engine, EngineKind::ManifoldWal) {
+        bail!(
+            "manifold-wal is a known-broken recovery diagnostic and is excluded from sustained rankings"
+        );
     }
 
-    let foreground_wall_elapsed = foreground_started.elapsed();
-    let process_after = ProcSnapshot::capture();
-    let system_after = SystemSnapshot::capture();
+    let mapping = args.engine.durability_mapping(args.durability)?;
+    let path = prepare_path(&args)?;
+
+    let open_started = Instant::now();
+    let mut engine = Engine::open(args.engine, args.durability, &path).await?;
+    let open_s = open_started.elapsed().as_secs_f64();
+    let setup = prepare_data(&mut engine, &args, open_s).await?;
+
+    let db_bytes_before = dir_size(&path);
+    let mut run = Foreground::start(plan)?;
+    let mut stream = MutationStream::new(args.pattern, plan, args.seed, args.trial);
+    let put_bytes = u64::try_from(args.key_bytes.saturating_add(args.value_bytes))?;
+    let delete_bytes = u64::try_from(args.key_bytes)?;
+    for work in plan.windows() {
+        let mut window = run.start_window(work)?;
+        for start in work.transactions() {
+            let batch = stream.batch(
+                work,
+                start,
+                |rng, records| {
+                    sample_existing_id(rng, records, AccessPattern::Hot95, Workload::WriteBurst)
+                },
+                |id, salt| {
+                    (
+                        key(id, args.key_bytes, args.key_shape, args.seed),
+                        value(id, args.value_bytes, salt, args.value_pattern),
+                    )
+                },
+                |id| key(id, args.key_bytes, args.key_shape, args.seed),
+            )?;
+            let started = Instant::now();
+            engine
+                .commit(
+                    args.durability,
+                    &batch.puts,
+                    &batch.deletes,
+                    RetryMode::SingleAttempt,
+                )
+                .await?;
+            run.record_transaction(
+                &mut window,
+                &batch,
+                put_bytes,
+                delete_bytes,
+                started.elapsed(),
+            )?;
+        }
+        run.end_window(window)?;
+    }
+    let foreground = run.finish()?;
     let db_bytes_after_foreground = dir_size(&path);
     let post_workload_settle = measure_settle(
         &path,
@@ -408,73 +241,24 @@ pub async fn run() -> Result<()> {
     drop(engine);
     let db_bytes_final = dir_size(&path);
 
-    let result = Measurement {
-        format_version: 6,
-        lane: String::from("kv-sustained"),
-        engine: args.engine,
-        engine_version: args.engine.version().to_string(),
-        durability: args.durability,
-        durability_mapping: mapping.to_string(),
-        pattern: args.pattern,
-        records: args.records,
-        ops_requested: args.ops,
-        ops_completed: done,
-        window_ops: args.window_ops,
-        value_bytes: args.value_bytes,
-        value_pattern: args.value_pattern,
-        key_bytes: args.key_bytes,
-        key_shape: args.key_shape,
-        txn_size: args.txn_size,
-        trial: args.trial,
-        seed: args.seed,
-        scenario: args.scenario.clone(),
-        open_s,
-        prefill_s,
-        warmup_s,
-        elapsed_s: foreground_wall_elapsed.as_secs_f64(),
-        active_elapsed_s: active_elapsed.as_secs_f64(),
-        instrumentation_s: foreground_wall_elapsed
-            .saturating_sub(active_elapsed)
-            .as_secs_f64(),
-        instrumentation_fraction_of_wall: foreground_wall_elapsed
-            .saturating_sub(active_elapsed)
-            .as_secs_f64()
-            / foreground_wall_elapsed.as_secs_f64().max(f64::MIN_POSITIVE),
-        ops_per_s: count_as_f64(done)
-            / foreground_wall_elapsed.as_secs_f64().max(f64::MIN_POSITIVE),
-        active_ops_per_s: count_as_f64(done) / active_elapsed.as_secs_f64().max(f64::MIN_POSITIVE),
-        puts: puts_total,
-        deletes: deletes_total,
-        transactions: txn_total,
-        logical_mutated_bytes: logical_bytes_total,
-        transaction_latency: quantiles(&total_hist),
+    let evidence = SustainedEvidence {
+        setup,
+        foreground: foreground.measurement(),
         db_bytes_before,
         db_bytes_after_foreground,
         db_bytes_final,
-        windows,
         post_workload_settle,
-        measured_process: process_before.delta(&process_after, foreground_wall_elapsed),
-        system_before: system_before.clone(),
-        system_after: system_after.clone(),
-        measured_system_delta: system_before.delta(&system_after),
         peak_rss_kib: peak_rss_kib(),
         path: path.display().to_string(),
         db_kept: args.keep_db,
     };
+    let result = report(&args, mapping.to_string(), evidence);
 
-    let json = serde_json::to_string_pretty(&result)?;
-    if args.output == "-" {
-        println!("{json}");
-    } else {
-        let output = Path::new(&args.output);
-        if let Some(parent) = output.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(output, format!("{json}\n"))?;
-    }
-
-    if !args.keep_db {
-        fs::remove_dir_all(&path).context("remove sustained-run database")?;
-    }
-    Ok(())
+    finish_database(
+        &path,
+        args.keep_db,
+        &result,
+        &args.output,
+        ReportMode::ReplacePretty,
+    )
 }

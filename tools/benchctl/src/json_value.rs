@@ -1,4 +1,40 @@
-use serde_json::Value;
+use num_traits::ToPrimitive;
+use serde_json::{Number, Value};
+
+fn numeric_integer(number: &Number, convert_float: impl FnOnce(f64) -> Option<i64>) -> Option<i64> {
+    if let Some(value) = number.as_i64() {
+        Some(value)
+    } else if let Some(value) = number.as_u64() {
+        i64::try_from(value).ok()
+    } else {
+        convert_float(number.as_f64()?)
+    }
+}
+
+/// Integer-compatible JSON number or string, rejecting fractional and out-of-range values.
+pub fn exact_i64(value: &Value) -> Option<i64> {
+    match value {
+        Value::Number(number) => numeric_integer(number, |value| {
+            if value.fract() == 0.0 {
+                value.to_i64()
+            } else {
+                None
+            }
+        }),
+        Value::String(value) => value.parse().ok(),
+        _ => None,
+    }
+}
+
+/// Integer coercion for imported Python-style reports: truncate only finite in-range numbers.
+pub fn py_int(value: &Value) -> Option<i64> {
+    match value {
+        Value::Bool(value) => Some(i64::from(*value)),
+        Value::Number(number) => numeric_integer(number, |value| value.to_i64()),
+        Value::String(value) => value.trim().parse().ok(),
+        _ => None,
+    }
+}
 
 pub fn py_string(value: &Value) -> String {
     match value {
@@ -24,8 +60,28 @@ pub fn json_truthy(value: Option<&Value>) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{json_truthy, py_string};
+    use super::{exact_i64, json_truthy, py_int, py_string};
     use serde_json::{Value, json};
+
+    #[test]
+    fn integer_coercion_checks_the_exclusive_float_upper_bound() {
+        let too_large = json!(9_223_372_036_854_775_808.0_f64);
+        let too_small = json!(-9_223_372_036_854_777_856.0_f64);
+        for value in [too_large, too_small, json!(u64::MAX), Value::Null] {
+            assert_eq!(exact_i64(&value), None);
+            assert_eq!(py_int(&value), None);
+        }
+        assert_eq!(exact_i64(&json!(i64::MAX)), Some(i64::MAX));
+        assert_eq!(
+            exact_i64(&json!(-9_223_372_036_854_775_808.0_f64)),
+            Some(i64::MIN)
+        );
+        assert_eq!(exact_i64(&json!(3.5)), None);
+        assert_eq!(py_int(&json!(3.5)), Some(3));
+        assert_eq!(py_int(&json!(-3.5)), Some(-3));
+        assert_eq!(py_int(&json!(true)), Some(1));
+        assert_eq!(exact_i64(&json!(true)), None);
+    }
 
     #[test]
     fn python_string_matches_legacy_scalar_rendering() {

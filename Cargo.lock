@@ -140,9 +140,12 @@ dependencies = [
 name = "all-db-bench-common"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "clap",
  "hdrhistogram",
+ "rand 0.10.4",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -167,6 +170,7 @@ dependencies = [
  "clap",
  "fs2",
  "nix 0.32.0",
+ "num-traits",
  "regex",
  "rustix 1.1.6",
  "serde",

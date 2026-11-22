@@ -127,7 +127,7 @@ impl Engine {
         }
     }
 
-    pub(crate) async fn get(&self, id: u64) -> Result<Option<ReadDigest>> {
+    pub(crate) async fn get(&mut self, id: u64) -> Result<Option<ReadDigest>> {
         match self {
             Self::Surreal(db) => {
                 let mut response = db
@@ -168,7 +168,7 @@ impl Engine {
         }
     }
 
-    pub(crate) async fn indexed_read(&self, group: u32) -> Result<IndexedRead> {
+    pub(crate) async fn indexed_read(&mut self, group: u32) -> Result<IndexedRead> {
         match self {
             Self::Surreal(db) => {
                 let mut resp = db
@@ -220,7 +220,7 @@ impl Engine {
         }
     }
 
-    pub(crate) async fn upsert_one(&self, id: u64, data: &RecordData) -> Result<()> {
+    pub(crate) async fn upsert_one(&mut self, id: u64, data: &RecordData) -> Result<()> {
         match self {
             Self::Surreal(db) => {
                 db.query("UPSERT $id CONTENT $data RETURN NONE")
@@ -248,7 +248,7 @@ impl Engine {
     }
 
     pub(crate) async fn write_batch(
-        &self,
+        &mut self,
         rows: &[(u64, RecordData)],
         deletes: &[u64],
     ) -> Result<()> {
@@ -337,7 +337,7 @@ impl Engine {
         Ok(())
     }
 
-    pub(crate) async fn upsert_batch(&self, rows: &[(u64, RecordData)]) -> Result<()> {
+    pub(crate) async fn upsert_batch(&mut self, rows: &[(u64, RecordData)]) -> Result<()> {
         self.write_batch(rows, &[]).await
     }
 }

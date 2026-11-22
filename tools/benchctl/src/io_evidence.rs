@@ -151,10 +151,106 @@ fn checked_delta(after: i64, before: i64, label: &str) -> Result<i64> {
     Ok(delta)
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
-)]
+#[derive(Default)]
+struct BlockCounters {
+    read_ios: i64,
+    write_ios: i64,
+    read_bytes: i64,
+    write_bytes: i64,
+    discard_bytes: i64,
+    flushes: i64,
+    io_ms: i64,
+    weighted_io_ms: i64,
+}
+
+fn block_counters(
+    before_names: &[String],
+    before_devices: &BTreeMap<String, &Value>,
+    after_devices: &BTreeMap<String, &Value>,
+) -> Result<BlockCounters> {
+    let mut totals = BlockCounters::default();
+    for name in before_names {
+        let before_stat = stat_values(
+            before_devices
+                .get(name)
+                .copied()
+                .with_context(|| format!("missing before device {name}"))?,
+        )?;
+        let after_stat = stat_values(
+            after_devices
+                .get(name)
+                .copied()
+                .with_context(|| format!("missing after device {name}"))?,
+        )?;
+        if before_stat.len() < 11 || after_stat.len() < 11 {
+            bail!("short block stat for {name}");
+        }
+        let deltas = before_stat
+            .iter()
+            .zip(&after_stat)
+            .map(|(before, after)| after - before)
+            .collect::<Vec<_>>();
+        let mut monotonic_indexes = vec![0_usize, 2, 4, 6, 9, 10];
+        if deltas.len() >= 14 {
+            monotonic_indexes.push(13);
+        }
+        if deltas.len() >= 16 {
+            monotonic_indexes.push(15);
+        }
+        if monotonic_indexes
+            .into_iter()
+            .any(|index| deltas.get(index).is_some_and(|delta| *delta < 0))
+        {
+            bail!("block counters moved backwards for {name}");
+        }
+
+        totals.read_ios += deltas[0];
+        totals.read_bytes += deltas[2] * 512;
+        totals.write_ios += deltas[4];
+        totals.write_bytes += deltas[6] * 512;
+        totals.io_ms += deltas[9];
+        totals.weighted_io_ms += deltas[10];
+        if deltas.len() >= 14 {
+            totals.discard_bytes += deltas[13] * 512;
+        }
+        if deltas.len() >= 16 {
+            totals.flushes += deltas[15];
+        }
+    }
+
+    Ok(totals)
+}
+
+fn zfs_pool_deltas(before: &Value, after: &Value) -> Result<BTreeMap<&'static str, Option<i64>>> {
+    let pools = object(before, "zfs_pool_io").zip(object(after, "zfs_pool_io"));
+    [
+        ("arc_read_count", "zfs_pool_arc_read_ios"),
+        ("arc_read_bytes", "zfs_pool_arc_read_bytes"),
+        ("arc_write_count", "zfs_pool_arc_write_ios"),
+        ("arc_write_bytes", "zfs_pool_arc_write_bytes"),
+        ("direct_read_count", "zfs_direct_read_ios"),
+        ("direct_read_bytes", "zfs_direct_read_bytes"),
+        ("direct_write_count", "zfs_direct_write_ios"),
+        ("direct_write_bytes", "zfs_direct_write_bytes"),
+    ]
+    .into_iter()
+    .map(|(source, output)| {
+        let delta = pools
+            .map(|(before_pool, after_pool)| {
+                let before_counter = value_as_i64(before_pool.get(source), 0)?;
+                let after_counter = value_as_i64(after_pool.get(source), 0)?;
+                checked_delta(
+                    after_counter,
+                    before_counter,
+                    &format!("ZFS pool counter {source}"),
+                )
+            })
+            .transpose()?;
+        Ok((output, delta))
+    })
+    .collect()
+}
+
 pub fn load_storage_delta(path: &Path) -> Result<Value> {
     let raw: Value = serde_json::from_str(
         &fs::read_to_string(path)
@@ -191,99 +287,11 @@ pub fn load_storage_delta(path: &Path) -> Result<Value> {
         / 1e9)
         .max(0.0);
 
-    let mut storage_read_ios = 0_i64;
-    let mut storage_write_ios = 0_i64;
-    let mut storage_read_bytes = 0_i64;
-    let mut storage_write_bytes = 0_i64;
-    let mut storage_discard_bytes = 0_i64;
-    let mut storage_flushes = 0_i64;
-    let mut storage_io_ms = 0_i64;
-    let mut storage_weighted_io_ms = 0_i64;
-
-    for name in &before_names {
-        let before_stat = stat_values(
-            before_devices
-                .get(name)
-                .copied()
-                .with_context(|| format!("missing before device {name}"))?,
-        )?;
-        let after_stat = stat_values(
-            after_devices
-                .get(name)
-                .copied()
-                .with_context(|| format!("missing after device {name}"))?,
-        )?;
-        if before_stat.len() < 11 || after_stat.len() < 11 {
-            bail!("short block stat for {name}");
-        }
-        let deltas = before_stat
-            .iter()
-            .zip(&after_stat)
-            .map(|(before, after)| after - before)
-            .collect::<Vec<_>>();
-        let mut monotonic_indexes = vec![0_usize, 2, 4, 6, 9, 10];
-        if deltas.len() >= 14 {
-            monotonic_indexes.push(13);
-        }
-        if deltas.len() >= 16 {
-            monotonic_indexes.push(15);
-        }
-        if monotonic_indexes
-            .into_iter()
-            .any(|index| deltas.get(index).is_some_and(|delta| *delta < 0))
-        {
-            bail!("block counters moved backwards for {name}");
-        }
-
-        storage_read_ios += deltas[0];
-        storage_read_bytes += deltas[2] * 512;
-        storage_write_ios += deltas[4];
-        storage_write_bytes += deltas[6] * 512;
-        storage_io_ms += deltas[9];
-        storage_weighted_io_ms += deltas[10];
-        if deltas.len() >= 14 {
-            storage_discard_bytes += deltas[13] * 512;
-        }
-        if deltas.len() >= 16 {
-            storage_flushes += deltas[15];
-        }
-    }
+    let block = block_counters(&before_names, &before_devices, &after_devices)?;
 
     let mut zfs_arc_hits = None;
     let mut zfs_arc_misses = None;
-    let mut zfs_pool_arc_read_ios = None;
-    let mut zfs_pool_arc_read_bytes = None;
-    let mut zfs_pool_arc_write_ios = None;
-    let mut zfs_pool_arc_write_bytes = None;
-    let mut zfs_direct_read_ios = None;
-    let mut zfs_direct_read_bytes = None;
-    let mut zfs_direct_write_ios = None;
-    let mut zfs_direct_write_bytes = None;
-
-    if let (Some(before_pool), Some(after_pool)) = (
-        object(&before_value, "zfs_pool_io"),
-        object(&after_value, "zfs_pool_io"),
-    ) {
-        let fields = [
-            ("arc_read_count", &mut zfs_pool_arc_read_ios),
-            ("arc_read_bytes", &mut zfs_pool_arc_read_bytes),
-            ("arc_write_count", &mut zfs_pool_arc_write_ios),
-            ("arc_write_bytes", &mut zfs_pool_arc_write_bytes),
-            ("direct_read_count", &mut zfs_direct_read_ios),
-            ("direct_read_bytes", &mut zfs_direct_read_bytes),
-            ("direct_write_count", &mut zfs_direct_write_ios),
-            ("direct_write_bytes", &mut zfs_direct_write_bytes),
-        ];
-        for (source_name, slot) in fields {
-            let before_counter = value_as_i64(before_pool.get(source_name), 0)?;
-            let after_counter = value_as_i64(after_pool.get(source_name), 0)?;
-            *slot = Some(checked_delta(
-                after_counter,
-                before_counter,
-                &format!("ZFS pool counter {source_name}"),
-            )?);
-        }
-    }
+    let pool = zfs_pool_deltas(&before_value, &after_value)?;
 
     if let (Some(before_arc), Some(after_arc)) = (
         object(&before_value, "zfs_arc"),
@@ -310,27 +318,27 @@ pub fn load_storage_delta(path: &Path) -> Result<Value> {
 
     Ok(json!({
         "storage_accounting_s": accounting_s,
-        "storage_read_ios": storage_read_ios,
-        "storage_write_ios": storage_write_ios,
-        "storage_read_bytes": storage_read_bytes,
-        "storage_write_bytes": storage_write_bytes,
-        "storage_discard_bytes": storage_discard_bytes,
-        "storage_flushes": storage_flushes,
-        "storage_io_ms": storage_io_ms,
-        "storage_weighted_io_ms": storage_weighted_io_ms,
+        "storage_read_ios": block.read_ios,
+        "storage_write_ios": block.write_ios,
+        "storage_read_bytes": block.read_bytes,
+        "storage_write_bytes": block.write_bytes,
+        "storage_discard_bytes": block.discard_bytes,
+        "storage_flushes": block.flushes,
+        "storage_io_ms": block.io_ms,
+        "storage_weighted_io_ms": block.weighted_io_ms,
         "storage_devices": before_names,
         "zfs_arc_hits": zfs_arc_hits,
         "zfs_arc_misses": zfs_arc_misses,
-        "zfs_pool_arc_read_ios": zfs_pool_arc_read_ios,
-        "zfs_pool_arc_read_bytes": zfs_pool_arc_read_bytes,
-        "zfs_pool_arc_write_ios": zfs_pool_arc_write_ios,
-        "zfs_pool_arc_write_bytes": zfs_pool_arc_write_bytes,
-        "zfs_direct_read_ios": zfs_direct_read_ios,
-        "zfs_direct_read_bytes": zfs_direct_read_bytes,
-        "zfs_direct_write_ios": zfs_direct_write_ios,
-        "zfs_direct_write_bytes": zfs_direct_write_bytes,
-        "storage_read_mbps": int_as_f64!(storage_read_bytes) / elapsed / 1_000_000.0,
-        "storage_write_mbps": int_as_f64!(storage_write_bytes) / elapsed / 1_000_000.0,
+        "zfs_pool_arc_read_ios": pool.get("zfs_pool_arc_read_ios").copied().flatten(),
+        "zfs_pool_arc_read_bytes": pool.get("zfs_pool_arc_read_bytes").copied().flatten(),
+        "zfs_pool_arc_write_ios": pool.get("zfs_pool_arc_write_ios").copied().flatten(),
+        "zfs_pool_arc_write_bytes": pool.get("zfs_pool_arc_write_bytes").copied().flatten(),
+        "zfs_direct_read_ios": pool.get("zfs_direct_read_ios").copied().flatten(),
+        "zfs_direct_read_bytes": pool.get("zfs_direct_read_bytes").copied().flatten(),
+        "zfs_direct_write_ios": pool.get("zfs_direct_write_ios").copied().flatten(),
+        "zfs_direct_write_bytes": pool.get("zfs_direct_write_bytes").copied().flatten(),
+        "storage_read_mbps": int_as_f64!(block.read_bytes) / elapsed / 1_000_000.0,
+        "storage_write_mbps": int_as_f64!(block.write_bytes) / elapsed / 1_000_000.0,
         "zfs_arc_hit_fraction": arc_hit_fraction,
     }))
 }

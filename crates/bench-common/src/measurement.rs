@@ -1,4 +1,5 @@
 use crate::metrics::{ProcDelta, ProcSnapshot, SystemDelta, SystemSnapshot};
+use anyhow::{Result, bail};
 use hdrhistogram::{Histogram, errors::CreationError};
 use serde::Serialize;
 use std::{
@@ -7,6 +8,99 @@ use std::{
     path::Path,
     time::{Duration, Instant},
 };
+
+/// Timing of the database preparation phases shared by the benchmark lanes.
+#[derive(Debug, Serialize)]
+pub struct SetupTimings {
+    #[serde(rename = "open_s")]
+    pub open: f64,
+    #[serde(rename = "prefill_s")]
+    pub prefill: f64,
+    #[serde(rename = "warmup_s")]
+    pub warmup: f64,
+}
+
+/// Start/finish boundary for a measured single-client workload or database open.
+pub struct MeasurementInterval {
+    system_before: SystemSnapshot,
+    process_before: ProcSnapshot,
+    started: Instant,
+}
+
+#[derive(Debug)]
+pub struct MeasuredInterval {
+    pub elapsed: Duration,
+    pub process: ProcDelta,
+    pub system_before: SystemSnapshot,
+    pub system_after: SystemSnapshot,
+    pub system_delta: SystemDelta,
+}
+
+impl MeasurementInterval {
+    #[must_use]
+    pub fn start() -> Self {
+        let system_before = SystemSnapshot::capture();
+        let process_before = ProcSnapshot::capture();
+        let started = Instant::now();
+        Self {
+            system_before,
+            process_before,
+            started,
+        }
+    }
+
+    #[must_use]
+    pub fn finish(self) -> MeasuredInterval {
+        let elapsed = self.started.elapsed();
+        let process_after = ProcSnapshot::capture();
+        let system_after = SystemSnapshot::capture();
+        MeasuredInterval {
+            elapsed,
+            process: self.process_before.delta(&process_after, elapsed),
+            system_delta: self.system_before.delta(&system_after),
+            system_before: self.system_before,
+            system_after,
+        }
+    }
+}
+
+/// Flat fixed-work measurement fields shared by single-client lanes.
+#[derive(Debug, Serialize)]
+pub struct WorkMeasurement {
+    ops_requested: u64,
+    ops_completed: u64,
+    elapsed_s: f64,
+    ops_per_s: f64,
+    measured_process: ProcDelta,
+    system_before: SystemSnapshot,
+    system_after: SystemSnapshot,
+    measured_system_delta: SystemDelta,
+}
+
+impl MeasuredInterval {
+    /// Validate the actual operation count before publishing a measurement.
+    ///
+    /// # Errors
+    /// Rejects empty, incomplete, or zero-duration work.
+    pub fn fixed_work(self, requested: u64, completed: u64) -> Result<WorkMeasurement> {
+        if requested == 0 || requested != completed || self.elapsed.is_zero() {
+            bail!(
+                "invalid fixed-work measurement: requested={requested}, completed={completed}, elapsed={:?}",
+                self.elapsed
+            );
+        }
+        Ok(WorkMeasurement {
+            ops_requested: requested,
+            ops_completed: completed,
+            elapsed_s: self.elapsed.as_secs_f64(),
+            ops_per_s: count_as_f64(completed) / self.elapsed.as_secs_f64(),
+            measured_process: self.process,
+            system_before: self.system_before,
+            system_after: self.system_after,
+            measured_system_delta: self.system_delta,
+        })
+    }
+}
 
 const HIST_MAX_NS: u64 = 60_000_000_000;
 
@@ -187,4 +281,35 @@ where
         system: total_sys_before.delta(&total_sys_after),
         samples,
     })
+}
+
+#[cfg(test)]
+mod interval_tests {
+    use super::{MeasuredInterval, MeasurementInterval};
+    use anyhow::Result;
+    use std::time::Duration;
+
+    #[test]
+    fn fixed_work_is_complete_and_serializes_existing_field_names() -> Result<()> {
+        let interval = || MeasuredInterval {
+            elapsed: Duration::from_secs(2),
+            process: crate::metrics::ProcDelta::default(),
+            system_before: crate::metrics::SystemSnapshot::default(),
+            system_after: crate::metrics::SystemSnapshot::default(),
+            system_delta: crate::metrics::SystemDelta::default(),
+        };
+        assert!(interval().fixed_work(7, 6).is_err());
+        assert!(interval().fixed_work(0, 0).is_err());
+        let work = serde_json::to_value(interval().fixed_work(8, 8)?)?;
+        assert_eq!(work["ops_requested"], 8);
+        assert_eq!(work["ops_completed"], 8);
+        assert_eq!(work["elapsed_s"], 2.0);
+        assert_eq!(work["ops_per_s"], 4.0);
+        assert!(work["measured_process"].is_object());
+        assert!(work["system_before"].is_object());
+        assert!(work["system_after"].is_object());
+        assert!(work["measured_system_delta"].is_object());
+        let _captured = MeasurementInterval::start().finish();
+        Ok(())
+    }
 }

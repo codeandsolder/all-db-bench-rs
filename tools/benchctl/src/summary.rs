@@ -4,27 +4,129 @@ mod render;
 
 use aggregate::summarize_rows;
 use anyhow::{Context, Result, bail};
+use model::SummaryGroup;
 use render::markdown;
+use serde::Serialize;
 use serde_json::{Value, json};
 use std::{fs, path::Path};
 
-fn read_rows(input: &Path) -> Result<Vec<Value>> {
-    let content =
-        fs::read_to_string(input).with_context(|| format!("failed to read {}", input.display()))?;
-    let mut rows = Vec::new();
-    for (index, line) in content.lines().enumerate() {
-        if line.trim().is_empty() {
-            continue;
+pub fn verify_result_evidence(
+    rows: &[Value],
+    summary: &Value,
+    lane: &str,
+    expected_rows: usize,
+    expected_trials: usize,
+) -> Result<()> {
+    if expected_rows == 0
+        || expected_trials == 0
+        || rows.len() != expected_rows
+        || rows
+            .iter()
+            .any(|row| row.get("lane").and_then(Value::as_str) != Some(lane))
+    {
+        bail!("result count or lane mismatch");
+    }
+    let (groups, problems) = summarize_rows(rows, Some(expected_trials))?;
+    if !problems.is_empty() || groups.len().checked_mul(expected_trials) != Some(expected_rows) {
+        bail!("incomplete measurement groups: {problems:?}");
+    }
+    let recorded = summary
+        .get("groups")
+        .and_then(Value::as_array)
+        .context("missing summary groups")?;
+    if summary.get("row_count").and_then(Value::as_u64) != Some(u64::try_from(expected_rows)?)
+        || summary.get("group_count").and_then(Value::as_u64) != Some(u64::try_from(groups.len())?)
+        || recorded.len() != groups.len()
+        || summary
+            .get("problems")
+            .and_then(Value::as_array)
+            .is_none_or(|items| !items.is_empty())
+    {
+        bail!("summary count or problems mismatch");
+    }
+    for (group, record) in groups.iter().zip(recorded) {
+        let identity = serde_json::to_value(&group.key)?;
+        let fields = identity
+            .as_object()
+            .context("group key must be an object")?;
+        if fields
+            .iter()
+            .any(|(key, value)| record.get(key) != Some(value))
+            || record.get("trials") != Some(&json!(group.trials))
+        {
+            bail!("summary group identity or trials mismatch");
         }
-        rows.push(
-            serde_json::from_str(line)
-                .with_context(|| format!("invalid JSON at {}:{}", input.display(), index + 1))?,
-        );
     }
-    if rows.is_empty() {
-        bail!("no measurements");
+    Ok(())
+}
+
+#[derive(Serialize)]
+pub struct SummaryReport {
+    source: String,
+    row_count: usize,
+    group_count: usize,
+    problems: Vec<String>,
+    groups: Vec<SummaryGroup>,
+}
+
+impl SummaryReport {
+    pub fn from_rows(input: &Path, rows: &[Value], expect_trials: Option<usize>) -> Result<Self> {
+        if rows.is_empty() {
+            bail!("no measurements");
+        }
+        let (groups, problems) = summarize_rows(rows, expect_trials)?;
+        Ok(Self {
+            source: input.to_string_lossy().into_owned(),
+            row_count: rows.len(),
+            group_count: groups.len(),
+            problems,
+            groups,
+        })
     }
-    Ok(rows)
+
+    pub fn validate_corpus(
+        &self,
+        lane: &str,
+        expected_rows: usize,
+        expected_groups: usize,
+    ) -> Result<()> {
+        if self.row_count != expected_rows
+            || self.group_count != expected_groups
+            || self.groups.iter().any(|group| group.key.lane != lane)
+        {
+            bail!(
+                "summary corpus mismatch for {lane}: {} rows, {} groups; expected {expected_rows} rows, {expected_groups} groups",
+                self.row_count,
+                self.group_count
+            );
+        }
+        self.check_completeness()
+    }
+
+    fn check_completeness(&self) -> Result<()> {
+        if !self.problems.is_empty() {
+            bail!(
+                "summary has {} completeness problem(s)",
+                self.problems.len()
+            );
+        }
+        Ok(())
+    }
+
+    pub fn write(&self, json_out: Option<&Path>, markdown_out: Option<&Path>) -> Result<()> {
+        let text = markdown(&self.groups, &self.problems);
+        if let Some(path) = markdown_out {
+            fs::write(path, format!("{text}\n"))
+                .with_context(|| format!("failed to write {}", path.display()))?;
+        } else {
+            println!("{text}");
+        }
+        if let Some(path) = json_out {
+            fs::write(path, serde_json::to_string_pretty(self)? + "\n")
+                .with_context(|| format!("failed to write {}", path.display()))?;
+        }
+        Ok(())
+    }
 }
 
 pub fn summarize_file(
@@ -33,32 +135,11 @@ pub fn summarize_file(
     markdown_out: Option<&Path>,
     expect_trials: Option<usize>,
 ) -> Result<()> {
-    let rows = read_rows(input)?;
-    let (summary, problems) = summarize_rows(&rows, expect_trials)?;
-    let text = markdown(&summary, &problems);
-    if let Some(path) = markdown_out {
-        fs::write(path, format!("{text}\n"))
-            .with_context(|| format!("failed to write {}", path.display()))?;
-    } else {
-        println!("{text}");
-    }
-    if let Some(path) = json_out {
-        let payload = json!({
-            "source": input.to_string_lossy(),
-            "row_count": rows.len(),
-            "group_count": summary.len(),
-            "problems": problems,
-            "groups": summary,
-        });
-        fs::write(path, serde_json::to_string_pretty(&payload)? + "\n")
-            .with_context(|| format!("failed to write {}", path.display()))?;
-    }
-    if !problems.is_empty() {
-        bail!("summary has {} completeness problem(s)", problems.len());
-    }
-    Ok(())
+    let rows = crate::json_io::read_ndjson(input)?;
+    let report = SummaryReport::from_rows(input, &rows, expect_trials)?;
+    report.write(json_out, markdown_out)?;
+    report.check_completeness()
 }
-
 #[cfg(test)]
 mod tests {
     use super::{aggregate::summarize_rows, model::group_key};
@@ -203,11 +284,11 @@ mod tests {
         assert_eq!(problems, [] as [std::string::String; 0]);
         let growth = groups
             .iter()
-            .find(|group| group.clients == 8 && group.state_evolution == "growth")
+            .find(|group| group.key.clients == 8 && group.key.state_evolution == "growth")
             .context("growth c8")?;
         let bounded = groups
             .iter()
-            .find(|group| group.clients == 8 && group.state_evolution == "bounded")
+            .find(|group| group.key.clients == 8 && group.key.state_evolution == "bounded")
             .context("bounded c8")?;
         assert_eq!(growth.speedup_vs_c1, Some(4.0));
         assert_eq!(growth.parallel_efficiency_vs_c1, Some(0.5));
@@ -227,7 +308,7 @@ mod tests {
         let (groups, _) = summarize_rows(&[kv, record, record_c8], Some(1))?;
         let c8 = groups
             .iter()
-            .find(|group| group.lane == "record-concurrency" && group.clients == 8)
+            .find(|group| group.key.lane == "record-concurrency" && group.key.clients == 8)
             .context("record c8")?;
         assert_eq!(c8.speedup_vs_c1, Some(2.0));
         Ok(())
@@ -248,9 +329,63 @@ mod tests {
         assert_eq!(problems, [] as [std::string::String; 0]);
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].open_s_median, Some(0.25));
-        assert_eq!(groups[0].settle_cpu_ns_median, Some(100.0));
-        assert_eq!(groups[0].settle_write_bytes_median, Some(200.0));
-        assert_eq!(groups[0].settle_db_delta_bytes_median, Some(100.0));
+        assert_eq!(groups[0].settle.cpu_ns, Some(100.0));
+        assert_eq!(groups[0].settle.write_bytes, Some(200.0));
+        assert_eq!(groups[0].settle.db_delta_bytes, Some(100.0));
+        Ok(())
+    }
+
+    #[test]
+    fn flat_summary_retains_all_identity_dimensions_and_resource_keys() -> Result<()> {
+        let mut row = kv_row(8, "bounded", 8192, 1, 100.0);
+        row["measured_process"] = json!({"cpu_runtime_ns": 100_000, "read_bytes": 50_000});
+        row["measured_system_delta"] =
+            json!({"accounting_wall_ns": 1_000_000, "psi_cpu_some_us": 250});
+        let key = group_key(&row)?;
+        let (groups, _) = summarize_rows(&[row], Some(1))?;
+        let encoded = serde_json::to_value(&groups[0])?;
+        let mut identity = serde_json::to_value(&key)?;
+        for (field, value) in identity.as_object().context("identity object")? {
+            assert_eq!(&encoded[field], value, "{field}");
+        }
+        identity["clients"] = json!(1);
+        assert_eq!(serde_json::to_value(key.single_client())?, identity);
+        assert_eq!(encoded["ops_per_s_median"], 100.0);
+        assert_eq!(encoded["cpu_ns_per_op_median"], 2.0);
+        assert_eq!(encoded["read_bytes_per_op_median"], 1.0);
+        assert_eq!(encoded["cpu_psi_some_fraction_median"], 0.25);
+        assert!(encoded["settle_cpu_ns_median"].is_null());
+        assert!(encoded.get("key").is_none());
+        assert!(encoded.get("process").is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_duplicate_partial_and_invalid_timing() {
+        let row = kv_row(1, "growth", 0, 1, 100.0);
+        assert!(summarize_rows(&[row.clone(), row.clone()], Some(2)).is_err());
+        for (key, value) in [
+            ("ops_completed", json!(1)),
+            ("trial", json!(0)),
+            ("elapsed_s", json!(0)),
+            ("ops_per_s", json!(-1)),
+        ] {
+            let mut bad = row.clone();
+            bad[key] = value;
+            assert!(summarize_rows(&[bad], Some(1)).is_err(), "{key}");
+        }
+    }
+
+    #[test]
+    fn wrong_trial_sequence_is_reported_even_with_correct_count() -> Result<()> {
+        let (_, problems) = summarize_rows(
+            &[
+                kv_row(1, "growth", 0, 2, 100.0),
+                kv_row(1, "growth", 0, 3, 100.0),
+            ],
+            Some(2),
+        )?;
+        assert_eq!(problems.len(), 1);
         Ok(())
     }
 

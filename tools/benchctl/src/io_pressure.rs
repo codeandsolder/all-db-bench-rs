@@ -106,10 +106,72 @@ pub struct PressureCalibration {
     pub(crate) write_fraction: f64,
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
-)]
+#[derive(Default)]
+struct PressureSample {
+    read_iops: f64,
+    write_iops: f64,
+    bw_bytes: f64,
+    read_bytes: f64,
+    write_bytes: f64,
+    read_p99_us: Option<f64>,
+    write_p99_us: Option<f64>,
+    fio_error: i64,
+}
+
+fn pressure_sample(pressure: &Value, pct: i64, expected_bs: i64) -> Result<PressureSample> {
+    if pct <= 0 {
+        return Ok(PressureSample::default());
+    }
+    let jobs = pressure
+        .get("jobs")
+        .and_then(Value::as_array)
+        .map_or(&[][..], Vec::as_slice);
+    if jobs.len() != 2 {
+        bail!(
+            "nonzero pressure case has {} fio jobs, expected 2",
+            jobs.len()
+        );
+    }
+    let read_jobs = jobs
+        .iter()
+        .filter(|job| fio_job_rw(job) == Some("randread"))
+        .collect::<Vec<_>>();
+    let write_jobs = jobs
+        .iter()
+        .filter(|job| fio_job_rw(job) == Some("randwrite"))
+        .collect::<Vec<_>>();
+    if read_jobs.len() != 1 || write_jobs.len() != 1 {
+        bail!("pressure sidecar must contain exactly one randread and one randwrite job");
+    }
+    let read_job = read_jobs[0];
+    let write_job = write_jobs[0];
+    for (job, rw) in [(read_job, "randread"), (write_job, "randwrite")] {
+        validate_fio_job(
+            job,
+            FioExpectation {
+                rw: Some(rw),
+                rwmixread: None,
+                bs_bytes: Some(expected_bs),
+                blockalign_bytes: Some(expected_bs),
+                ioengine: Some("psync"),
+                direct: Some(1),
+            },
+        )?;
+    }
+    let read = &read_job["read"];
+    let write = &write_job["write"];
+    Ok(PressureSample {
+        fio_error: as_i64(read_job.get("error"), 0).max(as_i64(write_job.get("error"), 0)),
+        read_iops: as_f64(read.get("iops"), 0.0),
+        write_iops: as_f64(write.get("iops"), 0.0),
+        bw_bytes: as_f64(read.get("bw_bytes"), 0.0) + as_f64(write.get("bw_bytes"), 0.0),
+        read_bytes: as_f64(read.get("io_bytes"), 0.0),
+        write_bytes: as_f64(write.get("io_bytes"), 0.0),
+        read_p99_us: fio_p99_us(read),
+        write_p99_us: fio_p99_us(write),
+    })
+}
+
 pub fn load_case(
     case_path: &Path,
     pressure_path: &Path,
@@ -152,73 +214,7 @@ pub fn load_case(
     let target_iops = as_f64(pressure.get("target_iops"), 0.0);
     let target_read_iops = as_f64(pressure.get("target_read_iops"), 0.0);
     let target_write_iops = as_f64(pressure.get("target_write_iops"), 0.0);
-    let mut pressure_read_iops = 0.0;
-    let mut pressure_write_iops = 0.0;
-    let mut pressure_bw_bytes = 0.0;
-    let mut pressure_read_bytes = 0.0;
-    let mut pressure_write_bytes = 0.0;
-    let mut pressure_read_p99_us = None;
-    let mut pressure_write_p99_us = None;
-    let mut fio_error = 0_i64;
-    let jobs = pressure
-        .get("jobs")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-
-    if pct > 0 {
-        if jobs.len() != 2 {
-            bail!(
-                "nonzero pressure case has {} fio jobs, expected 2",
-                jobs.len()
-            );
-        }
-        let read_jobs = jobs
-            .iter()
-            .filter(|job| fio_job_rw(job) == Some("randread"))
-            .collect::<Vec<_>>();
-        let write_jobs = jobs
-            .iter()
-            .filter(|job| fio_job_rw(job) == Some("randwrite"))
-            .collect::<Vec<_>>();
-        if read_jobs.len() != 1 || write_jobs.len() != 1 {
-            bail!("pressure sidecar must contain exactly one randread and one randwrite job");
-        }
-        let read_job = read_jobs[0];
-        let write_job = write_jobs[0];
-        validate_fio_job(
-            read_job,
-            FioExpectation {
-                rw: Some("randread"),
-                rwmixread: None,
-                bs_bytes: Some(expected_bs),
-                blockalign_bytes: Some(expected_bs),
-                ioengine: Some("psync"),
-                direct: Some(1),
-            },
-        )?;
-        validate_fio_job(
-            write_job,
-            FioExpectation {
-                rw: Some("randwrite"),
-                rwmixread: None,
-                bs_bytes: Some(expected_bs),
-                blockalign_bytes: Some(expected_bs),
-                ioengine: Some("psync"),
-                direct: Some(1),
-            },
-        )?;
-        fio_error = as_i64(read_job.get("error"), 0).max(as_i64(write_job.get("error"), 0));
-        let read = read_job.get("read").cloned().unwrap_or_else(|| json!({}));
-        let write = write_job.get("write").cloned().unwrap_or_else(|| json!({}));
-        pressure_read_iops = as_f64(read.get("iops"), 0.0);
-        pressure_write_iops = as_f64(write.get("iops"), 0.0);
-        pressure_bw_bytes = as_f64(read.get("bw_bytes"), 0.0) + as_f64(write.get("bw_bytes"), 0.0);
-        pressure_read_bytes = as_f64(read.get("io_bytes"), 0.0);
-        pressure_write_bytes = as_f64(write.get("io_bytes"), 0.0);
-        pressure_read_p99_us = fio_p99_us(&read);
-        pressure_write_p99_us = fio_p99_us(&write);
-    }
+    let sample = pressure_sample(&pressure, pct, expected_bs)?;
 
     if pct == 0 && (target_iops != 0.0 || target_read_iops != 0.0 || target_write_iops != 0.0) {
         bail!("zero-pressure case has nonzero target IOPS");
@@ -230,7 +226,7 @@ pub fn load_case(
         bail!("pressure target_iops does not equal directional target sum");
     }
 
-    let delivered_iops = pressure_read_iops + pressure_write_iops;
+    let delivered_iops = sample.read_iops + sample.write_iops;
     let ops_completed = as_i64(db.get("ops_completed"), 0).max(1);
     let proc = db
         .get("measured_process")
@@ -260,18 +256,18 @@ pub fn load_case(
         "pressure_target_read_iops": target_read_iops,
         "pressure_target_write_iops": target_write_iops,
         "pressure_delivered_iops": delivered_iops,
-        "pressure_delivered_read_iops": pressure_read_iops,
-        "pressure_delivered_write_iops": pressure_write_iops,
+        "pressure_delivered_read_iops": sample.read_iops,
+        "pressure_delivered_write_iops": sample.write_iops,
         "pressure_delivered_vs_target": if pct > 0 { ratio(Some(delivered_iops), Some(target_iops)) } else { None },
-        "pressure_delivered_read_vs_target": if pct > 0 { ratio(Some(pressure_read_iops), Some(target_read_iops)) } else { None },
-        "pressure_delivered_write_vs_target": if pct > 0 { ratio(Some(pressure_write_iops), Some(target_write_iops)) } else { None },
+        "pressure_delivered_read_vs_target": if pct > 0 { ratio(Some(sample.read_iops), Some(target_read_iops)) } else { None },
+        "pressure_delivered_write_vs_target": if pct > 0 { ratio(Some(sample.write_iops), Some(target_write_iops)) } else { None },
         "pressure_delivered_vs_baseline": if pct > 0 { ratio(Some(delivered_iops), Some(baseline_iops)) } else { Some(0.0) },
-        "pressure_delivered_bw_mbps": pressure_bw_bytes / 1_000_000.0,
-        "pressure_read_bytes": pressure_read_bytes,
-        "pressure_write_bytes": pressure_write_bytes,
-        "pressure_read_p99_us": pressure_read_p99_us,
-        "pressure_write_p99_us": pressure_write_p99_us,
-        "pressure_fio_error": fio_error,
+        "pressure_delivered_bw_mbps": sample.bw_bytes / 1_000_000.0,
+        "pressure_read_bytes": sample.read_bytes,
+        "pressure_write_bytes": sample.write_bytes,
+        "pressure_read_p99_us": sample.read_p99_us,
+        "pressure_write_p99_us": sample.write_p99_us,
+        "pressure_fio_error": sample.fio_error,
         "db_ops_per_s": as_f64(db.get("ops_per_s"), 0.0),
         "db_read_p99_us": as_f64(db.get("read_latency").and_then(|value| value.get("p99_us")), 0.0),
         "db_write_p99_us": as_f64(db.get("write_txn_latency").and_then(|value| value.get("p99_us")), 0.0),
@@ -567,25 +563,135 @@ fn merge_object(target: &mut Value, source: &Value) {
     }
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
-)]
-pub fn run(args: IoPressureArgs<'_>) -> Result<i32> {
-    let run_dir = args.run_dir;
-    let support = read_json(&run_dir.join("support.json"))?;
-    let protocol = as_i64(support.get("calibration_protocol_version"), 0);
-    if protocol != 4 {
-        bail!("unsupported I/O calibration protocol {protocol}; expected 4");
+fn merge_pressure_storage(case: &mut Value, path: Option<&Path>) -> Result<()> {
+    let pressure_percent = as_i64(case.get("pressure_percent"), 0);
+    if pressure_percent > 0 {
+        let pressure_storage_path = path.context("missing pressure-lifetime storage sidecar")?;
+        let pressure_storage = load_storage_delta(pressure_storage_path)?;
+        let direct_read = pressure_storage
+            .get("zfs_direct_read_bytes")
+            .and_then(Value::as_f64);
+        let direct_write = pressure_storage
+            .get("zfs_direct_write_bytes")
+            .and_then(Value::as_f64);
+        let read_ratio = ratio(
+            direct_read,
+            case.get("pressure_read_bytes").and_then(Value::as_f64),
+        );
+        let write_ratio = ratio(
+            direct_write,
+            case.get("pressure_write_bytes").and_then(Value::as_f64),
+        );
+        if let Some(object) = case.as_object_mut() {
+            object.insert(
+                "pressure_storage_accounting_s".to_owned(),
+                pressure_storage
+                    .get("storage_accounting_s")
+                    .cloned()
+                    .unwrap_or(Value::Null),
+            );
+            for field in [
+                "zfs_direct_read_ios",
+                "zfs_direct_read_bytes",
+                "zfs_direct_write_ios",
+                "zfs_direct_write_bytes",
+            ] {
+                object.insert(
+                    format!("pressure_{field}"),
+                    pressure_storage.get(field).cloned().unwrap_or(Value::Null),
+                );
+            }
+            object.insert(
+                "zfs_direct_read_bytes_per_pressure_read_byte".to_owned(),
+                read_ratio.map_or(Value::Null, |value| json!(value)),
+            );
+            object.insert(
+                "zfs_direct_write_bytes_per_pressure_write_byte".to_owned(),
+                write_ratio.map_or(Value::Null, |value| json!(value)),
+            );
+        }
+    } else if let Some(object) = case.as_object_mut() {
+        for field in [
+            "pressure_storage_accounting_s",
+            "pressure_zfs_direct_read_ios",
+            "pressure_zfs_direct_read_bytes",
+            "pressure_zfs_direct_write_ios",
+            "pressure_zfs_direct_write_bytes",
+            "zfs_direct_read_bytes_per_pressure_read_byte",
+            "zfs_direct_write_bytes_per_pressure_write_byte",
+        ] {
+            object.insert(field.to_owned(), Value::Null);
+        }
     }
-    let baseline_iops = as_f64(support.get("baseline_iops"), 0.0);
-    let baseline_read_iops = as_f64(support.get("baseline_read_iops"), 0.0);
-    let baseline_write_iops = as_f64(support.get("baseline_write_iops"), 0.0);
-    let read_fraction = as_f64(support.get("read_fraction"), 0.0);
-    let write_fraction = as_f64(support.get("write_fraction"), 0.0);
-    let expected_bs = as_i64(support.get("pressure_bs_bytes"), 0);
-    let filesystem = support.get("filesystem").and_then(Value::as_str);
 
+    Ok(())
+}
+
+fn assess_case(
+    case: &Value,
+    stem: &str,
+    expected_bs: i64,
+    filesystem: Option<&str>,
+    problems: &mut Vec<String>,
+    warnings: &mut Vec<String>,
+) {
+    let pressure_percent = as_i64(case.get("pressure_percent"), 0);
+    if as_i64(case.get("pressure_bs_bytes"), 0) != expected_bs {
+        problems.push(format!(
+            "{stem}: pressure block size {} != run support {expected_bs}",
+            as_i64(case.get("pressure_bs_bytes"), 0)
+        ));
+    }
+    if as_i64(case.get("pressure_fio_error"), 0) != 0 {
+        problems.push(format!(
+            "{stem}: fio error={}",
+            as_i64(case.get("pressure_fio_error"), 0)
+        ));
+    }
+    if filesystem == Some("zfs") && pressure_percent > 0 {
+        let direct_read_ratio = case
+            .get("zfs_direct_read_bytes_per_pressure_read_byte")
+            .and_then(Value::as_f64);
+        let direct_write_ratio = case
+            .get("zfs_direct_write_bytes_per_pressure_write_byte")
+            .and_then(Value::as_f64);
+        if direct_read_ratio.is_none_or(|value| value < 0.80) {
+            problems.push(format!(
+                "{stem}: ZFS direct-read evidence covers only {} of fio pressure reads",
+                py_repr_option(direct_read_ratio)
+            ));
+        }
+        if direct_write_ratio.is_none_or(|value| value < 0.80) {
+            problems.push(format!(
+                "{stem}: ZFS direct-write evidence covers only {} of fio pressure writes",
+                py_repr_option(direct_write_ratio)
+            ));
+        }
+    }
+    if pressure_percent > 0
+        && let Some(delivery) = case
+            .get("pressure_delivered_vs_target")
+            .and_then(Value::as_f64)
+        && delivery < 0.80
+    {
+        warnings.push(format!(
+            "{stem}: delivered pressure was {:.1}% of target; this may be real device contention, but compare requested and delivered pressure when interpreting the DB result",
+            100.0 * delivery
+        ));
+    }
+}
+
+struct LoadedCases {
+    cases: Vec<Value>,
+    problems: Vec<String>,
+    warnings: Vec<String>,
+}
+
+fn load_cases(
+    run_dir: &Path,
+    calibration: PressureCalibration,
+    filesystem: Option<&str>,
+) -> Result<LoadedCases> {
     let mut problems = Vec::<String>::new();
     let mut warnings = Vec::<String>::new();
     let mut cases = Vec::<Value>::new();
@@ -607,18 +713,7 @@ pub fn run(args: IoPressureArgs<'_>) -> Result<i32> {
             problems.push(format!("missing storage sidecar for {stem}"));
             continue;
         };
-        let mut case = match load_case(
-            case_path,
-            pressure_path,
-            PressureCalibration {
-                baseline_iops,
-                expected_bs,
-                baseline_read_iops,
-                baseline_write_iops,
-                read_fraction,
-                write_fraction,
-            },
-        ) {
+        let mut case = match load_case(case_path, pressure_path, calibration) {
             Ok(case) => case,
             Err(error) => {
                 problems.push(format!("{stem}: {error}"));
@@ -634,118 +729,24 @@ pub fn run(args: IoPressureArgs<'_>) -> Result<i32> {
         };
         merge_object(&mut case, &storage);
 
-        let pressure_percent = as_i64(case.get("pressure_percent"), 0);
-        if pressure_percent > 0 {
-            let Some(pressure_storage_path) = pressure_storage_paths.get(stem) else {
-                problems.push(format!("{stem}: missing pressure-lifetime storage sidecar"));
-                continue;
-            };
-            let pressure_storage = match load_storage_delta(pressure_storage_path) {
-                Ok(storage) => storage,
-                Err(error) => {
-                    problems.push(format!("{stem}: {error}"));
-                    continue;
-                }
-            };
-            let direct_read = pressure_storage
-                .get("zfs_direct_read_bytes")
-                .and_then(Value::as_f64);
-            let direct_write = pressure_storage
-                .get("zfs_direct_write_bytes")
-                .and_then(Value::as_f64);
-            let read_ratio = ratio(
-                direct_read,
-                case.get("pressure_read_bytes").and_then(Value::as_f64),
-            );
-            let write_ratio = ratio(
-                direct_write,
-                case.get("pressure_write_bytes").and_then(Value::as_f64),
-            );
-            if let Some(object) = case.as_object_mut() {
-                object.insert(
-                    "pressure_storage_accounting_s".to_owned(),
-                    pressure_storage
-                        .get("storage_accounting_s")
-                        .cloned()
-                        .unwrap_or(Value::Null),
-                );
-                for field in [
-                    "zfs_direct_read_ios",
-                    "zfs_direct_read_bytes",
-                    "zfs_direct_write_ios",
-                    "zfs_direct_write_bytes",
-                ] {
-                    object.insert(
-                        format!("pressure_{field}"),
-                        pressure_storage.get(field).cloned().unwrap_or(Value::Null),
-                    );
-                }
-                object.insert(
-                    "zfs_direct_read_bytes_per_pressure_read_byte".to_owned(),
-                    read_ratio.map_or(Value::Null, |value| json!(value)),
-                );
-                object.insert(
-                    "zfs_direct_write_bytes_per_pressure_write_byte".to_owned(),
-                    write_ratio.map_or(Value::Null, |value| json!(value)),
-                );
-            }
-        } else if let Some(object) = case.as_object_mut() {
-            for field in [
-                "pressure_storage_accounting_s",
-                "pressure_zfs_direct_read_ios",
-                "pressure_zfs_direct_read_bytes",
-                "pressure_zfs_direct_write_ios",
-                "pressure_zfs_direct_write_bytes",
-                "zfs_direct_read_bytes_per_pressure_read_byte",
-                "zfs_direct_write_bytes_per_pressure_write_byte",
-            ] {
-                object.insert(field.to_owned(), Value::Null);
-            }
+        if let Err(error) = merge_pressure_storage(
+            &mut case,
+            pressure_storage_paths
+                .get(stem)
+                .map(std::path::PathBuf::as_path),
+        ) {
+            problems.push(format!("{stem}: {error}"));
+            continue;
         }
 
-        if as_i64(case.get("pressure_bs_bytes"), 0) != expected_bs {
-            problems.push(format!(
-                "{stem}: pressure block size {} != run support {expected_bs}",
-                as_i64(case.get("pressure_bs_bytes"), 0)
-            ));
-        }
-        if as_i64(case.get("pressure_fio_error"), 0) != 0 {
-            problems.push(format!(
-                "{stem}: fio error={}",
-                as_i64(case.get("pressure_fio_error"), 0)
-            ));
-        }
-        if filesystem == Some("zfs") && pressure_percent > 0 {
-            let direct_read_ratio = case
-                .get("zfs_direct_read_bytes_per_pressure_read_byte")
-                .and_then(Value::as_f64);
-            let direct_write_ratio = case
-                .get("zfs_direct_write_bytes_per_pressure_write_byte")
-                .and_then(Value::as_f64);
-            if direct_read_ratio.is_none_or(|value| value < 0.80) {
-                problems.push(format!(
-                    "{stem}: ZFS direct-read evidence covers only {} of fio pressure reads",
-                    py_repr_option(direct_read_ratio)
-                ));
-            }
-            if direct_write_ratio.is_none_or(|value| value < 0.80) {
-                problems.push(format!(
-                    "{stem}: ZFS direct-write evidence covers only {} of fio pressure writes",
-                    py_repr_option(direct_write_ratio)
-                ));
-            }
-        }
-        if pressure_percent > 0
-            && let Some(delivery) = case
-                .get("pressure_delivered_vs_target")
-                .and_then(Value::as_f64)
-            && delivery < 0.80
-        {
-            warnings.push(format!(
-                "{stem}: delivered pressure was {:.1}% of target; this may be real device contention, but compare requested and delivered pressure when interpreting the DB result",
-                100.0 * delivery
-            ));
-        }
+        assess_case(
+            &case,
+            stem,
+            calibration.expected_bs,
+            filesystem,
+            &mut problems,
+            &mut warnings,
+        );
         cases.push(case);
     }
 
@@ -768,6 +769,45 @@ pub fn run(args: IoPressureArgs<'_>) -> Result<i32> {
             }
         }
     }
+
+    Ok(LoadedCases {
+        cases,
+        problems,
+        warnings,
+    })
+}
+
+pub fn run(args: IoPressureArgs<'_>) -> Result<i32> {
+    let run_dir = args.run_dir;
+    let support = read_json(&run_dir.join("support.json"))?;
+    let protocol = as_i64(support.get("calibration_protocol_version"), 0);
+    if protocol != 4 {
+        bail!("unsupported I/O calibration protocol {protocol}; expected 4");
+    }
+    let baseline_iops = as_f64(support.get("baseline_iops"), 0.0);
+    let baseline_read_iops = as_f64(support.get("baseline_read_iops"), 0.0);
+    let baseline_write_iops = as_f64(support.get("baseline_write_iops"), 0.0);
+    let read_fraction = as_f64(support.get("read_fraction"), 0.0);
+    let write_fraction = as_f64(support.get("write_fraction"), 0.0);
+    let expected_bs = as_i64(support.get("pressure_bs_bytes"), 0);
+    let filesystem = support.get("filesystem").and_then(Value::as_str);
+
+    let LoadedCases {
+        mut cases,
+        mut problems,
+        warnings,
+    } = load_cases(
+        run_dir,
+        PressureCalibration {
+            baseline_iops,
+            expected_bs,
+            baseline_read_iops,
+            baseline_write_iops,
+            read_fraction,
+            write_fraction,
+        },
+        filesystem,
+    )?;
 
     enrich_ratios(&mut cases, &mut problems)?;
     let groups = aggregate(&cases)?;

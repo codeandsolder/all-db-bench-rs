@@ -4,65 +4,48 @@ use std::time::Duration;
 use std::{fs, path::Path};
 
 use fjall::{
-    CompressionType as FjallCompression, Database as FjallDb, Keyspace, KeyspaceCreateOptions,
-    PersistMode, config::CompressionPolicy as FjallCompressionPolicy,
+    CompressionType as FjallCompression, Database as FjallDb, KeyspaceCreateOptions,
+    config::CompressionPolicy as FjallCompressionPolicy,
 };
 use heed::{
     CommitOrAbort, Database as HeedDb, Env as HeedEnv, EnvFlags, EnvOpenOptions, types::Bytes,
 };
-use manifold::{
-    Durability as ManifoldDurability, TableDefinition as ManifoldTableDefinition,
-    column_family::{ColumnFamily as ManifoldCf, ColumnFamilyDatabase as ManifoldDb},
-};
+use manifold::column_family::ColumnFamilyDatabase as ManifoldDb;
 use parity_db::{Db as ParityDb, Options as ParityOptions};
-use redb::{Database as RedbDb, Durability as RedbDurability, ReadableDatabase, TableDefinition};
+use redb::Database as RedbDb;
 use surrealkv::{
-    CompressionType as SurrealCompression, Durability as SurrealDurability, LSMIterator,
-    Mode as SurrealMode, Options as SurrealOptions, Tree as SurrealTree,
+    CompressionType as SurrealCompression, Options as SurrealOptions, Tree as SurrealTree,
     TreeBuilder as SurrealTreeBuilder,
 };
-use turbokv::{
-    Compression as TurboCompression, Db as TurboDb, DbOptions as TurboOptions,
-    WriteBatch as TurboBatch,
-};
+use turbokv::{Compression as TurboCompression, Db as TurboDb, DbOptions as TurboOptions};
 
 #[cfg(feature = "kv-external")]
 use libmdbx::{
     Database as MdbxDb, DatabaseOptions as MdbxOptions, Mode as MdbxMode, NoWriteMap,
     ReadWriteOptions as MdbxReadWriteOptions, SyncMode as MdbxSyncMode,
-    TableFlags as MdbxTableFlags, WriteFlags as MdbxWriteFlags,
 };
 #[cfg(feature = "kv-external")]
-use persy::{
-    ByteVec as PersyByteVec, Config as PersyConfig, Persy, TransactionConfig as PersyTxConfig,
-    ValueMode as PersyValueMode,
-};
+use persy::{ByteVec as PersyByteVec, Config as PersyConfig, Persy, ValueMode as PersyValueMode};
 #[cfg(feature = "kv-external")]
-use rocksdb::{
-    DB as RocksDb, DBCompressionType as RocksCompression, Direction as RocksDirection,
-    IteratorMode as RocksIteratorMode, Options as RocksOptions, WriteBatch as RocksBatch,
-    WriteOptions as RocksWriteOptions,
-};
+use rocksdb::{DB as RocksDb, DBCompressionType as RocksCompression, Options as RocksOptions};
 
 #[cfg(feature = "kv-experimental")]
-use jammdb::{DB as JammDb, Data as JammData};
+use jammdb::DB as JammDb;
 #[cfg(feature = "kv-experimental")]
-use lsm_db::{Batch as LsmBatch, Lsm as LsmDb};
+use lsm_db::Lsm as LsmDb;
 #[cfg(feature = "kv-experimental")]
 use roughdb::{
     CompressionType as RoughCompression, Db as RoughDb, OpenMode as RoughOpenMode,
-    Options as RoughOptions, ReadOptions as RoughReadOptions, WriteBatch as RoughBatch,
-    WriteOptions as RoughWriteOptions,
+    Options as RoughOptions,
 };
 
 use super::{
+    backend_ops::{
+        BackendOps, FjallHandle, HeedHandle, ManifoldHandle, ParityHandle, RetryMode, TurboHandle,
+    },
     engine_policy::compression_override_supported,
     types::{Durability, EngineCompression, EngineKind},
 };
-
-pub const REDB_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("kv");
-pub const MANIFOLD_TABLE: ManifoldTableDefinition<&[u8], &[u8]> =
-    ManifoldTableDefinition::new("kv");
 
 #[expect(
     unsafe_code,
@@ -83,26 +66,16 @@ fn open_heed_environment(dir: &Path, durability: Durability) -> Result<HeedEnv> 
     unsafe { Ok(options.open(dir)?) }
 }
 
-pub enum Engine {
+pub(super) enum Engine {
     Redb(RedbDb),
-    Fjall {
-        db: FjallDb,
-        keyspace: Keyspace,
-    },
+    Fjall(FjallHandle),
     Surrealkv(SurrealTree),
-    Heed {
-        env: HeedEnv,
-        db: HeedDb<'static, Bytes, Bytes>,
-    },
+    Heed(HeedHandle),
     Sled(Box<sled::Db>),
     Lkv(lkv::Database),
-    Manifold {
-        _db: ManifoldDb,
-        cf: ManifoldCf,
-    },
-    Turbokv(Option<TurboDb>),
-    ParitydbHash(ParityDb),
-    ParitydbBtree(ParityDb),
+    Manifold(ManifoldHandle<ManifoldDb>),
+    Turbokv(Option<TurboHandle<TurboDb>>),
+    Paritydb(ParityHandle<ParityDb>),
     #[cfg(feature = "kv-external")]
     Rocksdb(RocksDb),
     #[cfg(feature = "kv-external")]
@@ -118,7 +91,7 @@ pub enum Engine {
 }
 
 impl Engine {
-    pub(crate) async fn open(
+    pub(super) async fn open(
         kind: EngineKind,
         durability: Durability,
         path: &Path,
@@ -130,7 +103,7 @@ impl Engine {
         clippy::too_many_lines,
         reason = "engine construction is one exhaustive backend dispatch table"
     )]
-    pub(crate) async fn open_with_compression(
+    pub(super) async fn open_with_compression(
         kind: EngineKind,
         durability: Durability,
         path: &Path,
@@ -173,7 +146,7 @@ impl Engine {
                 };
                 let db = builder.open()?;
                 let keyspace = db.keyspace("kv", move || keyspace_options)?;
-                Ok(Self::Fjall { db, keyspace })
+                Ok(Self::Fjall(FjallHandle { db, keyspace }))
             }
             EngineKind::Surrealkv => {
                 let opts = match compression {
@@ -205,7 +178,7 @@ impl Engine {
                             .map(CommitOrAbort::<_, ()>::Commit)
                     })?
                     .unwrap_commit();
-                Ok(Self::Heed { env, db })
+                Ok(Self::Heed(HeedHandle { env, db }))
             }
             EngineKind::Sled => {
                 let db = sled::Config::new()
@@ -240,7 +213,7 @@ impl Engine {
                     _ => unreachable!(),
                 };
                 let cf = db.column_family_or_create("kv")?;
-                Ok(Self::Manifold { _db: db, cf })
+                Ok(Self::Manifold(ManifoldHandle { owner: db, cf }))
             }
             EngineKind::Turbokv => {
                 let opts = match durability {
@@ -254,9 +227,9 @@ impl Engine {
                     EngineCompression::Snappy => opts.with_compression(TurboCompression::Snappy),
                     EngineCompression::Zstd => opts.with_compression(TurboCompression::Zstd),
                 };
-                Ok(Self::Turbokv(Some(
+                Ok(Self::Turbokv(Some(TurboHandle(
                     TurboDb::open_with_options(path.join("turbokv"), opts).await?,
-                )))
+                ))))
             }
             EngineKind::ParitydbHash | EngineKind::ParitydbBtree => {
                 if durability == Durability::Sync {
@@ -272,11 +245,10 @@ impl Engine {
                     opts.columns[0].btree_index = true;
                 }
                 let db = ParityDb::open_or_create(&opts)?;
-                Ok(match kind {
-                    EngineKind::ParitydbHash => Self::ParitydbHash(db),
-                    EngineKind::ParitydbBtree => Self::ParitydbBtree(db),
-                    _ => unreachable!(),
-                })
+                Ok(Self::Paritydb(ParityHandle {
+                    db,
+                    ordered: matches!(kind, EngineKind::ParitydbBtree),
+                }))
             }
             #[cfg(feature = "kv-external")]
             EngineKind::Rocksdb => {
@@ -360,153 +332,88 @@ impl Engine {
         }
     }
 
-    pub(crate) async fn get(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        Ok(match self {
-            Self::Redb(db) => {
-                let txn = db.begin_read()?;
-                let table = txn.open_table(REDB_TABLE)?;
-                table.get(key)?.map(|v| v.value().to_vec())
-            }
-            Self::Fjall { keyspace, .. } => keyspace.get(key)?.map(|v| v.to_vec()),
-            Self::Surrealkv(tree) => {
-                let txn = tree.begin_with_mode(SurrealMode::ReadOnly)?;
-                txn.get(key)?
-            }
-            Self::Heed { env, db } => {
-                let txn = env.read_txn()?;
-                db.get(&txn, key)?.map(ToOwned::to_owned)
-            }
-            Self::Sled(db) => db.get(key)?.map(|v| v.to_vec()),
-            Self::Lkv(db) => {
-                let txn = db.begin_read()?;
-                txn.get(key)?.map(ToOwned::to_owned)
-            }
-            Self::Manifold { cf, .. } => {
-                let txn = cf.begin_read()?;
-                let table = txn.open_table(MANIFOLD_TABLE)?;
-                table.get(key)?.map(|v| v.value().to_vec())
-            }
-            Self::Turbokv(db) => {
-                db.as_ref()
-                    .context("TurboKV already closed")?
-                    .get(key)
-                    .await?
-            }
-            Self::ParitydbHash(db) | Self::ParitydbBtree(db) => db.get(0, key)?,
-            #[cfg(feature = "kv-external")]
-            Self::Rocksdb(db) => db.get(key)?.map(|v| v.to_vec()),
-            #[cfg(feature = "kv-external")]
-            Self::Mdbx(db) => {
-                let txn = db.begin_ro_txn()?;
-                let table = txn.open_table(None)?;
-                txn.get::<Vec<u8>>(&table, key)?
-            }
-            #[cfg(feature = "kv-external")]
-            Self::Persy(db) => {
-                let key = PersyByteVec::from(key.to_vec());
-                db.one::<PersyByteVec, PersyByteVec>("kv", &key)?
-                    .map(Vec::<u8>::from)
-            }
-            #[cfg(feature = "kv-experimental")]
-            Self::Roughdb(db) => db.get(key)?,
-            #[cfg(feature = "kv-experimental")]
-            Self::Jammdb(db) => {
-                let tx = db.tx(false)?;
-                let bucket = tx.get_bucket("kv")?;
-                match bucket.get(key) {
-                    Some(JammData::KeyValue(kv)) => Some(kv.value().to_vec()),
-                    Some(JammData::Bucket(_)) => bail!("jammdb KV bucket contains nested bucket"),
-                    None => None,
+    pub(super) async fn close(&mut self) -> Result<()> {
+        match self {
+            Self::Surrealkv(tree) => tree.close().await?,
+            Self::Turbokv(slot) => {
+                if let Some(db) = slot.take() {
+                    db.0.close().await?;
                 }
             }
+            _ => {}
+        }
+        Ok(())
+    }
+}
+
+impl BackendOps for Engine {
+    async fn read(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+        match self {
+            Self::Redb(db) => db.read(key).await,
+            Self::Fjall(db) => db.read(key).await,
+            Self::Surrealkv(db) => db.read(key).await,
+            Self::Heed(db) => db.read(key).await,
+            Self::Sled(db) => db.read(key).await,
+            Self::Manifold(db) => db.read(key).await,
+            Self::Turbokv(db) => {
+                db.as_mut()
+                    .context("TurboKV already closed")?
+                    .read(key)
+                    .await
+            }
+            Self::Paritydb(db) => db.read(key).await,
+            #[cfg(feature = "kv-external")]
+            Self::Rocksdb(db) => db.read(key).await,
+            #[cfg(feature = "kv-external")]
+            Self::Mdbx(db) => db.read(key).await,
+            #[cfg(feature = "kv-external")]
+            Self::Persy(db) => db.read(key).await,
             #[cfg(feature = "kv-experimental")]
-            Self::Lsmdb(db) => db.get(key)?,
-        })
+            Self::Roughdb(db) => db.read(key).await,
+            #[cfg(feature = "kv-experimental")]
+            Self::Jammdb(db) => db.read(key).await,
+            #[cfg(feature = "kv-experimental")]
+            Self::Lsmdb(db) => db.read(key).await,
+            Self::Lkv(db) => {
+                let txn = db.begin_read()?;
+                Ok(txn.get(key)?.map(ToOwned::to_owned))
+            }
+        }
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "write semantics are kept adjacent in one exhaustive backend dispatch table"
-    )]
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "backend transaction guards are intentionally scoped to their exhaustive match arms"
-    )]
-    pub(crate) async fn write_batch(
+    async fn commit(
         &mut self,
         durability: Durability,
         puts: &[(Vec<u8>, Vec<u8>)],
         deletes: &[Vec<u8>],
-    ) -> Result<()> {
+        mode: RetryMode,
+    ) -> Result<u64> {
         match self {
-            Self::Redb(db) => {
-                let mut txn = db.begin_write()?;
-                txn.set_durability(match durability {
-                    Durability::Relaxed => RedbDurability::None,
-                    Durability::Sync => RedbDurability::Immediate,
-                })?;
-                {
-                    let mut table = txn.open_table(REDB_TABLE)?;
-                    for (k, v) in puts {
-                        table.insert(k.as_slice(), v.as_slice())?;
-                    }
-                    for k in deletes {
-                        table.remove(k.as_slice())?;
-                    }
-                }
-                txn.commit()?;
+            Self::Redb(db) => db.commit(durability, puts, deletes, mode).await,
+            Self::Fjall(db) => db.commit(durability, puts, deletes, mode).await,
+            Self::Surrealkv(db) => db.commit(durability, puts, deletes, mode).await,
+            Self::Heed(db) => db.commit(durability, puts, deletes, mode).await,
+            Self::Sled(db) => db.commit(durability, puts, deletes, mode).await,
+            Self::Manifold(db) => db.commit(durability, puts, deletes, mode).await,
+            Self::Turbokv(db) => {
+                db.as_mut()
+                    .context("TurboKV already closed")?
+                    .commit(durability, puts, deletes, mode)
+                    .await
             }
-            Self::Fjall { db, keyspace } => {
-                let mut batch = db.batch();
-                for (k, v) in puts {
-                    batch.insert(keyspace, k.as_slice(), v.as_slice());
-                }
-                for k in deletes {
-                    batch.remove(keyspace, k.as_slice());
-                }
-                batch.commit()?;
-                db.persist(match durability {
-                    Durability::Relaxed => PersistMode::Buffer,
-                    Durability::Sync => PersistMode::SyncAll,
-                })?;
-            }
-            Self::Surrealkv(tree) => {
-                let mut txn = tree.begin()?;
-                txn.set_durability(match durability {
-                    Durability::Relaxed => SurrealDurability::Eventual,
-                    Durability::Sync => SurrealDurability::Immediate,
-                });
-                for (k, v) in puts {
-                    txn.set(k.as_slice(), v.as_slice())?;
-                }
-                for k in deletes {
-                    txn.delete(k.as_slice())?;
-                }
-                txn.commit().await?;
-            }
-            Self::Heed { env, db } => {
-                let mut txn = env.write_txn()?;
-                for (k, v) in puts {
-                    db.put(&mut txn, k.as_slice(), v.as_slice())?;
-                }
-                for k in deletes {
-                    db.delete(&mut txn, k.as_slice())?;
-                }
-                txn.commit()?;
-            }
-            Self::Sled(db) => {
-                let mut batch = sled::Batch::default();
-                for (k, v) in puts {
-                    batch.insert(k.as_slice(), v.as_slice());
-                }
-                for k in deletes {
-                    batch.remove(k.as_slice());
-                }
-                db.apply_batch(batch)?;
-                if durability == Durability::Sync {
-                    db.flush()?;
-                }
-            }
+            Self::Paritydb(db) => db.commit(durability, puts, deletes, mode).await,
+            #[cfg(feature = "kv-external")]
+            Self::Rocksdb(db) => db.commit(durability, puts, deletes, mode).await,
+            #[cfg(feature = "kv-external")]
+            Self::Mdbx(db) => db.commit(durability, puts, deletes, mode).await,
+            #[cfg(feature = "kv-external")]
+            Self::Persy(db) => db.commit(durability, puts, deletes, mode).await,
+            #[cfg(feature = "kv-experimental")]
+            Self::Roughdb(db) => db.commit(durability, puts, deletes, mode).await,
+            #[cfg(feature = "kv-experimental")]
+            Self::Jammdb(db) => db.commit(durability, puts, deletes, mode).await,
+            #[cfg(feature = "kv-experimental")]
+            Self::Lsmdb(db) => db.commit(durability, puts, deletes, mode).await,
             Self::Lkv(db) => {
                 let mut txn = db.begin_write()?;
                 for (k, v) in puts {
@@ -516,329 +423,48 @@ impl Engine {
                     txn.delete(k.as_slice())?;
                 }
                 txn.commit()?;
-            }
-            Self::Manifold { cf, .. } => {
-                let mut txn = cf.begin_write()?;
-                txn.set_durability(ManifoldDurability::Immediate)?;
-                {
-                    let mut table = txn.open_table(MANIFOLD_TABLE)?;
-                    for (k, v) in puts {
-                        table.insert(k.as_slice(), v.as_slice())?;
-                    }
-                    for k in deletes {
-                        table.remove(k.as_slice())?;
-                    }
-                }
-                txn.commit()?;
-            }
-            Self::Turbokv(db) => {
-                let mut batch = TurboBatch::new();
-                for (k, v) in puts {
-                    batch.put(k.as_slice(), v.as_slice());
-                }
-                for k in deletes {
-                    batch.delete(k.as_slice());
-                }
-                db.as_ref()
-                    .context("TurboKV already closed")?
-                    .write_batch(&batch)
-                    .await?;
-            }
-            Self::ParitydbHash(db) | Self::ParitydbBtree(db) => {
-                let mut changes = Vec::with_capacity(puts.len() + deletes.len());
-                for (k, v) in puts {
-                    changes.push((0u8, k.clone(), Some(v.clone())));
-                }
-                for k in deletes {
-                    changes.push((0u8, k.clone(), None));
-                }
-                db.commit(changes)?;
-            }
-            #[cfg(feature = "kv-external")]
-            Self::Rocksdb(db) => {
-                let mut batch = RocksBatch::default();
-                for (k, v) in puts {
-                    batch.put(k, v);
-                }
-                for k in deletes {
-                    batch.delete(k);
-                }
-                let mut opts = RocksWriteOptions::default();
-                opts.set_sync(durability == Durability::Sync);
-                db.write_opt(batch, &opts)?;
-            }
-            #[cfg(feature = "kv-external")]
-            Self::Mdbx(db) => {
-                let txn = db.begin_rw_txn()?;
-                let table = txn.create_table(None, MdbxTableFlags::default())?;
-                for (k, v) in puts {
-                    txn.put(&table, k, v, MdbxWriteFlags::UPSERT)?;
-                }
-                for k in deletes {
-                    let _ = txn.del(&table, k, None)?;
-                }
-                txn.commit()?;
-            }
-            #[cfg(feature = "kv-external")]
-            Self::Persy(db) => {
-                let mut tx = match durability {
-                    Durability::Relaxed => {
-                        db.begin_with(PersyTxConfig::new().set_background_sync(true))?
-                    }
-                    Durability::Sync => db.begin()?,
-                };
-                for (k, v) in puts {
-                    tx.put::<PersyByteVec, PersyByteVec>(
-                        "kv",
-                        PersyByteVec::from(k.clone()),
-                        PersyByteVec::from(v.clone()),
-                    )?;
-                }
-                for k in deletes {
-                    tx.remove::<PersyByteVec, PersyByteVec>(
-                        "kv",
-                        PersyByteVec::from(k.clone()),
-                        None,
-                    )?;
-                }
-                tx.prepare()?.commit()?;
-            }
-            #[cfg(feature = "kv-experimental")]
-            Self::Roughdb(db) => {
-                let mut batch = RoughBatch::new();
-                for (k, v) in puts {
-                    batch.put(k, v);
-                }
-                for k in deletes {
-                    batch.delete(k);
-                }
-                db.write(
-                    &RoughWriteOptions {
-                        sync: durability == Durability::Sync,
-                    },
-                    batch,
-                )?;
-            }
-            #[cfg(feature = "kv-experimental")]
-            Self::Jammdb(db) => {
-                if durability == Durability::Relaxed {
-                    bail!("jammdb relaxed mode unsupported");
-                }
-                let tx = db.tx(true)?;
-                let bucket = tx.get_bucket("kv")?;
-                for (k, v) in puts {
-                    bucket.put(k.as_slice(), v.as_slice())?;
-                }
-                for k in deletes {
-                    if bucket.get(k.as_slice()).is_some() {
-                        let _ = bucket.delete(k.as_slice())?;
-                    }
-                }
-                tx.commit()?;
-            }
-            #[cfg(feature = "kv-experimental")]
-            Self::Lsmdb(db) => {
-                if durability == Durability::Relaxed {
-                    bail!("lsm-db relaxed mode unsupported in durable build");
-                }
-                let mut batch = LsmBatch::new();
-                for (k, v) in puts {
-                    batch.put(k, v);
-                }
-                for k in deletes {
-                    batch.delete(k);
-                }
-                db.write(batch)?;
+                Ok(0)
             }
         }
-        Ok(())
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "range-scan semantics are kept adjacent in one exhaustive backend dispatch table"
-    )]
-    pub(crate) async fn scan_count(&mut self, start: &[u8], end: &[u8]) -> Result<usize> {
-        Ok(match self {
-            Self::Redb(db) => {
-                let txn = db.begin_read()?;
-                let table = txn.open_table(REDB_TABLE)?;
-                let mut n = 0usize;
-                for item in table.range(start..end)? {
-                    let _ = item?;
-                    n += 1;
-                }
-                n
-            }
-            Self::Fjall { keyspace, .. } => {
-                let mut n = 0usize;
-                for item in keyspace.range(start..end) {
-                    let _ = item.into_inner()?;
-                    n += 1;
-                }
-                n
-            }
-            Self::Surrealkv(tree) => {
-                let txn = tree.begin_with_mode(SurrealMode::ReadOnly)?;
-                let mut iter = txn.range(start, end)?;
-                let mut n = 0usize;
-                iter.seek_first()?;
-                while iter.valid() {
-                    let _ = iter.value()?;
-                    n += 1;
-                    if !iter.next()? {
-                        break;
-                    }
-                }
-                drop(iter);
-                drop(txn);
-                n
-            }
-            Self::Heed { env, db } => {
-                let txn = env.read_txn()?;
-                let range = (
-                    std::ops::Bound::Included(start),
-                    std::ops::Bound::Excluded(end),
-                );
-                let mut n = 0usize;
-                for item in db.range(&txn, &range)? {
-                    let _ = item?;
-                    n += 1;
-                }
-                n
-            }
-            Self::Sled(db) => {
-                let mut n = 0usize;
-                for item in db.range(start..end) {
-                    let _ = item?;
-                    n += 1;
-                }
-                n
-            }
-            Self::Lkv(_) => bail!("lkv 0.2.1 exposes full iteration but no keyed range seek"),
-            Self::Manifold { cf, .. } => {
-                let txn = cf.begin_read()?;
-                let table = txn.open_table(MANIFOLD_TABLE)?;
-                let mut n = 0usize;
-                for item in table.range(start..end)? {
-                    let _ = item?;
-                    n += 1;
-                }
-                n
-            }
-            Self::Turbokv(db) => db
-                .as_ref()
-                .context("TurboKV already closed")?
-                .range(start, end)
-                .await?
-                .len(),
-            Self::ParitydbHash(_) => {
-                bail!("ParityDB hash-column mode has no ordered range iterator")
-            }
-            Self::ParitydbBtree(db) => {
-                let mut iter = db.iter(0)?;
-                iter.seek(start)?;
-                let mut n = 0usize;
-                while let Some((k, _v)) = iter.next()? {
-                    if k.as_slice() >= end {
-                        break;
-                    }
-                    n += 1;
-                }
-                n
-            }
-            #[cfg(feature = "kv-external")]
-            Self::Rocksdb(db) => {
-                let mut n = 0usize;
-                for item in db.iterator(RocksIteratorMode::From(start, RocksDirection::Forward)) {
-                    let (k, _) = item?;
-                    if k.as_ref() >= end {
-                        break;
-                    }
-                    n += 1;
-                }
-                n
-            }
-            #[cfg(feature = "kv-external")]
-            Self::Mdbx(db) => {
-                let txn = db.begin_ro_txn()?;
-                let table = txn.open_table(None)?;
-                let mut cursor = txn.cursor(&table)?;
-                let mut n = 0usize;
-                for item in cursor.iter_from::<Vec<u8>, Vec<u8>>(start) {
-                    let (k, _) = item?;
-                    if k.as_slice() >= end {
-                        break;
-                    }
-                    n += 1;
-                }
-                n
-            }
-            #[cfg(feature = "kv-external")]
-            Self::Persy(db) => {
-                let range = PersyByteVec::from(start.to_vec())..PersyByteVec::from(end.to_vec());
-                let mut n = 0usize;
-                for (_k, values) in db.range::<PersyByteVec, PersyByteVec, _>("kv", range)? {
-                    if values.into_iter().next().is_some() {
-                        n += 1;
-                    }
-                }
-                n
-            }
-            #[cfg(feature = "kv-experimental")]
-            Self::Roughdb(db) => {
-                let mut iter = db.new_iterator(&RoughReadOptions::default())?;
-                iter.seek(start);
-                let mut n = 0usize;
-                for item in iter.forward() {
-                    let (k, _) = item?;
-                    if k.as_slice() >= end {
-                        break;
-                    }
-                    n += 1;
-                }
-                n
-            }
-            #[cfg(feature = "kv-experimental")]
-            Self::Jammdb(db) => {
-                let tx = db.tx(false)?;
-                let bucket = tx.get_bucket("kv")?;
-                let mut cursor = bucket.cursor();
-                cursor.seek(start);
-                let mut n = 0usize;
-                for item in cursor {
-                    let k = item.key();
-                    if k >= end {
-                        break;
-                    }
-                    if matches!(item, JammData::KeyValue(_)) {
-                        n += 1;
-                    }
-                }
-                n
-            }
-            #[cfg(feature = "kv-experimental")]
-            Self::Lsmdb(db) => db.scan(start.to_vec()..end.to_vec())?.count(),
-        })
-    }
-
-    pub(crate) async fn close(&mut self) -> Result<()> {
+    async fn count_range(&mut self, start: &[u8], end: &[u8]) -> Result<usize> {
         match self {
-            Self::Surrealkv(tree) => tree.close().await?,
-            Self::Turbokv(slot) => {
-                if let Some(db) = slot.take() {
-                    db.close().await?;
-                }
+            Self::Redb(db) => db.count_range(start, end).await,
+            Self::Fjall(db) => db.count_range(start, end).await,
+            Self::Surrealkv(db) => db.count_range(start, end).await,
+            Self::Heed(db) => db.count_range(start, end).await,
+            Self::Sled(db) => db.count_range(start, end).await,
+            Self::Manifold(db) => db.count_range(start, end).await,
+            Self::Turbokv(db) => {
+                db.as_mut()
+                    .context("TurboKV already closed")?
+                    .count_range(start, end)
+                    .await
             }
-            _ => {}
+            Self::Paritydb(db) => db.count_range(start, end).await,
+            #[cfg(feature = "kv-external")]
+            Self::Rocksdb(db) => db.count_range(start, end).await,
+            #[cfg(feature = "kv-external")]
+            Self::Mdbx(db) => db.count_range(start, end).await,
+            #[cfg(feature = "kv-external")]
+            Self::Persy(db) => db.count_range(start, end).await,
+            #[cfg(feature = "kv-experimental")]
+            Self::Roughdb(db) => db.count_range(start, end).await,
+            #[cfg(feature = "kv-experimental")]
+            Self::Jammdb(db) => db.count_range(start, end).await,
+            #[cfg(feature = "kv-experimental")]
+            Self::Lsmdb(db) => db.count_range(start, end).await,
+            Self::Lkv(_) => bail!("lkv 0.2.1 exposes full iteration but no keyed range seek"),
         }
-        Ok(())
     }
 }
 
 #[cfg(test)]
 mod shutdown_tests {
-    use super::{Durability, Engine, EngineKind};
+    use super::{BackendOps, Durability, Engine, EngineKind, RetryMode};
+    use anyhow::{Context, Result, ensure};
+    use clap::ValueEnum;
     use std::{fs, path::PathBuf, time::SystemTime};
 
     struct RemoveOnDrop(PathBuf);
@@ -847,6 +473,87 @@ mod shutdown_tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    async fn check_native_operations(
+        kind: EngineKind,
+        durability: Durability,
+        root: &std::path::Path,
+    ) -> Result<()> {
+        let path = root.join(format!("{kind:?}-{durability:?}"));
+        let mut engine = Engine::open(kind, durability, &path).await?;
+        let key = |id: u64| id.to_be_bytes().to_vec();
+        let original = (1..=4)
+            .map(|id| (key(id), vec![u8::try_from(id).unwrap_or_default(); 16]))
+            .collect::<Vec<_>>();
+        engine
+            .commit(durability, &original, &[], RetryMode::SingleAttempt)
+            .await?;
+        engine
+            .commit(
+                durability,
+                &[(key(2), vec![42; 16]), (key(5), vec![5; 16])],
+                &[key(1), key(3)],
+                RetryMode::SingleAttempt,
+            )
+            .await?;
+        let actual = [
+            None,
+            Some(vec![42; 16]),
+            None,
+            Some(vec![4; 16]),
+            Some(vec![5; 16]),
+        ];
+        for (id, expected) in (1..=5).zip(actual) {
+            ensure!(
+                engine.read(&key(id)).await? == expected,
+                "unexpected value at {id}"
+            );
+        }
+        ensure!(
+            engine.read(&key(6)).await?.is_none(),
+            "missing key returned a value"
+        );
+        if kind.supports_range_scan() {
+            ensure!(
+                engine.count_range(&key(1), &key(5)).await? == 2,
+                "range must count only existing keys and exclude endpoint"
+            );
+            ensure!(
+                engine.count_range(&key(2), &key(3)).await? == 1,
+                "inclusive lower bound"
+            );
+        } else {
+            ensure!(
+                engine.count_range(&key(1), &key(5)).await.is_err(),
+                "unordered backend exposed range"
+            );
+        }
+        engine.close().await?;
+        drop(engine);
+        fs::remove_dir_all(&path)?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn native_operations_match_fixed_key_value_contract() -> Result<()> {
+        let id = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)?
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("dbbench-native-ops-{}-{id}", std::process::id()));
+        fs::create_dir(&root)?;
+        let _cleanup = RemoveOnDrop(root.clone());
+        for &kind in EngineKind::value_variants() {
+            for durability in [Durability::Sync, Durability::Relaxed] {
+                if kind.durability_mapping(durability).is_ok() {
+                    check_native_operations(kind, durability, &root)
+                        .await
+                        .with_context(|| format!("{kind:?}/{durability:?}"))?;
+                }
+            }
+        }
+        Ok(())
     }
 
     #[tokio::test]

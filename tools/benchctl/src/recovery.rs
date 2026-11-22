@@ -97,64 +97,12 @@ fn ensure_parent(path: &Path) -> Result<()> {
     Ok(())
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
-)]
-pub fn run(args: RecoveryArgs<'_>) -> Result<()> {
-    let run_dir = args
-        .run_dir
-        .canonicalize()
-        .with_context(|| format!("failed to resolve {}", args.run_dir.display()))?;
-
-    let mut cases = BTreeMap::<String, Value>::new();
-    for path in sorted_json_files(&run_dir.join("cases"))? {
-        let case_id = path
-            .file_stem()
-            .and_then(|value| value.to_str())
-            .context("recovery case filename is not UTF-8")?
-            .to_owned();
-        if cases.insert(case_id.clone(), read_json(&path)?).is_some() {
-            bail!("duplicate case id: {case_id}");
-        }
-    }
-
-    let failures = read_ndjson(&run_dir.join("failures.ndjson"))?;
-    let relaxed_losses = read_ndjson(&run_dir.join("relaxed-ack-losses.ndjson"))?;
-    let sidecar_paths = sorted_json_files(&run_dir.join("powerloss"))?;
-    let mut sidecars = BTreeMap::<String, Value>::new();
-    for path in sidecar_paths {
-        let stem = path
-            .file_stem()
-            .and_then(|value| value.to_str())
-            .context("powerloss sidecar filename is not UTF-8")?
-            .to_owned();
-        sidecars.insert(stem, read_json(&path)?);
-    }
-
-    let failure_case_ids = failures
-        .iter()
-        .map(|row| {
-            row.get("case_id").map_or_else(
-                || "None".to_owned(),
-                |value| match value {
-                    Value::String(value) => value.clone(),
-                    Value::Null => "None".to_owned(),
-                    other => other.to_string(),
-                },
-            )
-        })
-        .collect::<BTreeSet<_>>();
-    let mut failure_stages = BTreeMap::<String, usize>::new();
-    for row in &failures {
-        let stage = row
-            .get("stage")
-            .map_or_else(|| "unknown".to_owned(), py_string);
-        *failure_stages.entry(stage).or_default() += 1;
-    }
-
+fn summarize_groups(
+    cases: &BTreeMap<String, Value>,
+    failure_case_ids: &BTreeSet<String>,
+) -> Vec<Value> {
     let mut grouped = BTreeMap::<(String, String), Vec<(&String, &Value)>>::new();
-    for (case_id, row) in &cases {
+    for (case_id, row) in cases {
         grouped
             .entry((
                 text_field(row, "engine", "unknown"),
@@ -205,6 +153,113 @@ pub fn run(args: RecoveryArgs<'_>) -> Result<()> {
         }));
     }
 
+    groups
+}
+
+fn render_markdown(summary: &Value) -> String {
+    let mut lines = vec![
+        "# Recovery campaign summary".to_owned(),
+        String::new(),
+        format!("- Completed case results: {}", summary["completed_cases"]),
+        format!("- Harness/failure records: {}", summary["failure_records"]),
+        format!("- Relaxed acknowledged-loss observations: {}", summary["relaxed_ack_loss_cases"]),
+        format!("- Power-loss sidecars: {}", summary["powerloss_sidecars"]),
+        String::new(),
+        "| Engine | Durability | Cases | OK | Failed | Structural | Max missing prefix | Max tail | Harness failures |".to_owned(),
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|".to_owned(),
+    ];
+    if let Some(groups) = summary.get("groups").and_then(Value::as_array) {
+        for group in groups {
+            lines.push(format!(
+                "| {} | {} | {} | {} | {} | {} | {} | {} | {} |",
+                group.get("engine").and_then(Value::as_str).unwrap_or(""),
+                group
+                    .get("durability")
+                    .and_then(Value::as_str)
+                    .unwrap_or(""),
+                int_field(group, "completed_cases", 0),
+                int_field(group, "verification_ok", 0),
+                int_field(group, "verification_failed", 0),
+                int_field(group, "structural_failures", 0),
+                int_field(group, "max_missing_prefix_records", 0),
+                int_field(group, "max_unreported_tail_records", 0),
+                int_field(group, "harness_failures", 0),
+            ));
+        }
+    }
+    if let Some(failure_stages) = summary
+        .get("failure_stages")
+        .and_then(Value::as_object)
+        .filter(|stages| !stages.is_empty())
+    {
+        lines.push(String::new());
+        lines.push("## Failure stages".to_owned());
+        for (stage, count) in failure_stages {
+            lines.push(format!("- `{stage}`: {count}"));
+        }
+    }
+    lines.join("\n") + "\n"
+}
+
+fn summarize_failures(failures: &[Value]) -> (BTreeSet<String>, BTreeMap<String, usize>) {
+    let failure_case_ids = failures
+        .iter()
+        .map(|row| {
+            row.get("case_id").map_or_else(
+                || "None".to_owned(),
+                |value| match value {
+                    Value::String(value) => value.clone(),
+                    Value::Null => "None".to_owned(),
+                    other => other.to_string(),
+                },
+            )
+        })
+        .collect::<BTreeSet<_>>();
+    let mut failure_stages = BTreeMap::<String, usize>::new();
+    for row in failures {
+        let stage = row
+            .get("stage")
+            .map_or_else(|| "unknown".to_owned(), py_string);
+        *failure_stages.entry(stage).or_default() += 1;
+    }
+
+    (failure_case_ids, failure_stages)
+}
+
+pub fn run(args: RecoveryArgs<'_>) -> Result<()> {
+    let run_dir = args
+        .run_dir
+        .canonicalize()
+        .with_context(|| format!("failed to resolve {}", args.run_dir.display()))?;
+
+    let mut cases = BTreeMap::<String, Value>::new();
+    for path in sorted_json_files(&run_dir.join("cases"))? {
+        let case_id = path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .context("recovery case filename is not UTF-8")?
+            .to_owned();
+        if cases.insert(case_id.clone(), read_json(&path)?).is_some() {
+            bail!("duplicate case id: {case_id}");
+        }
+    }
+
+    let failures = read_ndjson(&run_dir.join("failures.ndjson"))?;
+    let relaxed_losses = read_ndjson(&run_dir.join("relaxed-ack-losses.ndjson"))?;
+    let sidecar_paths = sorted_json_files(&run_dir.join("powerloss"))?;
+    let mut sidecars = BTreeMap::<String, Value>::new();
+    for path in sidecar_paths {
+        let stem = path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .context("powerloss sidecar filename is not UTF-8")?
+            .to_owned();
+        sidecars.insert(stem, read_json(&path)?);
+    }
+
+    let (failure_case_ids, failure_stages) = summarize_failures(&failures);
+    let groups = summarize_groups(&cases, &failure_case_ids);
+
     let support_path = run_dir.join("support.json");
     let support = if support_path.exists() {
         read_json(&support_path)?
@@ -254,44 +309,7 @@ pub fn run(args: RecoveryArgs<'_>) -> Result<()> {
             .with_context(|| format!("failed to write {}", path.display()))?;
     }
 
-    let mut lines = vec![
-        "# Recovery campaign summary".to_owned(),
-        String::new(),
-        format!("- Completed case results: {completed_cases}"),
-        format!("- Harness/failure records: {}", failures.len()),
-        format!("- Relaxed acknowledged-loss observations: {}", relaxed_losses.len()),
-        format!("- Power-loss sidecars: {}", sidecars.len()),
-        String::new(),
-        "| Engine | Durability | Cases | OK | Failed | Structural | Max missing prefix | Max tail | Harness failures |".to_owned(),
-        "|---|---|---:|---:|---:|---:|---:|---:|---:|".to_owned(),
-    ];
-    if let Some(groups) = summary.get("groups").and_then(Value::as_array) {
-        for group in groups {
-            lines.push(format!(
-                "| {} | {} | {} | {} | {} | {} | {} | {} | {} |",
-                group.get("engine").and_then(Value::as_str).unwrap_or(""),
-                group
-                    .get("durability")
-                    .and_then(Value::as_str)
-                    .unwrap_or(""),
-                int_field(group, "completed_cases", 0),
-                int_field(group, "verification_ok", 0),
-                int_field(group, "verification_failed", 0),
-                int_field(group, "structural_failures", 0),
-                int_field(group, "max_missing_prefix_records", 0),
-                int_field(group, "max_unreported_tail_records", 0),
-                int_field(group, "harness_failures", 0),
-            ));
-        }
-    }
-    if !failure_stages.is_empty() {
-        lines.push(String::new());
-        lines.push("## Failure stages".to_owned());
-        for (stage, count) in failure_stages {
-            lines.push(format!("- `{stage}`: {count}"));
-        }
-    }
-    let markdown = lines.join("\n") + "\n";
+    let markdown = render_markdown(&summary);
     if let Some(path) = args.markdown_out {
         ensure_parent(path)?;
         fs::write(path, &markdown)

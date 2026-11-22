@@ -74,16 +74,14 @@ pub fn sample_existing_id(
 pub fn sample_read_id(
     rng: &mut SmallRng,
     records: u64,
-    ops: u64,
+    miss_base: u64,
     miss_percent: u8,
     access_pattern: AccessPattern,
     workload: Workload,
 ) -> (u64, bool) {
     let miss = miss_percent > 0 && rng.random_range(0..100u32) < u32::from(miss_percent);
     if miss {
-        let miss_base = records.saturating_add(ops).saturating_add(1_000_000);
-        let span = records.max(1);
-        (miss_base.saturating_add(rng.random_range(0..span)), false)
+        (miss_base + rng.random_range(0..records), false)
     } else {
         (
             sample_existing_id(rng, records, access_pattern, workload),

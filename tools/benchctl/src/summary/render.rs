@@ -42,14 +42,14 @@ pub(super) fn markdown(summary: &[SummaryGroup], problems: &[String]) -> String 
 
     let lane_names = summary
         .iter()
-        .map(|group| group.lane.as_str())
+        .map(|group| group.key.lane.as_str())
         .collect::<BTreeSet<_>>();
     for lane in lane_names {
         lines.extend([format!("# {lane} lane"), String::new()]);
         let durabilities = summary
             .iter()
-            .filter(|group| group.lane == lane)
-            .map(|group| group.durability.as_str())
+            .filter(|group| group.key.lane == lane)
+            .map(|group| group.key.durability.as_str())
             .collect::<BTreeSet<_>>();
         for durability in durabilities {
             lines.extend([
@@ -60,33 +60,34 @@ pub(super) fn markdown(summary: &[SummaryGroup], problems: &[String]) -> String 
             ]);
             let mut block = summary
                 .iter()
-                .filter(|group| group.lane == lane && group.durability == durability)
+                .filter(|group| group.key.lane == lane && group.key.durability == durability)
                 .collect::<Vec<_>>();
             block.sort_by(|left, right| {
-                left.scenario
-                    .cmp(&right.scenario)
-                    .then(left.workload.cmp(&right.workload))
-                    .then_with(|| right.ops_per_s_median.total_cmp(&left.ops_per_s_median))
+                left.key
+                    .scenario
+                    .cmp(&right.key.scenario)
+                    .then(left.key.workload.cmp(&right.key.workload))
+                    .then_with(|| right.throughput.median.total_cmp(&left.throughput.median))
             });
             for group in block {
                 let p99 = group.p99_read_us_median.or(group.p99_operation_us_median);
                 lines.push(format!(
                     "| {} | {} | {} | {} | {} {} | {} | {} | {}–{} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
-                    group.format_version,
-                    group.scenario,
-                    group.workload,
+                    group.key.format_version,
+                    group.key.scenario,
+                    group.key.workload,
                     group.configuration,
-                    group.engine,
-                    group.engine_version,
+                    group.key.engine,
+                    group.key.engine_version,
                     group.trials.len(),
-                    fmt(group.ops_per_s_median),
-                    fmt(group.ops_per_s_q1),
-                    fmt(group.ops_per_s_q3),
+                    fmt(group.throughput.median),
+                    fmt(group.throughput.q1),
+                    fmt(group.throughput.q3),
                     opt_fmt(group.speedup_vs_c1),
                     opt_fmt(group.parallel_efficiency_vs_c1),
                     opt_fmt(group.p99_read_multiplier_vs_c1),
                     opt_fmt(group.p99_write_txn_multiplier_vs_c1),
-                    opt_fmt(group.cpu_cores_median),
+                    opt_fmt(group.process.cpu_cores),
                     opt_fmt(group.client_throughput_max_min_ratio_median),
                     opt_fmt(group.client_setup_s_median.map(|value| value * 1000.0)),
                     opt_fmt(group.write_conflict_retries_per_k_write_ops_median),
@@ -96,13 +97,13 @@ pub(super) fn markdown(summary: &[SummaryGroup], problems: &[String]) -> String 
                     opt_fmt(group.peak_rss_kib_median.map(|value| value / 1024.0)),
                     opt_fmt(group.open_s_median.map(|value| value * 1000.0)),
                     opt_fmt(group.prefill_s_median),
-                    opt_fmt(group.cpu_ns_per_op_median),
-                    opt_fmt(group.runqueue_wait_fraction_median.map(|value| value * 100.0)),
-                    opt_fmt(group.cpu_psi_some_fraction_median.map(|value| value * 100.0)),
-                    opt_fmt(group.read_bytes_per_op_median),
-                    opt_fmt(group.write_bytes_per_op_median),
-                    opt_fmt(group.io_psi_full_fraction_median.map(|value| value * 100.0)),
-                    opt_fmt(group.swap_activity_pages_median),
+                    opt_fmt(group.process.cpu_ns_per_op),
+                    opt_fmt(group.process.runqueue_wait_fraction.map(|value| value * 100.0)),
+                    opt_fmt(group.system.cpu_psi_some_fraction.map(|value| value * 100.0)),
+                    opt_fmt(group.process.read_bytes_per_op),
+                    opt_fmt(group.process.write_bytes_per_op),
+                    opt_fmt(group.system.io_psi_full_fraction.map(|value| value * 100.0)),
+                    opt_fmt(group.system.swap_activity_pages),
                 ));
             }
             lines.push(String::new());

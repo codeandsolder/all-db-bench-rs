@@ -147,3 +147,19 @@ for runner in run-kv-concurrency-plan.sh run-record-concurrency-plan.sh; do
     exit 1
   }
 done
+
+# Exercise the shared identity acquisition rather than just looking for field names.
+(
+  source "$ROOT/scripts/performance-runner-common.sh"
+  performance_capture_provenance "$ROOT" run-kv-sustained-matrix.sh sustained-matrix-policy.sh "$ROOT"
+  [[ "$NOISE_SHA" == "$("$ROOT/scripts/noise-source-sha256.sh" "$ROOT")" ]]
+  [[ "$CONTINUOUS_NOISE_SHA" == "$NOISE_SHA" ]]
+  [[ "$RUNNER_SHA" == "$(sha256sum "$ROOT/scripts/run-kv-sustained-matrix.sh" | cut -d' ' -f1)" ]]
+  read -r digest commit < <(performance_binary_identity "$ROOT" /bin/true debug "" "")
+  [[ "$digest" == "$(sha256sum /bin/true | cut -d' ' -f1)" ]]
+  [[ "$commit" == "$(git -C "$ROOT" rev-parse HEAD)" ]]
+  if performance_binary_identity "$ROOT" /bin/true external "" "" 2>/dev/null; then
+    echo "external binary without source identity was accepted" >&2
+    exit 1
+  fi
+)

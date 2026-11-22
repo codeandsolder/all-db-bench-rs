@@ -1,3 +1,4 @@
+use super::backend_ops::{BackendOps, RetryMode};
 use anyhow::Result;
 use rand::{SeedableRng, rngs::SmallRng};
 
@@ -40,7 +41,9 @@ pub(super) async fn prefill(
         }
     }
     if !puts.is_empty() {
-        engine.write_batch(spec.durability, &puts, &[]).await?;
+        engine
+            .commit(spec.durability, &puts, &[], RetryMode::SingleAttempt)
+            .await?;
     }
     Ok(())
 }
@@ -57,7 +60,9 @@ async fn flush_batch(
     durability: Durability,
     puts: &mut Vec<(Vec<u8>, Vec<u8>)>,
 ) -> Result<()> {
-    engine.write_batch(durability, puts, &[]).await?;
+    engine
+        .commit(durability, puts, &[], RetryMode::SingleAttempt)
+        .await?;
     puts.clear();
     Ok(())
 }
@@ -73,7 +78,7 @@ pub(super) async fn warm_existing_reads(
     for _ in 0..spec.records.min(warmup_reads) {
         let id = sample_existing_id(&mut rng, spec.records, access_pattern, workload);
         let _ = engine
-            .get(&key(id, spec.key_bytes, spec.key_shape, spec.seed))
+            .read(&key(id, spec.key_bytes, spec.key_shape, spec.seed))
             .await?;
     }
     Ok(())

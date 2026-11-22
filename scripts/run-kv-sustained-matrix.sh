@@ -40,22 +40,9 @@ else
   BIN="$TARGET_DIR/release/kvsustained"; BUILD_PROFILE=release
   CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" build --release --features kv-all --bin kvsustained || exit $?
 fi
-if [[ -n "${BENCH_BIN_SHA256:-}" ]]; then BIN_SHA="$BENCH_BIN_SHA256"; else BIN_SHA=$(sha256sum "$BIN" | awk '{print $1}'); fi
-HARNESS_COMMIT=$(git -C "$ROOT" rev-parse HEAD)
-if [[ "$BUILD_PROFILE" == external ]]; then
-  BENCH_SOURCE_COMMIT=${BENCH_SOURCE_COMMIT:-}
-else
-  BENCH_SOURCE_COMMIT=${BENCH_SOURCE_COMMIT:-$HARNESS_COMMIT}
-fi
-[[ "$BENCH_SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo "invalid or missing BENCH_SOURCE_COMMIT=$BENCH_SOURCE_COMMIT" >&2; exit 2; }
-RUNNER_SHA=$(sha256sum "$ROOT/scripts/run-kv-sustained-matrix.sh" | awk '{print $1}')
-POLICY_SHA=$(sha256sum "$ROOT/scripts/sustained-matrix-policy.sh" | awk '{print $1}')
-COMMON_SHA=$(sha256sum "$ROOT/scripts/performance-runner-common.sh" | awk '{print $1}')
-NOISE_SHA=$(sha256sum "$ROOT/tools/benchctl/src/noise.rs" | awk '{print $1}')
-CONTINUOUS_NOISE_SHA=$(sha256sum "$ROOT/tools/benchctl/src/noise.rs" | awk '{print $1}')
-CONTINUOUS_NOISE_COMMON_SHA=$(sha256sum "$ROOT/scripts/continuous-noise-runner-common.sh" | awk '{print $1}')
-HOST_NAME=$(hostname); MACHINE_ID_SHA256=$("$ROOT/scripts/host-machine-id-sha256.sh")
-FILESYSTEM=$(findmnt -n -o FSTYPE --target "$DATA_DIR"); SOURCE=$(findmnt -n -o SOURCE --target "$DATA_DIR")
+HARNESS_COMMIT=$(git -C "$ROOT" rev-parse HEAD) || exit 2
+read -r BIN_SHA BENCH_SOURCE_COMMIT < <(performance_binary_identity "$ROOT" "$BIN" "$BUILD_PROFILE" "${BENCH_BIN_SHA256:-}" "${BENCH_SOURCE_COMMIT:-}") || exit 2
+performance_capture_provenance "$ROOT" "run-kv-sustained-matrix.sh" "sustained-matrix-policy.sh" "$DATA_DIR" || exit $?
 
 ENGINES=(redb fjall surrealkv heed sled lkv manifold turbokv paritydb-hash paritydb-btree rocksdb mdbx persy roughdb jammdb lsmdb)
 STRESS_ENGINES=(fjall surrealkv sled turbokv rocksdb roughdb lsmdb)

@@ -1,9 +1,12 @@
-use crate::json_io::read_json;
+use crate::admission::{AdmissionLoop, RunEvent, sleep_duration};
+use crate::baseline_identity::{matches_followup, matches_trials, run_id};
+use crate::baseline_sizing::TrialStatistics;
+use crate::json_io::{read_json, read_ndjson};
 use crate::json_value::json_truthy;
-use crate::{baseline_sizing, file_hash, idle, noise};
+use crate::{baseline_sizing, file_hash, idle};
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value, json};
-use std::{fs, os::unix::fs::PermissionsExt, path::Path, process::Command, thread, time::Duration};
+use std::{fs, os::unix::fs::PermissionsExt, path::Path, process::Command, time::Duration};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Lane {
@@ -109,34 +112,6 @@ fn status(state: &str, campaign: &str) -> Map<String, Value> {
     m.insert("campaign".into(), json!(campaign));
     m
 }
-fn sleep_duration(value: f64) -> Result<Duration> {
-    if !value.is_finite() {
-        bail!("busy sleep must be finite")
-    }
-    Ok(Duration::from_secs_f64(value.max(0.1)))
-}
-
-fn preflight(repo: &Path, max_io: f64, storage: bool) -> i32 {
-    if storage {
-        let rc = idle::storage_preflight(repo);
-        if rc != 0 {
-            return rc;
-        }
-    }
-    let rc = idle::io_pressure_preflight(max_io, Path::new("/proc/pressure/io"));
-    if rc != 0 {
-        return rc;
-    }
-    noise::run_external(noise::ExternalNoiseArgs {
-        ignore_nice_at_least: 15,
-        json_out: Some(Path::new("/dev/null")),
-        exclude_pids: &[],
-        max_aggregate_cpu_percent: 50.0,
-        sample_ms: 250.0,
-    })
-    .unwrap_or(2)
-}
-
 fn verify_expected(path: &Path, expected: Option<&str>) -> Result<()> {
     if let Some(expected) = expected {
         let actual = file_hash::sha256(path)?;
@@ -178,17 +153,140 @@ fn audit_quick(repo: &Path, run_id: &str, json_out: &Path, markdown_out: &Path) 
     Ok(())
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
-)]
+#[derive(Clone, Copy)]
+struct BinaryPins<'a> {
+    primary: &'a Path,
+    primary_hash: Option<&'a str>,
+    rocks: Option<&'a Path>,
+    rocks_hash: Option<&'a str>,
+}
+
+impl BinaryPins<'_> {
+    fn executable(self, lane: Lane) -> bool {
+        executable(self.primary) && (lane == Lane::Kv || self.rocks.is_some_and(executable))
+    }
+
+    fn verify(self, lane: Lane) -> Result<()> {
+        verify_expected(self.primary, self.primary_hash)?;
+        if lane == Lane::Record {
+            verify_expected(self.rocks.context("missing Rocks binary")?, self.rocks_hash)?;
+        }
+        Ok(())
+    }
+}
+
+struct MatrixRunner<'a> {
+    repo: &'a Path,
+    lane: Lane,
+    pins: BinaryPins<'a>,
+    max_io: f64,
+    verified: bool,
+    admission: AdmissionLoop,
+}
+
+impl<'a> MatrixRunner<'a> {
+    const fn new(
+        repo: &'a Path,
+        lane: Lane,
+        pins: BinaryPins<'a>,
+        max_io: f64,
+        watch: bool,
+        sleep: Duration,
+    ) -> Self {
+        Self {
+            repo,
+            lane,
+            pins,
+            max_io,
+            verified: false,
+            admission: AdmissionLoop::new(watch, sleep),
+        }
+    }
+
+    fn command(&self) -> Command {
+        let mut cmd = Command::new(self.repo.join("scripts").join(self.lane.matrix()));
+        cmd.arg("quick").current_dir(self.repo);
+        cmd
+    }
+
+    fn run(
+        &mut self,
+        cmd: &mut Command,
+        storage: bool,
+        report: impl FnMut(RunEvent<'_>, u64) -> Result<()>,
+    ) -> Result<i32> {
+        self.admission.run(
+            || {
+                let rc = idle::host_preflight(self.repo, self.max_io, storage);
+                if rc == 0 && !self.verified {
+                    self.pins.verify(self.lane)?;
+                    self.verified = true;
+                }
+                Ok(rc)
+            },
+            || {
+                let output = cmd
+                    .output()
+                    .with_context(|| format!("failed to run {}", self.lane.matrix()))?;
+                if !output.stdout.is_empty() {
+                    print!("{}", String::from_utf8_lossy(&output.stdout));
+                }
+                if !output.stderr.is_empty() {
+                    eprint!("{}", String::from_utf8_lossy(&output.stderr));
+                }
+                Ok(output.status.code().unwrap_or(2))
+            },
+            report,
+        )
+    }
+}
+
+fn quick_status(args: &QuickArgs<'_>, lane: Lane, state: &str, busy: u64) -> Map<String, Value> {
+    let mut fields = status(state, lane.campaign_quick());
+    fields.insert("run_id".into(), json!(args.run_id));
+    fields.insert("busy_events".into(), json!(busy));
+    fields
+}
+
+fn finish_quick(args: &QuickArgs<'_>, lane: Lane, busy: u64) -> Result<i32> {
+    let (state, error) = if !quick_complete(lane, args.repo, args.run_id) {
+        ("failed", Some("runner success did not validate".to_owned()))
+    } else if let Err(error) =
+        audit_quick(args.repo, args.run_id, args.audit_json, args.audit_markdown)
+    {
+        ("audit-failed", Some(error.to_string()))
+    } else {
+        ("complete", None)
+    };
+    let mut fields = quick_status(args, lane, state, busy);
+    let code = error.map_or_else(
+        || {
+            println!(
+                "{} quick complete and audited: {}",
+                if lane == Lane::Kv { "KV" } else { "record" },
+                args.run_id
+            );
+            0
+        },
+        |error| {
+            fields.insert("error".into(), json!(error));
+            2
+        },
+    );
+    let _ = idle::write_status(args.status_file, fields)?;
+    Ok(code)
+}
+
 pub fn run_quick(args: QuickArgs<'_>) -> Result<i32> {
     let lane = Lane::parse(args.lane)?;
     let sleep = sleep_duration(args.busy_sleep)?;
-    if !executable(args.bench_bin) {
-        return Ok(2);
-    }
-    if lane == Lane::Record && !args.rocks_bench_bin.is_some_and(executable) {
+    let pins = BinaryPins {
+        primary: args.bench_bin,
+        primary_hash: args.expected_bench_sha256,
+        rocks: args.rocks_bench_bin,
+        rocks_hash: args.expected_rocks_bench_sha256,
+    };
+    if !pins.executable(lane) {
         return Ok(2);
     }
     let Some(_lock) = idle::acquire_lock(args.lock_file)? else {
@@ -198,158 +296,36 @@ pub fn run_quick(args: QuickArgs<'_>) -> Result<i32> {
         );
         return Ok(73);
     };
-    let campaign = lane.campaign_quick();
     if quick_complete(lane, args.repo, args.run_id) {
-        audit_quick(args.repo, args.run_id, args.audit_json, args.audit_markdown)?;
-        let mut s = status("complete", campaign);
-        s.insert("run_id".into(), json!(args.run_id));
-        s.insert("busy_events".into(), json!(0));
-        let _ = idle::write_status(args.status_file, s)?;
-        println!(
-            "{} quick already complete: {}",
-            if lane == Lane::Kv { "KV" } else { "record" },
-            args.run_id
-        );
-        return Ok(0);
+        return finish_quick(&args, lane, 0);
     }
-    let mut busy = 0_u64;
-    let mut verified =
-        args.expected_bench_sha256.is_none() && args.expected_rocks_bench_sha256.is_none();
-    loop {
-        let rc = preflight(args.repo, args.max_io_full_avg10, false);
-        if rc == 75 {
-            busy += 1;
-            let mut s = status("waiting-for-idle", campaign);
-            s.insert("run_id".into(), json!(args.run_id));
-            s.insert("busy_events".into(), json!(busy));
-            let _ = idle::write_status(args.status_file, s)?;
-            if !args.watch {
-                return Ok(75);
-            }
-            if busy == 1 || busy.is_multiple_of(30) {
-                println!(
-                    "{} quick waiting for idle: busy_events={busy}",
-                    if lane == Lane::Kv { "KV" } else { "record" }
-                );
-            }
-            thread::sleep(sleep);
-            continue;
-        }
-        if rc != 0 {
-            let mut s = status("failed", campaign);
-            s.insert("run_id".into(), json!(args.run_id));
-            s.insert("returncode".into(), json!(rc));
-            let _ = idle::write_status(args.status_file, s)?;
-            return Ok(rc);
-        }
-        if !verified {
-            if let Err(error) = verify_expected(args.bench_bin, args.expected_bench_sha256) {
-                let mut s = status("failed", campaign);
-                s.insert("run_id".into(), json!(args.run_id));
-                s.insert("error".into(), json!(error.to_string()));
-                let _ = idle::write_status(args.status_file, s)?;
-                return Ok(2);
-            }
-            if lane == Lane::Record
-                && let Some(path) = args.rocks_bench_bin
-                && let Err(error) = verify_expected(path, args.expected_rocks_bench_sha256)
-            {
-                let mut s = status("failed", campaign);
-                s.insert("run_id".into(), json!(args.run_id));
-                s.insert("error".into(), json!(error.to_string()));
-                let _ = idle::write_status(args.status_file, s)?;
-                return Ok(2);
-            }
-            verified = true;
-        }
-        let mut s = status("running", campaign);
-        s.insert("run_id".into(), json!(args.run_id));
-        s.insert("busy_events".into(), json!(busy));
-        let _ = idle::write_status(args.status_file, s)?;
-        let mut cmd = Command::new(args.repo.join("scripts").join(lane.matrix()));
-        cmd.arg("quick")
-            .current_dir(args.repo)
-            .env("RUN_ID", args.run_id)
-            .env("BENCH_BIN", args.bench_bin)
-            .env("MATRIX_RESUME_SHUFFLE_REMAINING", "1");
-        if let Some(rocks) = args.rocks_bench_bin {
-            cmd.env("ROCKS_BENCH_BIN", rocks);
-        }
-        let output = cmd
-            .output()
-            .with_context(|| format!("failed to run {}", lane.matrix()))?;
-        if !output.stdout.is_empty() {
-            print!("{}", String::from_utf8_lossy(&output.stdout));
-        }
-        if !output.stderr.is_empty() {
-            eprint!("{}", String::from_utf8_lossy(&output.stderr));
-        }
-        let code = output.status.code().unwrap_or(2);
-        if code == 0 {
-            if !quick_complete(lane, args.repo, args.run_id) {
-                let mut s = status("failed", campaign);
-                s.insert("run_id".into(), json!(args.run_id));
-                s.insert("error".into(), json!("runner success did not validate"));
-                let _ = idle::write_status(args.status_file, s)?;
-                return Ok(2);
-            }
-            if let Err(error) =
-                audit_quick(args.repo, args.run_id, args.audit_json, args.audit_markdown)
-            {
-                let mut s = status("audit-failed", campaign);
-                s.insert("run_id".into(), json!(args.run_id));
-                s.insert("error".into(), json!(error.to_string()));
-                let _ = idle::write_status(args.status_file, s)?;
-                return Ok(2);
-            }
-            let mut s = status("complete", campaign);
-            s.insert("run_id".into(), json!(args.run_id));
-            s.insert("busy_events".into(), json!(busy));
-            let _ = idle::write_status(args.status_file, s)?;
-            println!(
-                "{} quick complete and audited: {}",
-                if lane == Lane::Kv { "KV" } else { "record" },
-                args.run_id
-            );
-            return Ok(0);
-        }
-        if code != 75 {
-            let mut s = status("failed", campaign);
-            s.insert("run_id".into(), json!(args.run_id));
-            s.insert("returncode".into(), json!(code));
-            s.insert("busy_events".into(), json!(busy));
-            let _ = idle::write_status(args.status_file, s)?;
-            return Ok(code);
-        }
-        busy += 1;
-        let mut s = status("waiting-for-idle", campaign);
-        s.insert("run_id".into(), json!(args.run_id));
-        s.insert("busy_events".into(), json!(busy));
-        let _ = idle::write_status(args.status_file, s)?;
-        if !args.watch {
-            return Ok(75);
-        }
-        if busy == 1 || busy.is_multiple_of(30) {
-            println!(
-                "{} quick yielded after host became busy: busy_events={busy}",
-                if lane == Lane::Kv { "KV" } else { "record" }
-            );
-        }
-        thread::sleep(sleep);
+    let mut runner = MatrixRunner::new(
+        args.repo,
+        lane,
+        pins,
+        args.max_io_full_avg10,
+        args.watch,
+        sleep,
+    );
+    let mut cmd = runner.command();
+    cmd.env("RUN_ID", args.run_id)
+        .env("BENCH_BIN", args.bench_bin)
+        .env("MATRIX_RESUME_SHUFFLE_REMAINING", "1");
+    if let Some(rocks) = args.rocks_bench_bin {
+        cmd.env("ROCKS_BENCH_BIN", rocks);
+    }
+    let code = runner.run(&mut cmd, false, |event, busy| {
+        let fields = event.fields(quick_status(&args, lane, event.state(), busy));
+        let _ = idle::write_status(args.status_file, fields)?;
+        Ok(())
+    })?;
+    if code == 0 {
+        finish_quick(&args, lane, runner.admission.busy_events())
+    } else {
+        Ok(code)
     }
 }
 
-fn slug(raw: &str) -> String {
-    raw.chars()
-        .map(|c| {
-            if c.is_alphanumeric() || matches!(c, '-' | '_') {
-                c
-            } else {
-                '-'
-            }
-        })
-        .collect()
-}
 fn group_string(group: &Value, field: &str) -> String {
     group.get(field).map_or_else(
         || "None".into(),
@@ -359,17 +335,6 @@ fn group_string(group: &Value, field: &str) -> String {
         },
     )
 }
-fn run_id(group: &Value, prefix: &str) -> Result<String> {
-    Ok(format!(
-        "{prefix}-{}-{}-{}-e{}-t{}",
-        slug(&group_string(group, "engine")),
-        slug(&group_string(group, "durability")),
-        slug(&group_string(group, "workload")),
-        i64v(group.get("suggested_effective_ops"))?,
-        i64v(group.get("suggested_trials"))?
-    ))
-}
-
 fn groups_from_plan(
     plan_path: &Path,
     quality_path: Option<&Path>,
@@ -385,8 +350,8 @@ fn groups_from_plan(
     } else {
         plan.get("groups")
             .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
+            .context("sizing plan groups missing")?
+            .iter()
             .filter(|g| g.get("status").and_then(Value::as_str) == Some("undersized"))
             .cloned()
             .collect()
@@ -399,8 +364,8 @@ fn groups_from_plan(
         groups.extend(
             q.get("groups")
                 .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
+                .context("quality plan groups missing")?
+                .iter()
                 .cloned(),
         );
     }
@@ -425,84 +390,55 @@ fn groups_from_plan(
     Ok(groups)
 }
 
-fn followup_complete(repo: &Path, group: &Value, prefix: &str) -> bool {
-    let Ok(rid) = run_id(group, prefix) else {
-        return false;
-    };
-    let Ok(data) = read_json(&repo.join("results/runs").join(rid).join("summary.json")) else {
-        return false;
-    };
-    let Ok(trials) = i64v(group.get("suggested_trials")) else {
-        return false;
-    };
-    if i64v(data.get("row_count")).ok() != Some(trials)
-        || i64v(data.get("group_count")).ok() != Some(1)
+fn followup_evidence(repo: &Path, group: &Value, prefix: &str) -> Result<TrialStatistics> {
+    let rid = run_id(group, prefix)?;
+    let dir = repo.join("results/runs").join(&rid);
+    if dir
+        .join("failures.ndjson")
+        .metadata()
+        .is_ok_and(|m| m.len() > 0)
+    {
+        bail!("unresolved failures in {rid}");
+    }
+    let data = read_json(&dir.join("summary.json"))?;
+    let trials = i64v(group.get("suggested_trials"))?;
+    if i64v(data.get("row_count"))? != trials
+        || i64v(data.get("group_count"))? != 1
         || json_truthy(data.get("problems"))
     {
-        return false;
+        bail!("invalid followup summary: {rid}");
     }
-    let Some(gs) = data.get("groups").and_then(Value::as_array) else {
-        return false;
+    let gs = data
+        .get("groups")
+        .and_then(Value::as_array)
+        .context("summary groups missing")?;
+    let [summary] = gs.as_slice() else {
+        bail!("wrong summary cardinality: {rid}");
     };
-    if gs.len() != 1 {
-        return false;
+    let summary_trials = summary
+        .get("trials")
+        .and_then(Value::as_array)
+        .and_then(|values| values.iter().map(Value::as_i64).collect::<Option<Vec<_>>>())
+        .context("invalid summary trial IDs")?;
+    if !matches_followup(group, summary) || !matches_trials(&summary_trials, trials) {
+        bail!("followup summary identity or trials mismatch: {rid}");
     }
-    let r = &gs[0];
-    r.get("engine") == group.get("engine")
-        && r.get("durability") == group.get("durability")
-        && r.get("workload") == group.get("workload")
-        && i64v(r.get("ops_requested")).ok() == i64v(group.get("suggested_effective_ops")).ok()
-        && r.get("trials").and_then(Value::as_array).is_some_and(|v| {
-            v.iter()
-                .enumerate()
-                .all(|(i, x)| x.as_i64() == Some(i64::try_from(i + 1).unwrap_or(i64::MAX)))
-                && v.len() == numeric_to_usize!(trials)
-        })
+    let rows = read_ndjson(&dir.join("results.ndjson"))?;
+    if rows.iter().any(|row| !matches_followup(group, row)) {
+        bail!("followup result identity mismatch: {rid}");
+    }
+    let evidence = TrialStatistics::from_rows(&rows.iter().collect::<Vec<_>>())?;
+    if !matches_trials(&evidence.trials, trials) {
+        bail!(
+            "expected trials 1..={trials} for {rid}, found {:?}",
+            evidence.trials
+        );
+    }
+    Ok(evidence)
 }
 
-fn median(mut values: Vec<f64>) -> Option<f64> {
-    if values.is_empty() {
-        return None;
-    }
-    values.sort_by(f64::total_cmp);
-    let m = values.len() / 2;
-    Some(if values.len().is_multiple_of(2) {
-        f64::midpoint(values[m - 1], values[m])
-    } else {
-        values[m]
-    })
-}
-fn median_elapsed(repo: &Path, group: &Value, prefix: &str) -> Result<f64> {
-    let rid = run_id(group, prefix)?;
-    let dir = repo.join("results/runs").join(&rid).join("cases");
-    let mut values = Vec::new();
-    for entry in fs::read_dir(&dir).with_context(|| format!("failed to read {}", dir.display()))? {
-        let path = entry?.path();
-        if path.extension().and_then(|v| v.to_str()) != Some("json") {
-            continue;
-        }
-        let row = read_json(&path)?;
-        if row.get("engine") == group.get("engine")
-            && row.get("durability") == group.get("durability")
-            && row.get("workload") == group.get("workload")
-            && i64v(row.get("ops_requested")).ok()
-                == i64v(group.get("suggested_effective_ops")).ok()
-        {
-            values.push(f64v(row.get("elapsed_s"))?);
-        }
-    }
-    let expected = usize::try_from(i64v(group.get("suggested_trials"))?)
-        .context("suggested_trials must be non-negative and fit usize")?;
-    if values.len() != expected {
-        bail!(
-            "expected {expected} validated trials for {rid}, found {}",
-            values.len()
-        )
-    }
-    median(values).context("no elapsed values")
-}
 fn calibration_elapsed(
-    repo: &Path,
+    elapsed: f64,
     group: &Value,
     index: usize,
     args: &FollowupArgs<'_>,
@@ -513,7 +449,6 @@ fn calibration_elapsed(
     {
         return Ok(None);
     }
-    let elapsed = median_elapsed(repo, group, args.run_prefix)?;
     if !(args.calibration_min_seconds..=args.calibration_max_seconds).contains(&elapsed) {
         let label = if lane == Lane::Record {
             "record resize calibration"
@@ -586,20 +521,125 @@ fn add_group_env(
     Ok(())
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
-)]
+struct FollowupProgress {
+    lane: Lane,
+    total: usize,
+    completed: usize,
+    skipped: usize,
+}
+
+impl FollowupProgress {
+    fn fields(&self, state: &str, current: Option<(usize, &str)>, busy: u64) -> Map<String, Value> {
+        let (index, rid) = current.map_or((None, None), |(index, rid)| (Some(index), Some(rid)));
+        followup_status(
+            state,
+            self.lane,
+            index,
+            self.total,
+            rid,
+            (self.completed, self.skipped, busy),
+        )
+    }
+
+    fn calibrate(
+        &self,
+        group: &Value,
+        index: usize,
+        rid: &str,
+        args: &FollowupArgs<'_>,
+        busy: u64,
+        elapsed: f64,
+    ) -> Result<bool> {
+        match calibration_elapsed(elapsed, group, index, args, self.lane) {
+            Ok(Some(v)) => println!(
+                "{}calibration {index}/{}: median_elapsed_s={v:.3}",
+                if self.lane == Lane::Record {
+                    "record "
+                } else {
+                    ""
+                },
+                args.calibration_count
+            ),
+            Ok(None) => {}
+            Err(error) => {
+                let mut fields = self.fields("calibration-failed", Some((index, rid)), busy);
+                fields.insert("error".into(), json!(error.to_string()));
+                let _ = idle::write_status(args.status_file, fields)?;
+                eprintln!("{error}");
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+    fn finish(&self, args: &FollowupArgs<'_>, busy: u64) -> Result<i32> {
+        let state = if args.dry_run {
+            "dry-run-complete"
+        } else {
+            "complete"
+        };
+        let _ = idle::write_status(args.status_file, self.fields(state, None, busy))?;
+        println!(
+            "done completed_now={} skipped={} planned={} busy_events={busy}",
+            self.completed, self.skipped, self.total
+        );
+        Ok(0)
+    }
+}
+
+fn run_followup(
+    runner: &mut MatrixRunner<'_>,
+    progress: &FollowupProgress,
+    args: &FollowupArgs<'_>,
+    group: &Value,
+    index: usize,
+    rid: &str,
+) -> Result<std::result::Result<TrialStatistics, i32>> {
+    let current = Some((index, rid));
+    let mut cmd = runner.command();
+    add_group_env(
+        &mut cmd,
+        progress.lane,
+        group,
+        args.run_prefix,
+        args.bench_bin,
+        args.rocks_bench_bin,
+    )?;
+    let code = runner.run(&mut cmd, true, |event, busy| {
+        let fields = event.fields(progress.fields(event.state(), current, busy));
+        let _ = idle::write_status(args.status_file, fields)?;
+        Ok(())
+    })?;
+    if code != 0 {
+        return Ok(Err(code));
+    }
+    match followup_evidence(args.repo, group, args.run_prefix) {
+        Ok(evidence) => Ok(Ok(evidence)),
+        Err(error) => {
+            let mut fields = progress.fields("failed", current, runner.admission.busy_events());
+            fields.insert(
+                "error".into(),
+                json!(format!("runner success did not validate: {error}")),
+            );
+            let _ = idle::write_status(args.status_file, fields)?;
+            Ok(Err(2))
+        }
+    }
+}
+
 pub fn run_followups(args: FollowupArgs<'_>) -> Result<i32> {
     let lane = Lane::parse(args.lane)?;
     let sleep = sleep_duration(args.busy_sleep)?;
-    if !args.repo.is_dir() || !args.plan.is_file() || !executable(args.bench_bin) {
-        return Ok(2);
-    }
-    if args.quality_plan.is_some_and(|p| !p.is_file()) {
-        return Ok(2);
-    }
-    if lane == Lane::Record && !args.rocks_bench_bin.is_some_and(executable) {
+    let pins = BinaryPins {
+        primary: args.bench_bin,
+        primary_hash: args.expected_bench_sha256,
+        rocks: args.rocks_bench_bin,
+        rocks_hash: args.expected_rocks_bench_sha256,
+    };
+    if !args.repo.is_dir()
+        || !args.plan.is_file()
+        || !pins.executable(lane)
+        || args.quality_plan.is_some_and(|p| !p.is_file())
+    {
         return Ok(2);
     }
     let Some(_lock) = idle::acquire_lock(args.lock_file)? else {
@@ -614,252 +654,64 @@ pub fn run_followups(args: FollowupArgs<'_>) -> Result<i32> {
         groups.truncate(limit);
     }
     let total = groups.len();
-    if lane == Lane::Kv {
-        println!(
-            "planned={total} repo={} bench={} watch={}",
-            args.repo.display(),
-            args.bench_bin.display(),
-            args.watch
-        );
-    } else {
-        println!("record resize planned={total}");
-    }
-    let mut completed = 0_usize;
-    let mut skipped = 0_usize;
-    let mut busy = 0_u64;
-    let mut verified =
-        args.expected_bench_sha256.is_none() && args.expected_rocks_bench_sha256.is_none();
+    println!(
+        "planned={total} repo={} bench={} watch={}",
+        args.repo.display(),
+        args.bench_bin.display(),
+        args.watch
+    );
+    let mut progress = FollowupProgress {
+        lane,
+        total,
+        completed: 0,
+        skipped: 0,
+    };
+    let mut runner = MatrixRunner::new(
+        args.repo,
+        lane,
+        pins,
+        args.max_io_full_avg10,
+        args.watch,
+        sleep,
+    );
     for (offset, group) in groups.iter().enumerate() {
         let index = offset + 1;
         let rid = run_id(group, args.run_prefix)?;
-        if followup_complete(args.repo, group, args.run_prefix) {
-            skipped += 1;
-            if lane == Lane::Kv {
-                println!("[{index}/{total}] skip complete {rid}");
-            }
-            let cal = calibration_elapsed(args.repo, group, index, &args, lane);
-            match cal {
-                Ok(Some(v)) => println!(
-                    "{}calibration {index}/{}: median_elapsed_s={v:.3}",
-                    if lane == Lane::Record { "record " } else { "" },
-                    args.calibration_count
-                ),
-                Ok(None) => {}
-                Err(error) => {
-                    let mut s = followup_status(
-                        "calibration-failed",
-                        lane,
-                        Some(index),
-                        total,
-                        Some(&rid),
-                        (completed, skipped, busy),
-                    );
-                    s.insert("error".into(), json!(error.to_string()));
-                    let _ = idle::write_status(args.status_file, s)?;
-                    eprintln!("{error}");
-                    return Ok(2);
-                }
-            }
-            continue;
-        }
-        println!(
-            "[{index}/{total}] {rid} strategy={} effective_ops={} trials={} runner_ops={}",
-            group_string(group, "resize_strategy"),
-            i64v(group.get("suggested_effective_ops"))?,
-            i64v(group.get("suggested_trials"))?,
-            i64v(group.get("runner_ops_override"))?
-        );
-        if args.dry_run {
-            continue;
-        }
-        loop {
-            let rc = preflight(args.repo, args.max_io_full_avg10, true);
-            if rc == 75 {
-                busy += 1;
-                let s = followup_status(
-                    "waiting-for-idle",
-                    lane,
-                    Some(index),
-                    total,
-                    Some(&rid),
-                    (completed, skipped, busy),
-                );
-                let _ = idle::write_status(args.status_file, s)?;
-                if !args.watch {
-                    return Ok(75);
-                }
-                if busy == 1 || busy.is_multiple_of(30) {
-                    println!(
-                        "{}waiting for idle: run={rid} busy_events={busy}",
-                        if lane == Lane::Record {
-                            "record resize "
-                        } else {
-                            ""
-                        }
-                    );
-                }
-                thread::sleep(sleep);
+        let evidence = if let Ok(evidence) = followup_evidence(args.repo, group, args.run_prefix) {
+            progress.skipped += 1;
+            println!("[{index}/{total}] skip complete {rid}");
+            evidence
+        } else {
+            println!(
+                "[{index}/{total}] {rid} strategy={} effective_ops={} trials={} runner_ops={}",
+                group_string(group, "resize_strategy"),
+                i64v(group.get("suggested_effective_ops"))?,
+                i64v(group.get("suggested_trials"))?,
+                i64v(group.get("runner_ops_override"))?
+            );
+            if args.dry_run {
                 continue;
             }
-            if rc != 0 {
-                let mut s = followup_status(
-                    "failed",
-                    lane,
-                    Some(index),
-                    total,
-                    Some(&rid),
-                    (completed, skipped, busy),
-                );
-                s.insert("returncode".into(), json!(rc));
-                s.insert("error".into(), json!("host preflight failed"));
-                let _ = idle::write_status(args.status_file, s)?;
-                return Ok(rc);
-            }
-            if !verified {
-                if let Err(error) = verify_expected(args.bench_bin, args.expected_bench_sha256) {
-                    let mut s = followup_status(
-                        "failed",
-                        lane,
-                        Some(index),
-                        total,
-                        Some(&rid),
-                        (completed, skipped, busy),
-                    );
-                    s.insert("error".into(), json!(error.to_string()));
-                    let _ = idle::write_status(args.status_file, s)?;
-                    return Ok(2);
+            match run_followup(&mut runner, &progress, &args, group, index, &rid)? {
+                Ok(evidence) => {
+                    progress.completed += 1;
+                    evidence
                 }
-                if lane == Lane::Record
-                    && let Some(r) = args.rocks_bench_bin
-                    && let Err(error) = verify_expected(r, args.expected_rocks_bench_sha256)
-                {
-                    let mut s = followup_status(
-                        "failed",
-                        lane,
-                        Some(index),
-                        total,
-                        Some(&rid),
-                        (completed, skipped, busy),
-                    );
-                    s.insert("error".into(), json!(error.to_string()));
-                    let _ = idle::write_status(args.status_file, s)?;
-                    return Ok(2);
-                }
-                verified = true;
+                Err(code) => return Ok(code),
             }
-            let s = followup_status(
-                "running",
-                lane,
-                Some(index),
-                total,
-                Some(&rid),
-                (completed, skipped, busy),
-            );
-            let _ = idle::write_status(args.status_file, s)?;
-            let mut cmd = Command::new(args.repo.join("scripts").join(lane.matrix()));
-            cmd.arg("quick").current_dir(args.repo);
-            add_group_env(
-                &mut cmd,
-                lane,
-                group,
-                args.run_prefix,
-                args.bench_bin,
-                args.rocks_bench_bin,
-            )?;
-            let out = cmd
-                .output()
-                .with_context(|| format!("failed to run {}", lane.matrix()))?;
-            if !out.stdout.is_empty() {
-                print!("{}", String::from_utf8_lossy(&out.stdout));
-            }
-            if !out.stderr.is_empty() {
-                eprint!("{}", String::from_utf8_lossy(&out.stderr));
-            }
-            let code = out.status.code().unwrap_or(2);
-            if code == 0 {
-                if !followup_complete(args.repo, group, args.run_prefix) {
-                    return Ok(2);
-                }
-                completed += 1;
-                break;
-            }
-            if code != 75 {
-                let mut s = followup_status(
-                    "failed",
-                    lane,
-                    Some(index),
-                    total,
-                    Some(&rid),
-                    (completed, skipped, busy),
-                );
-                s.insert("returncode".into(), json!(code));
-                let _ = idle::write_status(args.status_file, s)?;
-                return Ok(code);
-            }
-            busy += 1;
-            let s = followup_status(
-                "waiting-for-idle",
-                lane,
-                Some(index),
-                total,
-                Some(&rid),
-                (completed, skipped, busy),
-            );
-            let _ = idle::write_status(args.status_file, s)?;
-            if !args.watch {
-                return Ok(75);
-            }
-            if busy == 1 || busy.is_multiple_of(30) {
-                println!(
-                    "{}yielded after host became busy: run={rid} busy_events={busy}",
-                    if lane == Lane::Record {
-                        "record resize "
-                    } else {
-                        ""
-                    }
-                );
-            }
-            thread::sleep(sleep);
-        }
-        match calibration_elapsed(args.repo, group, index, &args, lane) {
-            Ok(Some(v)) => println!(
-                "{}calibration {index}/{}: median_elapsed_s={v:.3}",
-                if lane == Lane::Record { "record " } else { "" },
-                args.calibration_count
-            ),
-            Ok(None) => {}
-            Err(error) => {
-                let mut s = followup_status(
-                    "calibration-failed",
-                    lane,
-                    Some(index),
-                    total,
-                    Some(&rid),
-                    (completed, skipped, busy),
-                );
-                s.insert("error".into(), json!(error.to_string()));
-                let _ = idle::write_status(args.status_file, s)?;
-                return Ok(2);
-            }
+        };
+        if !progress.calibrate(
+            group,
+            index,
+            &rid,
+            &args,
+            runner.admission.busy_events(),
+            evidence.median_elapsed,
+        )? {
+            return Ok(2);
         }
     }
-    let state = if args.dry_run {
-        "dry-run-complete"
-    } else {
-        "complete"
-    };
-    let s = followup_status(state, lane, None, total, None, (completed, skipped, busy));
-    let _ = idle::write_status(args.status_file, s)?;
-    if lane == Lane::Kv {
-        println!(
-            "done completed_now={completed} skipped={skipped} planned={total} busy_events={busy}"
-        );
-    } else {
-        println!(
-            "record resize complete: completed_now={completed} skipped={skipped} total={total}"
-        );
-    }
-    Ok(0)
+    progress.finish(&args, runner.admission.busy_events())
 }
 
 #[cfg(test)]
@@ -915,10 +767,41 @@ mod tests {
         fs::write(
             d.join("summary.json"),
             serde_json::to_string(
-                &json!({"row_count":3,"group_count":1,"problems":[],"groups":[{"engine":"redb","durability":"sync","workload":"point-read","ops_requested":300_000,"trials":[1,2,3]}]}),
+                &json!({"row_count":3,"group_count":1,"problems":[],"groups":[{"engine":"redb","durability":"sync","workload":"point-read","records":100_000,"ops_requested":300_000,"trials":[1,2,3]}]}),
             )?,
         )?;
-        assert!(followup_complete(&p, &g, "x"));
+        assert!(followup_evidence(&p, &g, "x").is_err());
+        let rows = (1..=3).map(|trial| json!({"engine":"redb","durability":"sync","workload":"point-read","records":100_000,
+            "ops_requested":300_000,"ops_completed":300_000,"trial":trial,"elapsed_s":3.0,"ops_per_s":100_000.0}))
+            .collect::<Vec<_>>();
+        let write_rows = |rows: &[Value]| -> Result<()> {
+            let content = rows
+                .iter()
+                .map(|row| serde_json::to_string(row).map(|s| s + "\n"))
+                .collect::<std::result::Result<String, _>>()?;
+            fs::write(d.join("results.ndjson"), content)?;
+            Ok(())
+        };
+        write_rows(&rows)?;
+        assert!(followup_evidence(&p, &g, "x").is_ok());
+        let mut legacy = g.clone();
+        legacy["read_materialization"] = json!("legacy-read-v0");
+        legacy["write_materialization"] = json!("legacy-return-v0");
+        assert!(followup_evidence(&p, &legacy, "x").is_ok());
+        let mut bad = g.clone();
+        bad["records"] = json!(99);
+        assert!(followup_evidence(&p, &bad, "x").is_err());
+        let mut bad_rows = rows.clone();
+        bad_rows[1]["trial"] = json!(1);
+        write_rows(&bad_rows)?;
+        assert!(followup_evidence(&p, &g, "x").is_err());
+        bad_rows[1]["trial"] = json!(2);
+        bad_rows[1]["ops_completed"] = json!(99);
+        write_rows(&bad_rows)?;
+        assert!(followup_evidence(&p, &g, "x").is_err());
+        write_rows(&rows)?;
+        fs::write(d.join("failures.ndjson"), "failed")?;
+        assert!(followup_evidence(&p, &g, "x").is_err());
         fs::remove_dir_all(p)?;
         Ok(())
     }

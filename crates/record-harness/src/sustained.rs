@@ -1,31 +1,21 @@
+use crate::dataset::{RecordDataset, Warmup};
+use all_db_bench_common::run_directory::{ReportMode, finish_database, prepare_database};
 use all_db_bench_common::{
-    measurement::{SettleMeasurement, measure_settle},
-    metrics::{ProcDelta, ProcSnapshot, SystemDelta, SystemSnapshot},
-    record_payload::{PayloadPattern, payload_for},
+    measurement::SetupTimings,
+    measurement::measure_settle,
+    record_payload::PayloadPattern,
+    sustained::{Foreground, MutationStream, SustainedEvidence, SustainedPattern, WorkPlan},
 };
-use anyhow::{Context, Result, bail};
-use clap::{Args as ClapArgs, ValueEnum};
-use rand::{RngExt, SeedableRng, rngs::SmallRng, seq::SliceRandom};
+use anyhow::Result;
+use clap::Args as ClapArgs;
+use rand::{RngExt, rngs::SmallRng};
 use serde::Serialize;
-use std::{
-    fs,
-    path::{Path, PathBuf},
-    time::{Duration, Instant},
-};
+use std::{path::PathBuf, time::Instant};
 
 use crate::{
-    Durability, Quantiles, READ_MATERIALIZATION, RecordData, WRITE_MATERIALIZATION,
-    backend::RecordBackend, count_as_f64, dir_size, hist, peak_rss_kib, quantiles, record,
+    Durability, READ_MATERIALIZATION, WRITE_MATERIALIZATION, backend::RecordBackend, dir_size,
+    peak_rss_kib,
 };
-
-#[derive(Clone, Copy, Debug, Serialize, ValueEnum)]
-#[serde(rename_all = "kebab-case")]
-pub enum SustainedPattern {
-    Append,
-    UpdateUniform,
-    UpdateHot95,
-    Churn,
-}
 
 #[derive(Clone, Debug, ClapArgs)]
 pub struct SustainedArgs {
@@ -64,23 +54,6 @@ pub struct SustainedArgs {
 }
 
 #[derive(Debug, Serialize)]
-struct WindowMeasurement {
-    index: u64,
-    ops_start: u64,
-    ops_end: u64,
-    ops_completed: u64,
-    elapsed_s: f64,
-    ops_per_s: f64,
-    puts: u64,
-    deletes: u64,
-    transactions: u64,
-    logical_mutated_bytes: u64,
-    transaction_latency: Quantiles,
-    process: ProcDelta,
-    system: SystemDelta,
-}
-
-#[derive(Debug, Serialize)]
 struct Measurement<K> {
     format_version: u32,
     lane: &'static str,
@@ -91,7 +64,6 @@ struct Measurement<K> {
     pattern: SustainedPattern,
     records: u64,
     ops_requested: u64,
-    ops_completed: u64,
     window_ops: u64,
     payload_bytes: usize,
     txn_size: usize,
@@ -100,39 +72,8 @@ struct Measurement<K> {
     trial: u32,
     seed: u64,
     scenario: String,
-    open_s: f64,
-    prefill_s: f64,
-    warmup_s: f64,
-    elapsed_s: f64,
-    active_elapsed_s: f64,
-    instrumentation_s: f64,
-    instrumentation_fraction_of_wall: f64,
-    ops_per_s: f64,
-    active_ops_per_s: f64,
-    puts: u64,
-    deletes: u64,
-    transactions: u64,
-    logical_mutated_bytes: u64,
-    transaction_latency: Quantiles,
-    db_bytes_before: u64,
-    db_bytes_after_foreground: u64,
-    db_bytes_final: u64,
-    windows: Vec<WindowMeasurement>,
-    post_workload_settle: Option<SettleMeasurement>,
-    measured_process: ProcDelta,
-    system_before: SystemSnapshot,
-    system_after: SystemSnapshot,
-    measured_system_delta: SystemDelta,
-    peak_rss_kib: u64,
-    path: String,
-    db_kept: bool,
-}
-
-fn row(id: u64, payload_bytes: usize, salt: u64) -> RecordData {
-    RecordData {
-        bucket: (id % 100) as u32,
-        payload: payload_for(PayloadPattern::HexRandom, id, payload_bytes, salt),
-    }
+    #[serde(flatten)]
+    evidence: SustainedEvidence,
 }
 
 fn logical_put_bytes(payload_bytes: usize) -> u64 {
@@ -148,60 +89,7 @@ fn hot95_id(rng: &mut SmallRng, records: u64) -> u64 {
     }
 }
 
-#[expect(
-    clippy::future_not_send,
-    reason = "record backends are thread-confined: each backend is owned and polled to completion on one worker thread, so requiring Sync would reject valid backends such as rusqlite"
-)]
-async fn prefill<B: RecordBackend>(engine: &B, args: &SustainedArgs) -> Result<()> {
-    const BATCH: usize = 1_000;
-    let mut rows = Vec::with_capacity(BATCH);
-    for id in 0..args.records {
-        rows.push((id, row(id, args.payload_bytes, args.seed)));
-        if rows.len() == BATCH {
-            engine.upsert_batch(&rows).await?;
-            rows.clear();
-        }
-    }
-    if !rows.is_empty() {
-        engine.upsert_batch(&rows).await?;
-    }
-    Ok(())
-}
-
-#[expect(
-    clippy::future_not_send,
-    reason = "record backends are thread-confined: each backend is owned and polled to completion on one worker thread, so requiring Sync would reject valid backends such as rusqlite"
-)]
-async fn warm_reads<B: RecordBackend>(engine: &B, args: &SustainedArgs) -> Result<()> {
-    let mut rng = SmallRng::seed_from_u64(args.seed ^ u64::from(args.trial) ^ 0x7777);
-    for _ in 0..args.records.min(args.warmup_reads) {
-        let id = rng.random_range(0..args.records);
-        let _ = engine.get(id).await?;
-    }
-    Ok(())
-}
-
-/// Run the shared sustained record benchmark harness.
-///
-/// # Errors
-/// Returns an error for invalid benchmark arguments, backend failures, or result I/O failures.
-#[expect(
-    clippy::too_many_lines,
-    reason = "the sustained harness keeps one explicit phase/window state machine to preserve measurement semantics"
-)]
-pub async fn run<B: RecordBackend>(engine_kind: B::Kind, args: SustainedArgs) -> Result<()> {
-    if args.records == 0 || args.ops == 0 || args.window_ops == 0 || args.txn_size == 0 {
-        bail!("records, ops, window-ops and txn-size must all be greater than zero");
-    }
-    if args.window_ops < args.txn_size as u64
-        || !args.window_ops.is_multiple_of(args.txn_size as u64)
-    {
-        bail!("--window-ops must be a multiple of --txn-size");
-    }
-    if !args.ops.is_multiple_of(args.txn_size as u64) {
-        bail!("--ops must be a multiple of --txn-size");
-    }
-
+fn prepare_path<K: std::fmt::Debug>(engine_kind: K, args: &SustainedArgs) -> Result<PathBuf> {
     let durability = &args.durability;
     let pattern = &args.pattern;
     let records = args.records;
@@ -210,175 +98,104 @@ pub async fn run<B: RecordBackend>(engine_kind: B::Kind, args: SustainedArgs) ->
     let payload_bytes = args.payload_bytes;
     let txn_size = args.txn_size;
     let trial = args.trial;
-    let path = args.root.join(
-        format!(
+    let name = format!(
             "record-sustained-{engine_kind:?}-{durability:?}-{pattern:?}-n{records}-o{ops}-w{window_ops}-p{payload_bytes}-tx{txn_size}-t{trial}"
         )
         .to_lowercase()
-        .replace('_', "-"),
-    );
-    if path.exists() {
-        fs::remove_dir_all(&path).context("remove stale record sustained-run directory")?;
-    }
-    fs::create_dir_all(&path)?;
+        .replace('_', "-");
+    prepare_database(&args.root, &name, false)
+}
 
+fn report<B: RecordBackend>(
+    engine_kind: B::Kind,
+    args: &SustainedArgs,
+    evidence: SustainedEvidence,
+) -> Measurement<B::Kind> {
+    Measurement {
+        format_version: 7,
+        lane: "record-sustained",
+        engine: engine_kind,
+        engine_version: B::version(engine_kind),
+        durability: args.durability,
+        durability_mapping: B::mapping(engine_kind, args.durability),
+        pattern: args.pattern,
+        records: args.records,
+        ops_requested: args.ops,
+        window_ops: args.window_ops,
+        payload_bytes: args.payload_bytes,
+        txn_size: args.txn_size,
+        read_materialization: READ_MATERIALIZATION,
+        write_materialization: WRITE_MATERIALIZATION,
+        trial: args.trial,
+        seed: args.seed,
+        scenario: args.scenario.clone(),
+        evidence,
+    }
+}
+
+/// Run the shared sustained record benchmark harness.
+///
+/// # Errors
+/// Returns an error for invalid benchmark arguments, backend failures, or result I/O failures.
+pub async fn run<B: RecordBackend>(engine_kind: B::Kind, args: SustainedArgs) -> Result<()> {
+    let plan = WorkPlan::new(args.records, args.ops, args.window_ops, args.txn_size)?;
+    let path = prepare_path(engine_kind, &args)?;
+
+    let dataset = RecordDataset {
+        records: args.records,
+        payload_bytes: args.payload_bytes,
+        payload_pattern: PayloadPattern::HexRandom,
+        seed: args.seed,
+    };
     let open_started = Instant::now();
-    let engine = B::open(engine_kind, args.durability, &path).await?;
+    let mut engine = B::open(engine_kind, args.durability, &path).await?;
     let open_s = open_started.elapsed().as_secs_f64();
     let prefill_started = Instant::now();
-    prefill(&engine, &args).await?;
+    dataset.prefill(&mut engine, 1_000).await?;
     let prefill_s = prefill_started.elapsed().as_secs_f64();
     let warmup_started = Instant::now();
-    warm_reads(&engine, &args).await?;
+    dataset
+        .warm(
+            &mut engine,
+            args.warmup_reads,
+            Warmup::Random {
+                seed: args.seed ^ u64::from(args.trial) ^ 0x7777,
+            },
+        )
+        .await?;
     let warmup_s = warmup_started.elapsed().as_secs_f64();
 
     let db_bytes_before = dir_size(&path);
-    let process_before = ProcSnapshot::capture();
-    let system_before = SystemSnapshot::capture();
-    let foreground_started = Instant::now();
-    let mut rng = SmallRng::seed_from_u64(args.seed ^ u64::from(args.trial) ^ 0x5155_5354);
-    let mut next_id = args.records;
-    let mut done = 0u64;
-    let mut puts_total = 0u64;
-    let mut deletes_total = 0u64;
-    let mut txn_total = 0u64;
-    let mut logical_bytes_total = 0u64;
-    let mut total_hist = hist()?;
-    let mut windows = Vec::new();
-    let mut active_elapsed = Duration::ZERO;
-
-    while done < args.ops {
-        let window_start_ops = done;
-        let window_target = args.ops.min(done.saturating_add(args.window_ops));
-        let window_proc_before = ProcSnapshot::capture();
-        let window_sys_before = SystemSnapshot::capture();
-        let window_started = Instant::now();
-        let mut window_hist = hist()?;
-        let mut window_puts = 0u64;
-        let mut window_deletes = 0u64;
-        let mut window_txns = 0u64;
-        let mut window_logical_bytes = 0u64;
-
-        if matches!(args.pattern, SustainedPattern::Churn) {
-            #[derive(Clone, Copy)]
-            enum ChurnOp {
-                Update,
-                Insert,
-                Delete,
+    let mut run = Foreground::start(plan)?;
+    let mut stream = MutationStream::new(args.pattern, plan, args.seed, args.trial);
+    let churn = matches!(args.pattern, SustainedPattern::Churn);
+    for work in plan.windows() {
+        let mut window = run.start_window(work)?;
+        for start in work.transactions() {
+            let batch = stream.batch(
+                work,
+                start,
+                hot95_id,
+                |id, salt| (id, dataset.row(id, salt)),
+                |id| id,
+            )?;
+            let started = Instant::now();
+            if churn {
+                engine.write_batch(&batch.puts, &batch.deletes).await?;
+            } else {
+                engine.upsert_batch(&batch.puts).await?;
             }
-
-            while done < window_target {
-                let epoch = usize::try_from((window_target - done).min(1_000))?;
-                let update_count = epoch * 40 / 100;
-                let insert_count = epoch * 30 / 100;
-                let delete_count = epoch - update_count - insert_count;
-                let mut specs = Vec::with_capacity(epoch);
-                specs.extend(std::iter::repeat_n(ChurnOp::Update, update_count));
-                specs.extend(std::iter::repeat_n(ChurnOp::Insert, insert_count));
-                specs.extend(std::iter::repeat_n(ChurnOp::Delete, delete_count));
-                specs.shuffle(&mut rng);
-
-                for chunk in specs.chunks(args.txn_size) {
-                    let mut rows = Vec::with_capacity(chunk.len());
-                    let mut deletes = Vec::with_capacity(chunk.len());
-                    for (op_offset, spec) in chunk.iter().enumerate() {
-                        let salt = args.seed ^ done ^ u64::try_from(op_offset)?;
-                        match spec {
-                            ChurnOp::Update => {
-                                let id = rng.random_range(0..args.records);
-                                rows.push((id, row(id, args.payload_bytes, salt)));
-                            }
-                            ChurnOp::Insert => {
-                                let id = next_id;
-                                next_id += 1;
-                                rows.push((id, row(id, args.payload_bytes, salt)));
-                            }
-                            ChurnOp::Delete => {
-                                deletes.push(rng.random_range(0..args.records));
-                            }
-                        }
-                    }
-                    let put_count = u64::try_from(rows.len())?;
-                    let delete_count = u64::try_from(deletes.len())?;
-                    let logical_bytes = put_count
-                        .saturating_mul(logical_put_bytes(args.payload_bytes))
-                        + delete_count.saturating_mul(8);
-                    let started = Instant::now();
-                    engine.write_batch(&rows, &deletes).await?;
-                    let latency = started.elapsed();
-                    record(&mut window_hist, latency);
-                    record(&mut total_hist, latency);
-                    done = done.saturating_add(u64::try_from(chunk.len())?);
-                    window_puts += put_count;
-                    window_deletes += delete_count;
-                    window_txns += 1;
-                    window_logical_bytes = window_logical_bytes.saturating_add(logical_bytes);
-                }
-            }
-        } else {
-            while done < window_target {
-                let n = usize::try_from(window_target - done)
-                    .unwrap_or(usize::MAX)
-                    .min(args.txn_size);
-                let mut rows = Vec::with_capacity(n);
-                for op_offset in 0..n {
-                    let salt = args.seed ^ done ^ u64::try_from(op_offset)?;
-                    let id = match args.pattern {
-                        SustainedPattern::Append => {
-                            let id = next_id;
-                            next_id += 1;
-                            id
-                        }
-                        SustainedPattern::UpdateUniform => rng.random_range(0..args.records),
-                        SustainedPattern::UpdateHot95 => hot95_id(&mut rng, args.records),
-                        SustainedPattern::Churn => unreachable!(),
-                    };
-                    rows.push((id, row(id, args.payload_bytes, salt)));
-                }
-                let put_count = u64::try_from(rows.len())?;
-                let logical_bytes = put_count.saturating_mul(logical_put_bytes(args.payload_bytes));
-                let started = Instant::now();
-                engine.upsert_batch(&rows).await?;
-                let latency = started.elapsed();
-                record(&mut window_hist, latency);
-                record(&mut total_hist, latency);
-                done = done.saturating_add(u64::try_from(n)?);
-                window_puts += put_count;
-                window_txns += 1;
-                window_logical_bytes = window_logical_bytes.saturating_add(logical_bytes);
-            }
+            run.record_transaction(
+                &mut window,
+                &batch,
+                logical_put_bytes(args.payload_bytes),
+                8,
+                started.elapsed(),
+            )?;
         }
-
-        let elapsed = window_started.elapsed();
-        active_elapsed += elapsed;
-        let window_proc_after = ProcSnapshot::capture();
-        let window_sys_after = SystemSnapshot::capture();
-        let window_completed = done - window_start_ops;
-        windows.push(WindowMeasurement {
-            index: u64::try_from(windows.len())?,
-            ops_start: window_start_ops,
-            ops_end: done,
-            ops_completed: window_completed,
-            elapsed_s: elapsed.as_secs_f64(),
-            ops_per_s: count_as_f64(window_completed)
-                / elapsed.as_secs_f64().max(f64::MIN_POSITIVE),
-            puts: window_puts,
-            deletes: window_deletes,
-            transactions: window_txns,
-            logical_mutated_bytes: window_logical_bytes,
-            transaction_latency: quantiles(&window_hist),
-            process: window_proc_before.delta(&window_proc_after, elapsed),
-            system: window_sys_before.delta(&window_sys_after),
-        });
-        puts_total += window_puts;
-        deletes_total += window_deletes;
-        txn_total += window_txns;
-        logical_bytes_total = logical_bytes_total.saturating_add(window_logical_bytes);
+        run.end_window(window)?;
     }
-
-    let foreground_wall_elapsed = foreground_started.elapsed();
-    let process_after = ProcSnapshot::capture();
-    let system_after = SystemSnapshot::capture();
+    let foreground = run.finish()?;
     let db_bytes_after_foreground = dir_size(&path);
     let post_workload_settle = measure_settle(
         &path,
@@ -390,72 +207,28 @@ pub async fn run<B: RecordBackend>(engine_kind: B::Kind, args: SustainedArgs) ->
     drop(engine);
     let db_bytes_final = dir_size(&path);
 
-    let result = Measurement {
-        format_version: 7,
-        lane: "record-sustained",
-        engine: engine_kind,
-        engine_version: B::version(engine_kind),
-        durability: args.durability,
-        durability_mapping: B::mapping(engine_kind, args.durability),
-        pattern: args.pattern,
-        records: args.records,
-        ops_requested: args.ops,
-        ops_completed: done,
-        window_ops: args.window_ops,
-        payload_bytes: args.payload_bytes,
-        txn_size: args.txn_size,
-        read_materialization: READ_MATERIALIZATION,
-        write_materialization: WRITE_MATERIALIZATION,
-        trial: args.trial,
-        seed: args.seed,
-        scenario: args.scenario.clone(),
-        open_s,
-        prefill_s,
-        warmup_s,
-        elapsed_s: foreground_wall_elapsed.as_secs_f64(),
-        active_elapsed_s: active_elapsed.as_secs_f64(),
-        instrumentation_s: foreground_wall_elapsed
-            .saturating_sub(active_elapsed)
-            .as_secs_f64(),
-        instrumentation_fraction_of_wall: foreground_wall_elapsed
-            .saturating_sub(active_elapsed)
-            .as_secs_f64()
-            / foreground_wall_elapsed.as_secs_f64().max(f64::MIN_POSITIVE),
-        ops_per_s: count_as_f64(done)
-            / foreground_wall_elapsed.as_secs_f64().max(f64::MIN_POSITIVE),
-        active_ops_per_s: count_as_f64(done) / active_elapsed.as_secs_f64().max(f64::MIN_POSITIVE),
-        puts: puts_total,
-        deletes: deletes_total,
-        transactions: txn_total,
-        logical_mutated_bytes: logical_bytes_total,
-        transaction_latency: quantiles(&total_hist),
+    let evidence = SustainedEvidence {
+        setup: SetupTimings {
+            open: open_s,
+            prefill: prefill_s,
+            warmup: warmup_s,
+        },
+        foreground: foreground.measurement(),
         db_bytes_before,
         db_bytes_after_foreground,
         db_bytes_final,
-        windows,
         post_workload_settle,
-        measured_process: process_before.delta(&process_after, foreground_wall_elapsed),
-        system_before: system_before.clone(),
-        system_after: system_after.clone(),
-        measured_system_delta: system_before.delta(&system_after),
         peak_rss_kib: peak_rss_kib(),
         path: path.display().to_string(),
         db_kept: args.keep_db,
     };
+    let result = report::<B>(engine_kind, &args, evidence);
 
-    let json = serde_json::to_string_pretty(&result)?;
-    if args.output == "-" {
-        println!("{json}");
-    } else {
-        let output = Path::new(&args.output);
-        if let Some(parent) = output.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(output, format!("{json}\n"))?;
-    }
-
-    if !args.keep_db {
-        fs::remove_dir_all(&path).context("remove record sustained-run database")?;
-    }
-    Ok(())
+    finish_database(
+        &path,
+        args.keep_db,
+        &result,
+        &args.output,
+        ReportMode::ReplacePretty,
+    )
 }

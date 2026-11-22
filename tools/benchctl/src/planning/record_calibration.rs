@@ -102,6 +102,20 @@ fn case_key(item: &Value) -> Result<CaseKey> {
     })
 }
 
+pub(super) fn verify_results(plan: &Value, rows: &[Value]) -> Result<()> {
+    super::verify_case_coverage(plan, rows, |item| {
+        let ops = item
+            .get("ops")
+            .or_else(|| item.get("ops_requested"))
+            .and_then(super::value_i64)
+            .context("missing or invalid ops/ops_requested")?;
+        if item.get("ops_requested").is_some() && get_i64(item, "ops_requested")? != ops {
+            bail!("conflicting ops and ops_requested");
+        }
+        Ok((case_key(item)?, get_i64(item, "records")?, ops))
+    })
+}
+
 fn policy_ops(repo: &Path, scenario: &str, workload: &str, default_ops: i64) -> Result<i64> {
     let policy = repo.join("scripts/concurrency-matrix-policy.sh");
     let output = Command::new("bash")
@@ -188,124 +202,95 @@ fn add_case(cases: &mut Vec<Value>, repo: &Path, case: RecordCase<'_>) -> Result
     Ok(())
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
-)]
 fn build_plan(repo: &Path) -> Result<Value> {
     let mut cases = Vec::new();
     for engine in ENGINES {
-        for clients in CORE_CLIENTS {
-            for workload in [
-                "point-read",
-                "indexed-read",
-                "read-heavy",
-                "tiny-txn",
-                "write-burst",
+        for (scenario, durability, clients, workloads, records, default_ops, payload_bytes) in [
+            (
+                "record-concurrency-core",
+                "sync",
+                CORE_CLIENTS.as_slice(),
+                [
+                    "point-read",
+                    "indexed-read",
+                    "read-heavy",
+                    "tiny-txn",
+                    "write-burst",
+                ]
+                .as_slice(),
+                RECORDS,
+                DEFAULT_OPS,
+                PAYLOAD,
+            ),
+            (
+                "record-concurrency-relaxed",
+                "relaxed",
+                SIDE_CLIENTS.as_slice(),
+                ["read-heavy", "write-burst"].as_slice(),
+                RECORDS,
+                DEFAULT_OPS,
+                PAYLOAD,
+            ),
+            (
+                "record-concurrency-large-payload",
+                "sync",
+                SIDE_CLIENTS.as_slice(),
+                ["read-heavy", "write-burst"].as_slice(),
+                RECORDS,
+                DEFAULT_OPS,
+                STRESS_PAYLOAD,
+            ),
+            (
+                "record-concurrency-hotset",
+                "sync",
+                SIDE_CLIENTS.as_slice(),
+                ["read-heavy"].as_slice(),
+                HOT_RECORDS,
+                HOT_DEFAULT_OPS,
+                PAYLOAD,
+            ),
+        ] {
+            for &clients in clients {
+                for &workload in workloads {
+                    add_case(
+                        &mut cases,
+                        repo,
+                        RecordCase {
+                            scenario,
+                            engine,
+                            durability,
+                            workload,
+                            clients,
+                            records,
+                            default_ops,
+                            payload_bytes,
+                            txn_size: TXN,
+                        },
+                    )?;
+                }
+            }
+        }
+        for clients in SIDE_CLIENTS {
+            for (scenario, default_ops, txn_size) in [
+                ("record-concurrency-txn-1", TX1_DEFAULT_OPS, 1),
+                ("record-concurrency-txn-1000", TX1000_DEFAULT_OPS, 1000),
             ] {
                 add_case(
                     &mut cases,
                     repo,
                     RecordCase {
-                        scenario: "record-concurrency-core",
+                        scenario,
                         engine,
                         durability: "sync",
-                        workload,
+                        workload: "write-burst",
                         clients,
                         records: RECORDS,
-                        default_ops: DEFAULT_OPS,
+                        default_ops,
                         payload_bytes: PAYLOAD,
-                        txn_size: TXN,
+                        txn_size,
                     },
                 )?;
             }
-        }
-        for clients in SIDE_CLIENTS {
-            for workload in ["read-heavy", "write-burst"] {
-                add_case(
-                    &mut cases,
-                    repo,
-                    RecordCase {
-                        scenario: "record-concurrency-relaxed",
-                        engine,
-                        durability: "relaxed",
-                        workload,
-                        clients,
-                        records: RECORDS,
-                        default_ops: DEFAULT_OPS,
-                        payload_bytes: PAYLOAD,
-                        txn_size: TXN,
-                    },
-                )?;
-            }
-        }
-        for clients in SIDE_CLIENTS {
-            for workload in ["read-heavy", "write-burst"] {
-                add_case(
-                    &mut cases,
-                    repo,
-                    RecordCase {
-                        scenario: "record-concurrency-large-payload",
-                        engine,
-                        durability: "sync",
-                        workload,
-                        clients,
-                        records: RECORDS,
-                        default_ops: DEFAULT_OPS,
-                        payload_bytes: STRESS_PAYLOAD,
-                        txn_size: TXN,
-                    },
-                )?;
-            }
-        }
-        for clients in SIDE_CLIENTS {
-            add_case(
-                &mut cases,
-                repo,
-                RecordCase {
-                    scenario: "record-concurrency-hotset",
-                    engine,
-                    durability: "sync",
-                    workload: "read-heavy",
-                    clients,
-                    records: HOT_RECORDS,
-                    default_ops: HOT_DEFAULT_OPS,
-                    payload_bytes: PAYLOAD,
-                    txn_size: TXN,
-                },
-            )?;
-        }
-        for clients in SIDE_CLIENTS {
-            add_case(
-                &mut cases,
-                repo,
-                RecordCase {
-                    scenario: "record-concurrency-txn-1",
-                    engine,
-                    durability: "sync",
-                    workload: "write-burst",
-                    clients,
-                    records: RECORDS,
-                    default_ops: TX1_DEFAULT_OPS,
-                    payload_bytes: PAYLOAD,
-                    txn_size: 1,
-                },
-            )?;
-            add_case(
-                &mut cases,
-                repo,
-                RecordCase {
-                    scenario: "record-concurrency-txn-1000",
-                    engine,
-                    durability: "sync",
-                    workload: "write-burst",
-                    clients,
-                    records: RECORDS,
-                    default_ops: TX1000_DEFAULT_OPS,
-                    payload_bytes: PAYLOAD,
-                    txn_size: 1000,
-                },
-            )?;
         }
     }
     Ok(json!({
@@ -330,10 +315,109 @@ fn validate_delimiters(values: &[String], index: usize) -> Result<()> {
     Ok(())
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
-)]
+struct ValidatedRecordCase {
+    identity: CaseKey,
+    records: i64,
+    ops: i64,
+}
+
+impl ValidatedRecordCase {
+    fn into_row(self) -> Vec<String> {
+        let fk = self.identity.client.family;
+        vec![
+            fk.scenario,
+            fk.engine,
+            fk.durability,
+            fk.workload,
+            self.identity.client.clients.to_string(),
+            self.records.to_string(),
+            self.ops.to_string(),
+            fk.payload_bytes.to_string(),
+            fk.txn_size.to_string(),
+            self.identity.trial.to_string(),
+            fk.state_evolution,
+            fk.read_materialization,
+            fk.write_materialization,
+        ]
+    }
+}
+
+fn validate_case(item: &Value, index: usize) -> Result<ValidatedRecordCase> {
+    let missing: Vec<&str> = REQUIRED
+        .iter()
+        .copied()
+        .filter(|field| item.get(*field).is_none())
+        .collect();
+    if !missing.is_empty() {
+        bail!("plan case {index} missing {missing:?}");
+    }
+    let engine = get_str(item, "engine")?;
+    if !ENGINES.contains(&engine) {
+        bail!("invalid engine in case {index}: {engine}");
+    }
+    let durability = get_str(item, "durability")?;
+    if !ALLOWED_DURABILITY.contains(&durability) {
+        bail!("invalid durability in case {index}: {durability}");
+    }
+    let workload = get_str(item, "workload")?;
+    if !ALLOWED_WORKLOADS.contains(&workload) {
+        bail!("invalid workload in case {index}: {workload}");
+    }
+    let state = get_str(item, "state_evolution")?;
+    if !ALLOWED_STATE.contains(&state) {
+        bail!("invalid state_evolution in case {index}: {state}");
+    }
+    if get_str(item, "read_materialization")? != READ_MATERIALIZATION {
+        bail!(
+            "invalid read_materialization in case {index}: {:?}",
+            item.get("read_materialization")
+        );
+    }
+    if get_str(item, "write_materialization")? != WRITE_MATERIALIZATION {
+        bail!(
+            "invalid write_materialization in case {index}: {:?}",
+            item.get("write_materialization")
+        );
+    }
+
+    let clients = get_i64(item, "clients")?;
+    let records = get_i64(item, "records")?;
+    let ops = get_i64(item, "ops")?;
+    let payload = get_i64(item, "payload_bytes")?;
+    let txn = get_i64(item, "txn_size")?;
+    let trial = get_i64(item, "trial")?;
+    if [clients, records, ops, payload, txn, trial]
+        .into_iter()
+        .min()
+        .is_some_and(|value| value < 1)
+    {
+        bail!("non-positive numeric field in case {index}");
+    }
+    if clients > ops {
+        bail!("clients > ops in case {index}");
+    }
+    if state == "bounded" && !BOUNDED_WORKLOADS.contains(&workload) {
+        bail!("bounded state unsupported for {workload} in case {index}");
+    }
+    if workload == "write-burst" {
+        if ops % txn != 0 {
+            bail!("write-burst ops must be divisible by txn_size in case {index}");
+        }
+        if ops < clients * txn {
+            bail!("write-burst must provide a whole txn per client in case {index}");
+        }
+        if state == "bounded" && txn > records {
+            bail!("bounded write-burst txn_size > records in case {index}");
+        }
+    }
+
+    Ok(ValidatedRecordCase {
+        identity: case_key(item)?,
+        records,
+        ops,
+    })
+}
+
 fn materialize(plan: &Value) -> Result<(Vec<Vec<String>>, Value)> {
     let version = plan
         .get("record_concurrency_plan_version")
@@ -380,115 +464,32 @@ fn materialize(plan: &Value) -> Result<(Vec<Vec<String>>, Value)> {
     let mut rows = Vec::new();
 
     for (index, item) in cases.iter().enumerate() {
-        let missing: Vec<&str> = REQUIRED
-            .iter()
-            .copied()
-            .filter(|field| item.get(*field).is_none())
-            .collect();
-        if !missing.is_empty() {
-            bail!("plan case {index} missing {missing:?}");
-        }
-        let engine = get_str(item, "engine")?;
-        if !ENGINES.contains(&engine) {
-            bail!("invalid engine in case {index}: {engine}");
-        }
-        let durability = get_str(item, "durability")?;
-        if !ALLOWED_DURABILITY.contains(&durability) {
-            bail!("invalid durability in case {index}: {durability}");
-        }
-        let workload = get_str(item, "workload")?;
-        if !ALLOWED_WORKLOADS.contains(&workload) {
-            bail!("invalid workload in case {index}: {workload}");
-        }
-        let state = get_str(item, "state_evolution")?;
-        if !ALLOWED_STATE.contains(&state) {
-            bail!("invalid state_evolution in case {index}: {state}");
-        }
-        if get_str(item, "read_materialization")? != READ_MATERIALIZATION {
-            bail!(
-                "invalid read_materialization in case {index}: {:?}",
-                item.get("read_materialization")
-            );
-        }
-        if get_str(item, "write_materialization")? != WRITE_MATERIALIZATION {
-            bail!(
-                "invalid write_materialization in case {index}: {:?}",
-                item.get("write_materialization")
-            );
-        }
-
-        let clients = get_i64(item, "clients")?;
-        let records = get_i64(item, "records")?;
-        let ops = get_i64(item, "ops")?;
-        let payload = get_i64(item, "payload_bytes")?;
-        let txn = get_i64(item, "txn_size")?;
-        let trial = get_i64(item, "trial")?;
-        if [clients, records, ops, payload, txn, trial]
-            .into_iter()
-            .min()
-            .is_some_and(|value| value < 1)
-        {
-            bail!("non-positive numeric field in case {index}");
-        }
-        if clients > ops {
-            bail!("clients > ops in case {index}");
-        }
-        if state == "bounded" && !BOUNDED_WORKLOADS.contains(&workload) {
-            bail!("bounded state unsupported for {workload} in case {index}");
-        }
-        if workload == "write-burst" {
-            if ops % txn != 0 {
-                bail!("write-burst ops must be divisible by txn_size in case {index}");
-            }
-            if ops < clients * txn {
-                bail!("write-burst must provide a whole txn per client in case {index}");
-            }
-            if state == "bounded" && txn > records {
-                bail!("bounded write-burst txn_size > records in case {index}");
-            }
-        }
-
-        let identity = case_key(item)?;
+        let case = validate_case(item, index)?;
+        let identity = &case.identity;
         if !seen.insert(identity.clone()) {
             bail!("duplicate case identity: {identity:?}");
         }
         trials_by_client
             .entry(identity.client.clone())
             .or_default()
-            .insert(trial);
-        let fk = identity.client.family;
-        let prior = families.entry(fk.clone()).or_insert((records, ops));
-        if *prior != (records, ops) {
-            bail!("family total-work mismatch: {fk:?}: {prior:?} != ({records}, {ops})");
+            .insert(identity.trial);
+        let fk = &identity.client.family;
+        let total_work = (case.records, case.ops);
+        let prior = families.entry(fk.clone()).or_insert(total_work);
+        if *prior != total_work {
+            bail!("family total-work mismatch: {fk:?}: {prior:?} != {total_work:?}");
         }
 
-        let values = vec![
-            get_str(item, "scenario")?.to_owned(),
-            engine.to_owned(),
-            durability.to_owned(),
-            workload.to_owned(),
-            clients.to_string(),
-            records.to_string(),
-            ops.to_string(),
-            payload.to_string(),
-            txn.to_string(),
-            trial.to_string(),
-            state.to_owned(),
-            READ_MATERIALIZATION.to_owned(),
-            WRITE_MATERIALIZATION.to_owned(),
-        ];
+        let values = case.into_row();
         validate_delimiters(&values, index)?;
         rows.push(values);
     }
 
-    let expected_trials: BTreeSet<i64> = (1..=expect_trials).collect();
     for (key, trials) in trials_by_client {
-        if trials != expected_trials {
-            bail!(
-                "client group {key:?} has trials {:?}, expected {:?}",
-                trials.iter().copied().collect::<Vec<_>>(),
-                expected_trials.iter().copied().collect::<Vec<_>>()
-            );
+        if i64::try_from(trials.len())? != expect_trials
+            || trials.iter().copied().ne(1..=expect_trials)
+        {
+            bail!("client group {key:?} has trials {trials:?}, expected 1..={expect_trials}");
         }
     }
     if !rows.is_empty()

@@ -1,12 +1,18 @@
-use crate::json_io::read_json;
+use crate::baseline_identity::{matches_trials, run_id};
+use crate::baseline_sizing::TrialStatistics;
+use crate::json_io::{read_json, read_ndjson};
 use crate::json_value::json_truthy;
 use crate::json_value::py_string;
 use crate::summary;
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value, json};
-use std::{collections::HashMap, fs, path::Path};
+use std::{
+    collections::{HashMap, HashSet},
+    fs,
+    path::{Component, Path, PathBuf},
+};
 
-const IDENTITY_FIELDS: [&str; 21] = [
+const IDENTITY_FIELDS: [&str; 30] = [
     "lane",
     "scenario",
     "engine",
@@ -28,6 +34,15 @@ const IDENTITY_FIELDS: [&str; 21] = [
     "scan_len",
     "settle_ms",
     "configuration",
+    "payload_bytes",
+    "payload_pattern",
+    "engine_compression",
+    "state_evolution",
+    "bounded_churn_slots",
+    "format_version",
+    "seed",
+    "warmup_reads",
+    "durability_mapping",
 ];
 const AUDIT_FIELDS: [&str; 8] = [
     "engine",
@@ -61,13 +76,79 @@ pub struct SelectArgs<'a> {
 }
 
 #[derive(Clone, Copy)]
-pub struct FinalizeLane<'a> {
-    pub(crate) stock_results: &'a Path,
-    pub(crate) audit: &'a Path,
+pub enum FinalizeKind {
+    Kv,
+    Record,
+}
+
+impl FinalizeKind {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Kv => "kv",
+            Self::Record => "record",
+        }
+    }
+
+    const fn expected_groups(self) -> usize {
+        match self {
+            Self::Kv => 180,
+            Self::Record => 40,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct FinalizeInputs<'a> {
+    pub(crate) stock_results: Option<&'a Path>,
+    pub(crate) audit: Option<&'a Path>,
     pub(crate) resize_prefix: &'a str,
-    pub(crate) out_dir: &'a Path,
+    pub(crate) out_dir: Option<&'a Path>,
     pub(crate) quality_repair_plan: Option<&'a Path>,
-    pub(crate) expected_groups: i64,
+    pub(crate) skip_quality_repairs: bool,
+}
+
+#[derive(Clone, Copy)]
+pub struct FinalizeLane<'a> {
+    kind: FinalizeKind,
+    stock_results: &'a Path,
+    audit: &'a Path,
+    resize_prefix: &'a str,
+    out_dir: &'a Path,
+    quality_repair_plan: Option<&'a Path>,
+}
+
+impl<'a> FinalizeLane<'a> {
+    pub fn resolve(kind: FinalizeKind, inputs: FinalizeInputs<'a>) -> Result<Self> {
+        let name = kind.name();
+        Ok(Self {
+            kind,
+            stock_results: inputs.stock_results.with_context(|| {
+                format!("--{name}-stock-results is required for the selected lane")
+            })?,
+            audit: inputs
+                .audit
+                .with_context(|| format!("--{name}-audit is required for the selected lane"))?,
+            resize_prefix: inputs.resize_prefix,
+            out_dir: inputs
+                .out_dir
+                .with_context(|| format!("--{name}-out-dir is required for the selected lane"))?,
+            quality_repair_plan: if inputs.skip_quality_repairs {
+                None
+            } else {
+                inputs.quality_repair_plan
+            },
+        })
+    }
+}
+
+#[derive(Clone, Copy)]
+struct SelectionSource<'a> {
+    stock_results: &'a Path,
+    audit: &'a Path,
+    resize_root: &'a Path,
+    resize_prefix: &'a str,
+    quality_repair_plan: Option<&'a Path>,
+    allow_missing_resize: bool,
 }
 
 fn value_i64(value: Option<&Value>) -> Result<i64> {
@@ -128,44 +209,6 @@ fn sort_key(key: &[Value]) -> Vec<String> {
     key.iter().map(py_string).collect()
 }
 
-fn slug(value: &str) -> String {
-    value
-        .chars()
-        .map(|ch| {
-            if ch.is_alphanumeric() || matches!(ch, '-' | '_') {
-                ch
-            } else {
-                '-'
-            }
-        })
-        .collect()
-}
-
-pub fn run_id(group: &Value, resize_prefix: &str) -> Result<String> {
-    Ok(format!(
-        "{resize_prefix}-{}-{}-{}-e{}-t{}",
-        slug(&py_string(group.get("engine").unwrap_or(&Value::Null))),
-        slug(&py_string(group.get("durability").unwrap_or(&Value::Null))),
-        slug(&py_string(group.get("workload").unwrap_or(&Value::Null))),
-        value_i64(group.get("suggested_effective_ops"))?,
-        value_i64(group.get("suggested_trials"))?,
-    ))
-}
-
-fn read_ndjson(path: &Path) -> Result<Vec<Value>> {
-    let content =
-        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
-    content
-        .lines()
-        .enumerate()
-        .filter(|(_, line)| !line.trim().is_empty())
-        .map(|(index, line)| {
-            serde_json::from_str(line)
-                .with_context(|| format!("invalid JSON at {}:{}", path.display(), index + 1))
-        })
-        .collect()
-}
-
 fn semantic_manifest_fields(row: &Value) -> Map<String, Value> {
     let mut fields = Map::new();
     if row.get("lane").and_then(Value::as_str) == Some("record") {
@@ -217,66 +260,18 @@ fn validate_trials(rows: &[Value], label: &str, expected_count: i64) -> Result<(
         .map(|row| value_i64(row.get("trial")))
         .collect::<Result<Vec<_>>>()?;
     trials.sort_unstable();
-    let expected = (1..=expected_count).collect::<Vec<_>>();
-    if trials != expected {
-        bail!("{label}: expected trials {expected:?}, got {trials:?}");
+    if !matches_trials(&trials, expected_count) {
+        bail!("{label}: expected trials 1..={expected_count}, got {trials:?}");
     }
     Ok(())
 }
 
-fn median(values: &[f64]) -> Result<f64> {
-    if values.is_empty() {
-        bail!("cannot compute median of no values");
-    }
-    let mut values = values.to_vec();
-    values.sort_by(f64::total_cmp);
-    let mid = values.len() / 2;
-    Ok(if values.len().is_multiple_of(2) {
-        f64::midpoint(values[mid - 1], values[mid])
-    } else {
-        values[mid]
-    })
-}
-
-fn sample_cv(values: &[f64]) -> f64 {
-    if values.len() < 2 {
-        return 0.0;
-    }
-    let mean = values.iter().sum::<f64>() / int_as_f64!(values.len());
-    if mean == 0.0 {
-        return 0.0;
-    }
-    let variance = values
-        .iter()
-        .map(|value| (value - mean).powi(2))
-        .sum::<f64>()
-        / int_as_f64!((values.len() - 1));
-    variance.sqrt() / mean
-}
-
 pub fn final_quality(rows: &[Value], thresholds: &Value) -> Result<Value> {
-    let elapsed = rows
-        .iter()
-        .map(|row| value_f64(row.get("elapsed_s")))
-        .collect::<Result<Vec<_>>>()?;
-    let rates = rows
-        .iter()
-        .map(|row| value_f64(row.get("ops_per_s")))
-        .collect::<Result<Vec<_>>>()?;
-    let median_elapsed = median(&elapsed)?;
-    let total_elapsed = elapsed.iter().sum::<f64>();
-    let median_rate = median(&rates)?;
-    let throughput_cv = sample_cv(&rates);
-    let relative_spread = if median_rate == 0.0 {
-        f64::INFINITY
-    } else {
-        (rates.iter().copied().fold(f64::NEG_INFINITY, f64::max)
-            - rates.iter().copied().fold(f64::INFINITY, f64::min))
-            / median_rate
-    };
-    if !relative_spread.is_finite() {
-        bail!("final selection group has zero median throughput");
-    }
+    let evidence = TrialStatistics::from_rows(&rows.iter().collect::<Vec<_>>())?;
+    let median_elapsed = evidence.median_elapsed;
+    let total_elapsed = evidence.measured_total;
+    let throughput_cv = evidence.throughput_cv;
+    let relative_spread = evidence.throughput_relative_spread;
     let workload = rows
         .first()
         .and_then(|row| row.get("workload"))
@@ -362,10 +357,237 @@ fn source_manifest(first: &Value, spec: SourceSpec<'_>, quality: &Value) -> Resu
     Ok(Value::Object(object))
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
-)]
+struct StockGroup {
+    key: Vec<Value>,
+    rows: Vec<Value>,
+}
+fn stock_groups(stock_rows: &[Value]) -> Result<Vec<StockGroup>> {
+    let mut groups = HashMap::<String, StockGroup>::new();
+    for row in stock_rows {
+        let key = identity(row);
+        groups
+            .entry(encoded_key(&key)?)
+            .or_insert_with(|| StockGroup {
+                key,
+                rows: Vec::new(),
+            })
+            .rows
+            .push(row.clone());
+    }
+    let mut ordered = groups.into_values().collect::<Vec<_>>();
+    ordered.sort_by_key(|group| sort_key(&group.key));
+    Ok(ordered)
+}
+
+fn index_groups<'a>(
+    groups: &'a Value,
+    key_for: fn(&Value) -> Vec<Value>,
+    label: &str,
+) -> Result<HashMap<String, &'a Value>> {
+    let mut index = HashMap::new();
+    for group in groups
+        .get("groups")
+        .and_then(Value::as_array)
+        .with_context(|| format!("{label} groups missing"))?
+    {
+        let key = key_for(group);
+        if index.insert(encoded_key(&key)?, group).is_some() {
+            bail!("duplicate {label} identity: {key:?}");
+        }
+    }
+    Ok(index)
+}
+
+fn validate_ops(rows: &[Value], expected: i64, label: &str) -> Result<()> {
+    if expected <= 0 {
+        bail!("{label}: operation count must be positive");
+    }
+    for row in rows {
+        if value_i64(row.get("ops_requested"))? != expected {
+            bail!("{label}: operation count mismatch, expected {expected}");
+        }
+        if let Some(completed) = row.get("ops_completed")
+            && value_i64(Some(completed))? != expected
+        {
+            bail!("{label}: incomplete operations");
+        }
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum Selection<'a> {
+    Stock,
+    Resize(&'a Value),
+    QualityRepair(&'a Value),
+}
+
+impl Selection<'_> {
+    const fn source(self) -> &'static str {
+        match self {
+            Self::Stock => "stock",
+            Self::Resize(_) => "resize",
+            Self::QualityRepair(_) => "quality-repair",
+        }
+    }
+}
+
+struct SelectedGroup {
+    rows: Vec<Value>,
+    manifest: Value,
+}
+
+fn select_stock(
+    stock: StockGroup,
+    group: &Value,
+    thresholds: &Value,
+    trials: i64,
+) -> Result<SelectedGroup> {
+    let first = stock.rows.first().context("empty stock group")?;
+    let quality = final_quality(&stock.rows, thresholds)?;
+    let final_status = quality.get("final_status").and_then(Value::as_str);
+    let audit_status = group.get("status").and_then(Value::as_str);
+    if final_status != audit_status {
+        bail!(
+            "stock quality no longer matches audit: audit={audit_status:?} recomputed={final_status:?}"
+        );
+    }
+    let manifest = source_manifest(
+        first,
+        SourceSpec {
+            source: "stock",
+            resize_strategy: None,
+            run_id: None,
+            ops_requested: value_i64(first.get("ops_requested"))?,
+            trials,
+            rejected: None,
+        },
+        &quality,
+    )?;
+    Ok(SelectedGroup {
+        rows: stock.rows,
+        manifest,
+    })
+}
+
+fn select_followup(
+    stock: &StockGroup,
+    selection: Selection<'_>,
+    run_dir: &Path,
+    rid: &str,
+    thresholds: &Value,
+) -> Result<SelectedGroup> {
+    let (group, strategy) = match selection {
+        Selection::Resize(group) => (group, group.get("resize_strategy").and_then(Value::as_str)),
+        Selection::QualityRepair(group) => (group, Some("quality-repair")),
+        Selection::Stock => bail!("stock is not a followup"),
+    };
+    let source = selection.source();
+    let expected_trials = value_i64(group.get("suggested_trials"))?;
+    let run_summary = read_json(&run_dir.join("summary.json"))?;
+    if value_i64(run_summary.get("row_count"))? != expected_trials
+        || value_i64(run_summary.get("group_count"))? != 1
+        || json_truthy(run_summary.get("problems"))
+    {
+        bail!("invalid {source} summary: {rid}");
+    }
+    let rows = read_ndjson(&run_dir.join("results.ndjson"))?;
+    validate_trials(&rows, rid, expected_trials)?;
+    if rows.iter().any(|row| identity(row) != stock.key) {
+        bail!("{source} identity differs from stock group: {rid}");
+    }
+    let expected_ops = value_i64(group.get("suggested_effective_ops"))?;
+    validate_ops(&rows, expected_ops, rid)?;
+    let quality = final_quality(&rows, thresholds)?;
+    if quality.get("final_status").and_then(Value::as_str) == Some("undersized") {
+        bail!("{source} result remains undersized: {rid}");
+    }
+    let first = stock.rows.first().context("empty stock group")?;
+    let manifest = source_manifest(
+        first,
+        SourceSpec {
+            source,
+            resize_strategy: strategy,
+            run_id: Some(rid),
+            ops_requested: expected_ops,
+            trials: expected_trials,
+            rejected: Some(rejected_pressure_attempts(run_dir)?),
+        },
+        &quality,
+    )?;
+    Ok(SelectedGroup { rows, manifest })
+}
+
+struct SelectionPlan<'a> {
+    audit: HashMap<String, &'a Value>,
+    quality: HashMap<String, &'a Value>,
+    confirmation: bool,
+    matched_confirmation: HashSet<String>,
+}
+
+impl<'a> SelectionPlan<'a> {
+    fn new(audit: &'a Value, quality: Option<&'a Value>) -> Result<Self> {
+        let audit = index_groups(audit, audit_key, "audit")?;
+        let confirmation = quality
+            .and_then(|plan| plan.get("strategy"))
+            .and_then(Value::as_str)
+            .is_some_and(|strategy| FINAL_CONFIRMATION_STRATEGIES.contains(&strategy));
+        let quality = if let Some(plan) = quality {
+            if value_i64(plan.get("quality_policy_version"))? != 1 {
+                bail!(
+                    "unsupported stock quality policy: {:?}",
+                    plan.get("quality_policy_version")
+                );
+            }
+            index_groups(
+                plan,
+                if confirmation {
+                    final_confirmation_key
+                } else {
+                    audit_key
+                },
+                "quality-repair",
+            )?
+        } else {
+            HashMap::new()
+        };
+        Ok(Self {
+            audit,
+            quality,
+            confirmation,
+            matched_confirmation: HashSet::new(),
+        })
+    }
+
+    fn take(&mut self, row: &Value) -> Result<(Selection<'a>, &'a Value)> {
+        let key = audit_key(row);
+        let audit = self
+            .audit
+            .remove(&encoded_key(&key)?)
+            .with_context(|| format!("stock group missing or ambiguous in audit: {key:?}"))?;
+        let quality_key = if self.confirmation {
+            final_confirmation_key(row)
+        } else {
+            key
+        };
+        let quality_id = encoded_key(&quality_key)?;
+        if self.matched_confirmation.contains(&quality_id) {
+            bail!("ambiguous final-confirmation stock identity: {quality_key:?}");
+        }
+        let selection = if let Some(repair) = self.quality.remove(&quality_id) {
+            if self.confirmation {
+                self.matched_confirmation.insert(quality_id);
+            }
+            Selection::QualityRepair(repair)
+        } else if audit.get("status").and_then(Value::as_str) == Some("undersized") {
+            Selection::Resize(audit)
+        } else {
+            Selection::Stock
+        };
+        Ok((selection, audit))
+    }
+}
+
 pub fn select_rows(
     stock_rows: &[Value],
     audit: &Value,
@@ -403,288 +625,130 @@ pub fn select_rows(
         .get("expect_trials")
         .map_or(Ok(3), |value| value_i64(Some(value)))?;
 
-    let mut stock_groups: HashMap<String, (Vec<Value>, Vec<Value>)> = HashMap::new();
-    for row in stock_rows {
-        let key = identity(row);
-        let encoded = encoded_key(&key)?;
-        stock_groups
-            .entry(encoded)
-            .or_insert_with(|| (key, Vec::new()))
-            .1
-            .push(row.clone());
-    }
-    let mut ordered_stock = stock_groups.into_values().collect::<Vec<_>>();
-    ordered_stock.sort_by_key(|(key, _)| sort_key(key));
-
-    let mut audit_groups = HashMap::new();
-    for group in audit
-        .get("groups")
-        .and_then(Value::as_array)
-        .context("sizing audit groups missing")?
-    {
-        audit_groups.insert(encoded_key(&audit_key(group))?, group.clone());
-    }
-
-    let final_confirmation = quality_repair_plan
-        .and_then(|plan| plan.get("strategy"))
-        .and_then(Value::as_str)
-        .is_some_and(|strategy| FINAL_CONFIRMATION_STRATEGIES.contains(&strategy));
-    let mut quality_groups = HashMap::new();
-    if let Some(plan) = quality_repair_plan {
-        if value_i64(plan.get("quality_policy_version"))? != 1 {
-            bail!(
-                "unsupported stock quality policy: {:?}",
-                plan.get("quality_policy_version").unwrap_or(&Value::Null)
-            );
-        }
-        for group in plan
-            .get("groups")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default()
-        {
-            let key = if final_confirmation {
-                final_confirmation_key(&group)
-            } else {
-                audit_key(&group)
-            };
-            let encoded = encoded_key(&key)?;
-            if quality_groups.insert(encoded, group).is_some() {
-                bail!("duplicate quality-repair identity: {key:?}");
-            }
-        }
-    }
-
-    let mut output = Vec::new();
-    let mut selected_stock = 0_i64;
-    let mut selected_resize = 0_i64;
-    let mut selected_quality_repair = 0_i64;
-    let mut pending = Vec::<String>::new();
-    let mut sources = Vec::<Value>::new();
-
-    for (group_identity, rows) in ordered_stock {
-        let first = rows.first().context("empty stock group")?;
-        validate_trials(
-            &rows,
-            &format!(
-                "stock {}/{}/{}",
-                py_string(first.get("engine").unwrap_or(&Value::Null)),
-                py_string(first.get("durability").unwrap_or(&Value::Null)),
-                py_string(first.get("workload").unwrap_or(&Value::Null))
-            ),
-            stock_trial_count,
-        )?;
-        let key = audit_key(first);
-        let group = audit_groups
-            .get(&encoded_key(&key)?)
-            .with_context(|| format!("stock group missing from audit: {key:?}"))?;
-
-        let quality_key = if final_confirmation {
-            final_confirmation_key(first)
-        } else {
-            key.clone()
-        };
-        if let Some(quality_group) = quality_groups.get(&encoded_key(&quality_key)?) {
-            let rid = run_id(quality_group, resize_prefix)?;
-            let run_dir = resize_root.join(&rid);
-            let results_path = run_dir.join("results.ndjson");
-            let summary_path = run_dir.join("summary.json");
-            if !results_path.is_file() || !summary_path.is_file() {
-                pending.push(rid.clone());
-                if allow_missing_resize {
-                    continue;
-                }
-                bail!("missing quality-repair result: {rid}");
-            }
-            let expected_trials = value_i64(quality_group.get("suggested_trials"))?;
-            let run_summary = read_json(&summary_path)?;
-            if value_i64(run_summary.get("row_count"))? != expected_trials
-                || value_i64(run_summary.get("group_count"))? != 1
-                || json_truthy(run_summary.get("problems"))
-            {
-                bail!("invalid quality-repair summary: {rid}");
-            }
-            let repaired = read_ndjson(&results_path)?;
-            validate_trials(&repaired, &format!("quality repair {rid}"), expected_trials)?;
-            let repaired_ids = repaired.iter().map(identity).collect::<Vec<_>>();
-            if repaired_ids.is_empty() || repaired_ids.iter().any(|id| id != &group_identity) {
-                bail!("quality-repair identity differs from stock group: {rid}");
-            }
-            let expected_ops = value_i64(quality_group.get("suggested_effective_ops"))?;
-            let mut actual_ops = repaired
-                .iter()
-                .map(|row| value_i64(row.get("ops_requested")))
-                .collect::<Result<Vec<_>>>()?;
-            actual_ops.sort_unstable();
-            actual_ops.dedup();
-            if actual_ops != [expected_ops] {
-                bail!(
-                    "quality-repair op count mismatch for {rid}: expected {expected_ops}, got {actual_ops:?}"
-                );
-            }
-            let quality = final_quality(&repaired, thresholds)?;
-            if quality.get("final_status").and_then(Value::as_str) == Some("undersized") {
-                bail!("quality-repair result remains undersized: {rid}");
-            }
-            output.extend(repaired);
-            selected_quality_repair += 1;
-            sources.push(source_manifest(
-                first,
-                SourceSpec {
-                    source: "quality-repair",
-                    resize_strategy: Some("quality-repair"),
-                    run_id: Some(&rid),
-                    ops_requested: expected_ops,
-                    trials: expected_trials,
-                    rejected: Some(rejected_pressure_attempts(&run_dir)?),
-                },
-                &quality,
-            )?);
-            continue;
-        }
-
-        if group.get("status").and_then(Value::as_str) != Some("undersized") {
-            let quality = final_quality(&rows, thresholds)?;
-            let final_status = quality.get("final_status").and_then(Value::as_str);
-            let audit_status = group.get("status").and_then(Value::as_str);
-            if final_status != audit_status {
-                bail!(
-                    "stock quality no longer matches audit for {key:?}: audit={} recomputed={}",
-                    audit_status.unwrap_or("None"),
-                    final_status.unwrap_or("None")
-                );
-            }
-            output.extend(rows.clone());
-            selected_stock += 1;
-            sources.push(source_manifest(
-                first,
-                SourceSpec {
-                    source: "stock",
-                    resize_strategy: None,
-                    run_id: None,
-                    ops_requested: value_i64(first.get("ops_requested"))?,
-                    trials: stock_trial_count,
-                    rejected: None,
-                },
-                &quality,
-            )?);
-            continue;
-        }
-
-        let rid = run_id(group, resize_prefix)?;
-        let run_dir = resize_root.join(&rid);
-        let results_path = run_dir.join("results.ndjson");
-        let summary_path = run_dir.join("summary.json");
-        if !results_path.is_file() || !summary_path.is_file() {
-            pending.push(rid.clone());
-            if allow_missing_resize {
-                continue;
-            }
-            bail!("missing resized result: {rid}");
-        }
-        let expected_trials = value_i64(group.get("suggested_trials"))?;
-        let run_summary = read_json(&summary_path)?;
-        if value_i64(run_summary.get("row_count"))? != expected_trials
-            || value_i64(run_summary.get("group_count"))? != 1
-            || json_truthy(run_summary.get("problems"))
-        {
-            bail!("invalid resized summary: {rid}");
-        }
-        let resized = read_ndjson(&results_path)?;
-        validate_trials(&resized, &format!("resize {rid}"), expected_trials)?;
-        let resized_ids = resized.iter().map(identity).collect::<Vec<_>>();
-        if resized_ids.is_empty() || resized_ids.iter().any(|id| id != &group_identity) {
-            bail!("resized identity differs from stock group: {rid}");
-        }
-        let expected_ops = value_i64(group.get("suggested_effective_ops"))?;
-        let mut actual_ops = resized
-            .iter()
-            .map(|row| value_i64(row.get("ops_requested")))
-            .collect::<Result<Vec<_>>>()?;
-        actual_ops.sort_unstable();
-        actual_ops.dedup();
-        if actual_ops != [expected_ops] {
-            bail!(
-                "resized op count mismatch for {rid}: expected {expected_ops}, got {actual_ops:?}"
-            );
-        }
-        let quality = final_quality(&resized, thresholds)?;
-        if quality.get("final_status").and_then(Value::as_str) == Some("undersized") {
-            bail!("resized result remains undersized: {rid}");
-        }
-        output.extend(resized);
-        selected_resize += 1;
-        sources.push(source_manifest(
-            first,
-            SourceSpec {
-                source: "resize",
-                resize_strategy: group.get("resize_strategy").and_then(Value::as_str),
-                run_id: Some(&rid),
-                ops_requested: expected_ops,
-                trials: expected_trials,
-                rejected: Some(rejected_pressure_attempts(&run_dir)?),
-            },
-            &quality,
-        )?);
-    }
-
+    let ordered_stock = stock_groups(stock_rows)?;
+    let stock_group_count = i64::try_from(ordered_stock.len())?;
+    let mut plan = SelectionPlan::new(audit, quality_repair_plan)?;
     let expected_audit_groups = audit.get("group_count").map_or_else(
-        || i64::try_from(audit_groups.len()).unwrap_or(i64::MAX),
-        |value| value_i64(Some(value)).unwrap_or(-1),
-    );
-    let stock_group_count = ordered_stock_len(stock_rows)?;
-    if stock_group_count != expected_audit_groups {
+        || i64::try_from(plan.audit.len()).context("too many audit groups"),
+        |value| value_i64(Some(value)),
+    )?;
+    if stock_group_count != expected_audit_groups || ordered_stock.len() != plan.audit.len() {
         bail!(
             "stock/audit group count mismatch: stock={stock_group_count} audit={expected_audit_groups}"
         );
     }
-    let status_count = |status: &str| -> i64 {
-        i64::try_from(
-            sources
-                .iter()
-                .filter(|source| source.get("final_status").and_then(Value::as_str) == Some(status))
-                .count(),
-        )
-        .unwrap_or(i64::MAX)
-    };
-    let rejected_total = sources
-        .iter()
-        .map(|source| {
-            source
-                .get("rejected_pressure_attempts")
-                .and_then(Value::as_i64)
-                .unwrap_or(0)
-        })
-        .sum::<i64>();
-    let manifest = json!({
-        "sizing_policy_version": audit.get("sizing_policy_version").cloned().unwrap_or(Value::Null),
-        "stock_rows": stock_rows.len(),
-        "stock_groups": stock_group_count,
-        "selected_rows": output.len(),
-        "selected_groups": selected_stock + selected_resize + selected_quality_repair,
-        "selected_stock_groups": selected_stock,
-        "selected_resize_groups": selected_resize,
-        "selected_quality_repair_groups": selected_quality_repair,
-        "pending_resize_groups": pending.len(),
-        "pending_run_ids": pending,
-        "complete": pending.is_empty(),
-        "final_status_counts": {
-            "accepted": status_count("accepted"),
-            "variable": status_count("variable"),
-            "undersized": status_count("undersized"),
-        },
-        "selected_followup_rejected_pressure_attempts": rejected_total,
-        "sources": sources,
-    });
-    Ok((output, manifest))
+    let mut selected = SelectionResults::default();
+    let mut run_ids = HashSet::new();
+    for stock in ordered_stock {
+        let first = stock.rows.first().context("empty stock group")?;
+        validate_trials(&stock.rows, "stock", stock_trial_count)?;
+        validate_ops(&stock.rows, value_i64(first.get("ops_requested"))?, "stock")?;
+        let (selection, audit_group) = plan.take(first)?;
+        let result = match selection {
+            Selection::Stock => {
+                selected.stock += 1;
+                select_stock(stock, audit_group, thresholds, stock_trial_count)?
+            }
+            Selection::Resize(group) | Selection::QualityRepair(group) => {
+                let rid = run_id(group, resize_prefix)?;
+                if !run_ids.insert(rid.clone()) {
+                    bail!("ambiguous followup run ID: {rid}");
+                }
+                let run_dir = resize_root.join(&rid);
+                if !run_dir.join("results.ndjson").is_file()
+                    || !run_dir.join("summary.json").is_file()
+                {
+                    if !allow_missing_resize {
+                        bail!("missing {} result: {rid}", selection.source());
+                    }
+                    selected.pending.push(rid);
+                    continue;
+                }
+                match selection {
+                    Selection::Resize(_) => selected.resize += 1,
+                    Selection::QualityRepair(_) => selected.quality_repair += 1,
+                    Selection::Stock => {}
+                }
+                select_followup(&stock, selection, &run_dir, &rid, thresholds)?
+            }
+        };
+        selected.rows.extend(result.rows);
+        selected.sources.push(result.manifest);
+    }
+    if !plan.audit.is_empty() || !plan.quality.is_empty() {
+        bail!(
+            "unmatched selection plan groups: audit={}, quality={}",
+            plan.audit.len(),
+            plan.quality.len()
+        );
+    }
+    Ok(selected.finish(
+        audit.get("sizing_policy_version").unwrap_or(&Value::Null),
+        stock_rows.len(),
+        stock_group_count,
+    ))
 }
 
-fn ordered_stock_len(stock_rows: &[Value]) -> Result<i64> {
-    let mut keys = std::collections::HashSet::new();
-    for row in stock_rows {
-        keys.insert(encoded_key(&identity(row))?);
+#[derive(Default)]
+struct SelectionResults {
+    rows: Vec<Value>,
+    sources: Vec<Value>,
+    pending: Vec<String>,
+    stock: usize,
+    resize: usize,
+    quality_repair: usize,
+}
+
+impl SelectionResults {
+    fn finish(
+        self,
+        policy_version: &Value,
+        stock_rows: usize,
+        stock_group_count: i64,
+    ) -> (Vec<Value>, Value) {
+        let status_count = |status: &str| -> i64 {
+            i64::try_from(
+                self.sources
+                    .iter()
+                    .filter(|source| {
+                        source.get("final_status").and_then(Value::as_str) == Some(status)
+                    })
+                    .count(),
+            )
+            .unwrap_or(i64::MAX)
+        };
+        let rejected_total = self
+            .sources
+            .iter()
+            .map(|source| {
+                source
+                    .get("rejected_pressure_attempts")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0)
+            })
+            .sum::<i64>();
+        let manifest = json!({
+            "sizing_policy_version": policy_version,
+            "stock_rows": stock_rows,
+            "stock_groups": stock_group_count,
+            "selected_rows": self.rows.len(),
+            "selected_groups": self.sources.len(),
+            "selected_stock_groups": self.stock,
+            "selected_resize_groups": self.resize,
+            "selected_quality_repair_groups": self.quality_repair,
+            "pending_resize_groups": self.pending.len(),
+            "pending_run_ids": self.pending,
+            "complete": self.pending.is_empty(),
+            "final_status_counts": {
+                "accepted": status_count("accepted"),
+                "variable": status_count("variable"),
+                "undersized": status_count("undersized"),
+            },
+            "selected_followup_rejected_pressure_attempts": rejected_total,
+            "sources": self.sources,
+        });
+        (self.rows, manifest)
     }
-    Ok(i64::try_from(keys.len()).unwrap_or(i64::MAX))
 }
 
 fn write_selection(
@@ -713,16 +777,16 @@ fn write_selection(
     Ok(())
 }
 
-pub fn run_select(args: SelectArgs<'_>) -> Result<()> {
-    let stock_rows = read_ndjson(args.stock_results)?;
-    let audit = read_json(args.audit)?;
-    let quality = args.quality_repair_plan.map(read_json).transpose()?;
+fn read_selection(source: SelectionSource<'_>) -> Result<(Vec<Value>, Value)> {
+    let stock_rows = read_ndjson(source.stock_results)?;
+    let audit = read_json(source.audit)?;
+    let quality = source.quality_repair_plan.map(read_json).transpose()?;
     let (rows, mut manifest) = select_rows(
         &stock_rows,
         &audit,
-        args.resize_root,
-        args.resize_prefix,
-        args.allow_missing_resize,
+        source.resize_root,
+        source.resize_prefix,
+        source.allow_missing_resize,
         quality.as_ref(),
     )?;
     manifest
@@ -731,11 +795,24 @@ pub fn run_select(args: SelectArgs<'_>) -> Result<()> {
         .insert(
             "stock_rejected_pressure_attempts".to_owned(),
             json!(rejected_pressure_attempts(
-                args.stock_results
+                source
+                    .stock_results
                     .parent()
                     .context("stock results have no parent")?
             )?),
         );
+    Ok((rows, manifest))
+}
+
+pub fn run_select(args: SelectArgs<'_>) -> Result<()> {
+    let (rows, manifest) = read_selection(SelectionSource {
+        stock_results: args.stock_results,
+        audit: args.audit,
+        resize_root: args.resize_root,
+        resize_prefix: args.resize_prefix,
+        quality_repair_plan: args.quality_repair_plan,
+        allow_missing_resize: args.allow_missing_resize,
+    })?;
     write_selection(&rows, &manifest, args.ndjson_out, args.manifest_out)?;
     println!(
         "{{\"complete\": {}, \"pending_resize_groups\": {}, \"selected_groups\": {}, \"selected_quality_repair_groups\": {}, \"selected_resize_groups\": {}, \"selected_rows\": {}, \"selected_stock_groups\": {}}}",
@@ -764,65 +841,132 @@ pub fn run_select(args: SelectArgs<'_>) -> Result<()> {
     Ok(())
 }
 
-pub fn finalize_one(repo: &Path, lane: FinalizeLane<'_>) -> Result<()> {
-    fs::create_dir_all(lane.out_dir)
-        .with_context(|| format!("failed to create {}", lane.out_dir.display()))?;
-    let ndjson = lane.out_dir.join("results.ndjson");
-    let manifest_path = lane.out_dir.join("manifest.json");
-    let summary_path = lane.out_dir.join("summary.json");
-    let summary_md = lane.out_dir.join("summary.md");
-    let stock_rows = read_ndjson(lane.stock_results)?;
-    let audit = read_json(lane.audit)?;
-    let quality = lane.quality_repair_plan.map(read_json).transpose()?;
-    let resize_root = repo.join("results/runs");
-    let (rows, mut manifest) = select_rows(
-        &stock_rows,
-        &audit,
-        &resize_root,
-        lane.resize_prefix,
-        false,
-        quality.as_ref(),
-    )?;
-    manifest
-        .as_object_mut()
-        .context("selection manifest is not an object")?
-        .insert(
-            "stock_rejected_pressure_attempts".to_owned(),
-            json!(rejected_pressure_attempts(
-                lane.stock_results
-                    .parent()
-                    .context("stock results have no parent")?
-            )?),
-        );
-    write_selection(&rows, &manifest, &ndjson, &manifest_path)?;
-    summary::summarize_file(&ndjson, Some(&summary_path), Some(&summary_md), None)?;
-    let summary = read_json(&summary_path)?;
-    if !manifest
-        .get("complete")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-    {
-        bail!("selection remained incomplete: {}", lane.out_dir.display());
+struct PreparedFinalization<'a> {
+    lane: FinalizeLane<'a>,
+    rows: Vec<Value>,
+    manifest: Value,
+    report: summary::SummaryReport,
+}
+
+impl<'a> PreparedFinalization<'a> {
+    fn prepare(repo: &Path, lane: FinalizeLane<'a>) -> Result<Self> {
+        let (rows, manifest) = read_selection(SelectionSource {
+            stock_results: lane.stock_results,
+            audit: lane.audit,
+            resize_root: &repo.join("results/runs"),
+            resize_prefix: lane.resize_prefix,
+            quality_repair_plan: lane.quality_repair_plan,
+            allow_missing_resize: false,
+        })?;
+        let expected_groups = lane.kind.expected_groups();
+        if manifest.get("complete").and_then(Value::as_bool) != Some(true) {
+            bail!("selection remained incomplete: {}", lane.out_dir.display());
+        }
+        let selected_rows = usize::try_from(value_i64(manifest.get("selected_rows"))?)?;
+        if usize::try_from(value_i64(manifest.get("selected_groups"))?)? != expected_groups {
+            bail!("selection group-count mismatch: {}", lane.out_dir.display());
+        }
+        let report =
+            summary::SummaryReport::from_rows(&lane.out_dir.join("results.ndjson"), &rows, None)?;
+        report.validate_corpus(lane.kind.name(), selected_rows, expected_groups)?;
+        Ok(Self {
+            lane,
+            rows,
+            manifest,
+            report,
+        })
     }
-    let selected_rows = value_i64(manifest.get("selected_rows"))?;
-    if value_i64(manifest.get("selected_groups"))? != lane.expected_groups {
-        bail!("selection group-count mismatch: {}", lane.out_dir.display());
+
+    fn publish(&self) -> Result<String> {
+        let path = self.lane.out_dir;
+        fs::create_dir_all(path).with_context(|| format!("failed to create {}", path.display()))?;
+        write_selection(
+            &self.rows,
+            &self.manifest,
+            &path.join("results.ndjson"),
+            &path.join("manifest.json"),
+        )?;
+        self.report.write(
+            Some(&path.join("summary.json")),
+            Some(&path.join("summary.md")),
+        )?;
+        Ok(format!(
+            "{}={} groups",
+            self.lane.kind.name(),
+            self.lane.kind.expected_groups()
+        ))
     }
-    if value_i64(summary.get("row_count"))? != selected_rows
-        || value_i64(summary.get("group_count"))? != lane.expected_groups
-        || json_truthy(summary.get("problems"))
-    {
-        bail!("summary validation failed: {}", lane.out_dir.display());
+}
+
+/// Resolve existing symlinks and normalize the uncreated suffix without
+/// touching the filesystem. Relative and absolute spellings of an output
+/// directory must not allow two lanes to publish into the same corpus.
+fn output_identity(path: &Path) -> Result<PathBuf> {
+    let absolute = std::path::absolute(path)?;
+    let mut resolved = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::Prefix(_) | Component::RootDir => resolved.push(component.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                resolved.pop();
+            }
+            Component::Normal(name) => {
+                resolved.push(name);
+                match fs::symlink_metadata(&resolved) {
+                    Ok(_) => {
+                        resolved = resolved.canonicalize().with_context(|| {
+                            format!("resolve output directory {}", resolved.display())
+                        })?;
+                        if !resolved.is_dir() {
+                            bail!("output parent is not a directory: {}", resolved.display());
+                        }
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => {
+                        return Err(error).with_context(|| {
+                            format!("inspect output directory {}", resolved.display())
+                        });
+                    }
+                }
+            }
+        }
     }
+    Ok(resolved)
+}
+
+pub fn finalize_lanes(repo: &Path, lanes: Vec<FinalizeLane<'_>>) -> Result<()> {
+    if lanes.is_empty() {
+        bail!("no baseline lanes selected");
+    }
+    let mut destinations = HashSet::new();
+    for lane in &lanes {
+        if !destinations.insert(output_identity(lane.out_dir)?) {
+            bail!("baseline lanes must have distinct output directories");
+        }
+    }
+    // Complete all source/selection/summary validation before touching outputs.
+    let prepared = lanes
+        .into_iter()
+        .map(|lane| PreparedFinalization::prepare(repo, lane))
+        .collect::<Result<Vec<_>>>()?;
+    let labels = prepared
+        .iter()
+        .map(PreparedFinalization::publish)
+        .collect::<Result<Vec<_>>>()?;
+    println!("final baseline corpora validated: {}", labels.join(" "));
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{final_quality, run_id, select_rows};
-    use anyhow::Result;
+    use super::{
+        FinalizeInputs, FinalizeKind, FinalizeLane, final_quality, finalize_lanes, run_id,
+        select_rows,
+    };
+    use anyhow::{Context, Result};
     use serde_json::{Value, json};
-    use std::fs;
+    use std::{fs, path::Path};
 
     fn row(engine: &str, workload: &str, trial: i64, ops: i64, elapsed: f64, rate: f64) -> Value {
         json!({
@@ -870,6 +1014,147 @@ mod tests {
         }
         fs::create_dir_all(&root)?;
         Ok(root)
+    }
+
+    fn write_finalization_fixture(
+        root: &Path,
+        kind: FinalizeKind,
+        valid_summary: bool,
+    ) -> Result<()> {
+        let name = kind.name();
+        let mut stock = String::new();
+        let mut groups = Vec::new();
+        for group in 0..kind.expected_groups() {
+            let engine = format!("engine-{group}");
+            groups.push(audit_group(
+                &engine,
+                "point-read",
+                100,
+                "accepted",
+                None,
+                None,
+                None,
+            ));
+            for trial in 1..=3 {
+                let mut row = row(&engine, "point-read", trial, 100, 1.0, 100.0);
+                row["lane"] = json!(name);
+                row["ops_completed"] = json!(100);
+                row["durability_mapping"] = json!("test");
+                if valid_summary {
+                    row["db_bytes"] = json!(4096);
+                }
+                stock.push_str(&serde_json::to_string(&row)?);
+                stock.push('\n');
+            }
+        }
+        fs::write(root.join(format!("{name}-stock.ndjson")), stock)?;
+        fs::write(
+            root.join(format!("{name}-audit.json")),
+            serde_json::to_string(&audit(&groups))?,
+        )?;
+        Ok(())
+    }
+
+    fn fixture_lane<'a>(
+        kind: FinalizeKind,
+        stock: &'a Path,
+        audit: &'a Path,
+        out: &'a Path,
+    ) -> Result<FinalizeLane<'a>> {
+        FinalizeLane::resolve(
+            kind,
+            FinalizeInputs {
+                stock_results: Some(stock),
+                audit: Some(audit),
+                resize_prefix: "unused",
+                out_dir: Some(out),
+                quality_repair_plan: None,
+                skip_quality_repairs: false,
+            },
+        )
+    }
+
+    #[test]
+    fn finalization_validates_all_lanes_before_replacing_any_output() -> Result<()> {
+        let root = temp_root("finalization-preflight")?;
+        write_finalization_fixture(&root, FinalizeKind::Kv, true)?;
+        write_finalization_fixture(&root, FinalizeKind::Record, false)?;
+        let kv_out = root.join("kv");
+        let record_out = root.join("record");
+        fs::create_dir(&kv_out)?;
+        fs::write(kv_out.join("results.ndjson"), "previous corpus")?;
+        let kv_stock = root.join("kv-stock.ndjson");
+        let kv_audit = root.join("kv-audit.json");
+        let record_stock = root.join("record-stock.ndjson");
+        let record_audit = root.join("record-audit.json");
+        let kv = fixture_lane(FinalizeKind::Kv, &kv_stock, &kv_audit, &kv_out)?;
+        let record = fixture_lane(
+            FinalizeKind::Record,
+            &record_stock,
+            &record_audit,
+            &record_out,
+        )?;
+        assert!(finalize_lanes(&root, vec![kv, record]).is_err());
+        assert_eq!(
+            fs::read_to_string(kv_out.join("results.ndjson"))?,
+            "previous corpus"
+        );
+        assert!(!kv_out.join("manifest.json").exists());
+        assert!(!record_out.exists());
+
+        write_finalization_fixture(&root, FinalizeKind::Record, true)?;
+        finalize_lanes(&root, vec![kv, record])?;
+        for (path, groups) in [(&kv_out, 180), (&record_out, 40)] {
+            let summary: Value =
+                serde_json::from_str(&fs::read_to_string(path.join("summary.json"))?)?;
+            assert_eq!(summary["group_count"], groups);
+            assert_eq!(summary["row_count"], groups * 3);
+            assert_eq!(summary["problems"], json!([]));
+            assert!(path.join("manifest.json").is_file());
+            assert!(path.join("summary.md").is_file());
+        }
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn finalization_rejects_missing_inputs_and_duplicate_destinations() -> Result<()> {
+        let root = temp_root("finalization-resolve")?;
+        let stock = root.join("stock");
+        let audit = root.join("audit");
+        let out = root.join("out");
+        for (stock_results, audit_input, missing) in [
+            (None, Some(audit.as_path()), "stock-results"),
+            (Some(stock.as_path()), None, "audit"),
+        ] {
+            let error = FinalizeLane::resolve(
+                FinalizeKind::Record,
+                FinalizeInputs {
+                    stock_results,
+                    audit: audit_input,
+                    resize_prefix: "unused",
+                    out_dir: Some(&out),
+                    quality_repair_plan: None,
+                    skip_quality_repairs: false,
+                },
+            )
+            .err()
+            .context("expected missing input rejection")?;
+            assert_eq!(
+                error.to_string(),
+                format!("--record-{missing} is required for the selected lane")
+            );
+        }
+        let kv = fixture_lane(FinalizeKind::Kv, &stock, &audit, &out)?;
+        let alias = root.join("not-created/../out");
+        let record = fixture_lane(FinalizeKind::Record, &stock, &audit, &alias)?;
+        let error = finalize_lanes(&root, vec![kv, record])
+            .err()
+            .context("expected alias rejection")?;
+        assert!(error.to_string().contains("distinct output directories"));
+        assert!(!out.exists());
+        fs::remove_dir_all(root)?;
+        Ok(())
     }
 
     #[test]
@@ -951,6 +1236,40 @@ mod tests {
         let (selected, manifest) = select_rows(&stock, &plan, &root, "resize", false, None)?;
         assert_eq!(selected.len(), 8);
         assert_eq!(manifest["selected_resize_groups"], 1);
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn selection_rejects_duplicate_or_unmatched_plans_and_inconsistent_stock() -> Result<()> {
+        let root = temp_root("ambiguous")?;
+        let stock = (1..=3)
+            .map(|t| row("a", "point-read", t, 100, 1.0, 100.0))
+            .collect::<Vec<_>>();
+        let group = audit_group("a", "point-read", 100, "accepted", None, None, None);
+        let valid = audit(std::slice::from_ref(&group));
+        assert!(select_rows(&stock, &valid, &root, "resize", false, None).is_ok());
+        let mut duplicate = audit(&[group.clone(), group]);
+        duplicate["group_count"] = json!(1);
+        assert!(select_rows(&stock, &duplicate, &root, "resize", false, None).is_err());
+        let orphan = audit_group("b", "point-read", 100, "accepted", None, None, None);
+        let quality = json!({"quality_policy_version":1,"groups":[orphan]});
+        assert!(select_rows(&stock, &valid, &root, "resize", false, Some(&quality)).is_err());
+        for (key, value) in [
+            ("ops_requested", json!(99)),
+            ("ops_completed", json!(99)),
+            ("elapsed_s", json!("NaN")),
+            ("payload_bytes", json!(1024)),
+            ("engine_compression", json!("changed")),
+            ("trial", json!(2)),
+        ] {
+            let mut invalid = stock.clone();
+            invalid[0][key] = value;
+            assert!(
+                select_rows(&invalid, &valid, &root, "resize", false, None).is_err(),
+                "{key}"
+            );
+        }
         fs::remove_dir_all(root)?;
         Ok(())
     }

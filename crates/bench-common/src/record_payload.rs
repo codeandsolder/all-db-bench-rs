@@ -122,7 +122,7 @@ mod tests {
         assert!(structured.contains("\"schema\":\"telemetry-v1\""));
         let repeated_bytes = repeated.as_bytes();
         let (chunks, remainder) = repeated_bytes.as_chunks::<8>();
-        assert_eq!(remainder, []);
+        assert_eq!(remainder, [0_u8; 0]);
         assert!(
             chunks
                 .iter()

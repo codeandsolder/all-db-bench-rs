@@ -1,34 +1,29 @@
 use super::{
     engine::Engine,
-    lifecycle::{DatasetSpec, prefill, warm_existing_reads},
+    fixed_work::FixedWorkArgs,
+    lifecycle::{prefill, warm_existing_reads},
     metrics::{
-        ProcDelta, ProcSnapshot, Quantiles, SystemDelta, SystemSnapshot, count_as_f64, dir_size,
-        hist, peak_rss_kib, quantiles,
+        ProcDelta, Quantiles, SystemDelta, SystemSnapshot, count_as_f64, dir_size, hist,
+        peak_rss_kib, quantiles,
     },
     types::{
         AccessPattern, Durability, EngineKind, KeyShape, ValuePattern, Workload, WritePattern,
     },
 };
+use all_db_bench_common::concurrency::{WorkerMeasurement, partition_work, run_workers};
+use all_db_bench_common::run_directory::{ReportMode, finish_database, prepare_database};
+use all_db_bench_common::{client_summary::ClientSummary, measurement::SetupTimings};
 use anyhow::{Context, Result, bail};
 use clap::{Parser, ValueEnum};
 use hdrhistogram::Histogram;
 use serde::Serialize;
 use std::{
-    fs,
-    path::PathBuf,
-    sync::{Arc, Barrier, Condvar, Mutex, mpsc},
-    thread,
+    path::{Path, PathBuf},
+    sync::Arc,
     time::Instant,
 };
 
-use super::concurrency_clients::{
-    ClientOps, FjallClient, HeedClient, ManifoldClient, ParityClient, RedbClient, SledClient,
-    SurrealClient, TurboClient,
-};
-#[cfg(feature = "kv-experimental")]
-use super::concurrency_clients::{JammClient, LsmClient, RoughClient};
-#[cfg(feature = "kv-external")]
-use super::concurrency_clients::{MdbxClient, PersyClient, RocksClient};
+use super::backend_ops::{BackendOps, ManifoldHandle, ParityHandle, TurboHandle};
 
 mod workload;
 use workload::{ClientRun, run_client, verify_bounded_churn_state};
@@ -40,54 +35,48 @@ enum StateEvolution {
     Bounded,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DatabaseMode {
+    Fresh,
+    Prepare,
+    Reuse,
+}
+
+#[derive(Clone, Debug, clap::Args)]
+struct DatabasePreparation {
+    /// Create and prefill a fresh database, close it cleanly, and exit without measuring.
+    #[arg(long, default_value_t = false, conflicts_with = "reuse_db")]
+    prepare_only: bool,
+    /// Reopen an already prepared database and skip prefill.
+    #[arg(long, default_value_t = false, conflicts_with = "prepare_only")]
+    reuse_db: bool,
+}
+
+impl DatabasePreparation {
+    const fn mode(&self) -> DatabaseMode {
+        if self.prepare_only {
+            DatabaseMode::Prepare
+        } else if self.reuse_db {
+            DatabaseMode::Reuse
+        } else {
+            DatabaseMode::Fresh
+        }
+    }
+}
+
 #[derive(Clone, Debug, Parser)]
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "independent CLI feature toggles are clearer as booleans than a synthetic combined mode enum"
-)]
 #[command(about = "Shared-database multi-client scaling benchmark")]
 struct Args {
-    #[arg(long, value_enum)]
-    engine: EngineKind,
-    #[arg(long, value_enum)]
-    durability: Durability,
-    #[arg(long, value_enum)]
-    workload: Workload,
-    #[arg(long, default_value_t = 100_000)]
-    records: u64,
-    /// Total logical operations across all clients, not operations per client.
-    #[arg(long, default_value_t = 50_000)]
-    ops: u64,
-    #[arg(long, default_value_t = 256)]
-    value_bytes: usize,
-    #[arg(long, value_enum, default_value_t = ValuePattern::PseudoRandom)]
-    value_pattern: ValuePattern,
-    #[arg(long, default_value_t = 8)]
-    key_bytes: usize,
-    #[arg(long, value_enum, default_value_t = KeyShape::Sequential)]
-    key_shape: KeyShape,
-    #[arg(long, value_enum, default_value_t = AccessPattern::Auto)]
-    access_pattern: AccessPattern,
-    #[arg(long, default_value_t = 0)]
-    miss_percent: u8,
-    #[arg(long, value_enum, default_value_t = WritePattern::Append)]
-    write_pattern: WritePattern,
+    #[command(flatten)]
+    work: FixedWorkArgs,
     #[arg(long, value_enum, default_value_t = StateEvolution::Growth)]
     state_evolution: StateEvolution,
     #[arg(long, default_value_t = 8_192)]
     bounded_churn_slots: u64,
     #[arg(long, default_value_t = false)]
     verify_bounded_state: bool,
-    #[arg(long, default_value_t = 100)]
-    txn_size: usize,
-    #[arg(long, default_value_t = 100)]
-    scan_len: u64,
     #[arg(long, default_value_t = 1)]
     clients: usize,
-    #[arg(long, default_value_t = 1)]
-    trial: u32,
-    #[arg(long, default_value_t = 0x5eed_2026)]
-    seed: u64,
     #[arg(long, default_value = "concurrency")]
     scenario: String,
     #[arg(long, default_value = "data")]
@@ -96,23 +85,14 @@ struct Args {
     output: String,
     #[arg(long, default_value_t = false)]
     keep_db: bool,
-    /// Create and prefill a fresh database, close it cleanly, and exit without measuring.
-    #[arg(long, default_value_t = false, conflicts_with = "reuse_db")]
-    prepare_only: bool,
-    /// Reopen an already prepared database and skip prefill.
-    #[arg(long, default_value_t = false, conflicts_with = "prepare_only")]
-    reuse_db: bool,
+    #[command(flatten)]
+    database: DatabasePreparation,
     #[arg(long, default_value_t = 5_000)]
     warmup_reads: u64,
 }
 
 #[derive(Debug, Serialize)]
-struct ClientMeasurement {
-    client: usize,
-    ops_requested: u64,
-    ops_completed: u64,
-    elapsed_s: f64,
-    ops_per_s: f64,
+struct ClientWorkload {
     reads: u64,
     writes: u64,
     deletes: u64,
@@ -150,9 +130,8 @@ struct Measurement {
     trial: u32,
     seed: u64,
     scenario: String,
-    open_s: f64,
-    prefill_s: f64,
-    warmup_s: f64,
+    #[serde(flatten)]
+    setup: SetupTimings,
     elapsed_s: f64,
     ops_per_s: f64,
     reads: u64,
@@ -161,14 +140,8 @@ struct Measurement {
     write_conflict_retries: u64,
     read_latency: Quantiles,
     write_txn_latency: Quantiles,
-    client_elapsed_s_min: f64,
-    client_elapsed_s_median: f64,
-    client_elapsed_s_max: f64,
-    client_ops_per_s_min: f64,
-    client_ops_per_s_median: f64,
-    client_ops_per_s_max: f64,
-    client_throughput_max_min_ratio: f64,
-    client_measurements: Vec<ClientMeasurement>,
+    #[serde(flatten)]
+    client_summary: ClientSummary<ClientWorkload>,
     db_bytes: u64,
     peak_rss_kib: u64,
     measured_process: ProcDelta,
@@ -198,118 +171,31 @@ struct AggregateRun {
     system_delta: SystemDelta,
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "thread launch, synchronized measurement, join, and aggregation form one concurrency protocol"
-)]
-fn run_clients<C: ClientOps>(
+fn run_clients<C: BackendOps + Clone + Send + 'static>(
     prototype: C,
     args: &Args,
     runtime: &tokio::runtime::Handle,
 ) -> Result<AggregateRun> {
-    let start_barrier = Arc::new(Barrier::new(args.clients + 1));
-    let release = Arc::new((Mutex::new(false), Condvar::new()));
-    let (tx, rx) = mpsc::channel::<(usize, Result<ClientRun>)>();
-    let base_ops = args.ops / args.clients as u64;
-    let extra = args.ops % args.clients as u64;
-    let use_churn_pool = args.state_evolution == StateEvolution::Bounded
-        && matches!(args.workload, Workload::Balanced | Workload::Churn);
-    let base_slots = if use_churn_pool {
-        args.bounded_churn_slots / args.clients as u64
-    } else {
-        0
-    };
-    let extra_slots = if use_churn_pool {
-        args.bounded_churn_slots % args.clients as u64
-    } else {
-        0
-    };
-    let mut offset = 0u64;
-    let mut slot_offset = 0u64;
-    let mut joins = Vec::with_capacity(args.clients);
-
-    for client in 0..args.clients {
-        let ops = base_ops + u64::from((client as u64) < extra);
-        let client_offset = offset;
-        offset = offset.saturating_add(ops);
-        let client_slots = base_slots + u64::from((client as u64) < extra_slots);
-        let client_slot_start = slot_offset;
-        slot_offset = slot_offset.saturating_add(client_slots);
-
-        let mut engine = prototype.clone();
-        let thread_args = args.clone();
-        let start_barrier = Arc::clone(&start_barrier);
-        let release = Arc::clone(&release);
-        let tx = tx.clone();
-        let runtime = runtime.clone();
-        joins.push(
-            thread::Builder::new()
-                .name(format!("dbbench-c{client}"))
-                .spawn(move || {
-                    let outcome = {
-                        start_barrier.wait();
-                        runtime.block_on(run_client(
-                            &mut engine,
-                            &thread_args,
-                            client,
-                            ops,
-                            client_offset,
-                            client_slot_start,
-                            client_slots,
-                        ))
-                    };
-                    let _ = tx.send((client, outcome));
-
-                    // Keep the task/TID alive until the coordinator has captured its
-                    // process-after snapshot. This avoids losing schedstat deltas.
-                    let (lock, cv) = &*release;
-                    let mut released = lock
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    while !*released {
-                        released = cv
-                            .wait(released)
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    }
-                    drop(released);
-                })?,
-        );
-    }
-    drop(tx);
-
-    let system_before = SystemSnapshot::capture();
-    let process_before = ProcSnapshot::capture();
-    let started = Instant::now();
-    start_barrier.wait();
-
-    let mut client_runs = Vec::with_capacity(args.clients);
-    let receive_result: Result<()> = (|| {
-        for _ in 0..args.clients {
-            let (client, result) = rx
-                .recv()
-                .context("client result channel closed before all clients completed")?;
-            client_runs.push(result.with_context(|| format!("client {client} failed"))?);
-        }
-        Ok(())
-    })();
-    let elapsed = started.elapsed();
-
-    let process_after = ProcSnapshot::capture();
-    let system_after = SystemSnapshot::capture();
-
-    {
-        let (lock, cv) = &*release;
-        *lock
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
-        cv.notify_all();
-    }
-
-    for join in joins {
-        join.join()
-            .map_err(|_| anyhow::anyhow!("concurrency client thread panicked"))?;
-    }
-    receive_result?;
+    let slots = args.churn_pool_slots();
+    let tasks = partition_work(args.work.ops, args.clients, 1)?
+        .into_iter()
+        .zip(partition_work(slots, args.clients, 1)?)
+        .enumerate()
+        .map(|(client, (ops, slots))| {
+            let mut engine = prototype.clone();
+            let args = args.clone();
+            let runtime = runtime.clone();
+            move || runtime.block_on(run_client(&mut engine, &args, client, ops, slots))
+        })
+        .collect();
+    let WorkerMeasurement {
+        clients: client_runs,
+        elapsed_s,
+        process,
+        system_before,
+        system_after,
+        system_delta,
+    } = run_workers("dbbench", tasks)?;
 
     let bounded_state_verified = if args.verify_bounded_state {
         let mut verifier = prototype;
@@ -319,7 +205,6 @@ fn run_clients<C: ClientOps>(
         false
     };
 
-    client_runs.sort_by_key(|r| r.client);
     let mut read_hist = hist()?;
     let mut write_hist = hist()?;
     let mut completed = 0u64;
@@ -330,7 +215,7 @@ fn run_clients<C: ClientOps>(
     for client in &client_runs {
         read_hist += &client.read_hist;
         write_hist += &client.write_hist;
-        completed = completed.saturating_add(client.ops_completed);
+        completed = completed.saturating_add(client.timing.ops_completed);
         reads = reads.saturating_add(client.reads);
         writes = writes.saturating_add(client.writes);
         deletes = deletes.saturating_add(client.deletes);
@@ -348,15 +233,15 @@ fn run_clients<C: ClientOps>(
         write_hist,
         clients: client_runs,
         bounded_state_verified,
-        elapsed_s: elapsed.as_secs_f64(),
-        process: process_before.delta(&process_after, elapsed),
-        system_delta: system_before.delta(&system_after),
+        elapsed_s,
+        process,
+        system_delta,
         system_before,
         system_after,
     })
 }
 
-fn run_clients_without_starving_runtime<C: ClientOps>(
+fn run_clients_without_starving_runtime<C: BackendOps + Clone + Send + 'static>(
     prototype: C,
     args: &Args,
 ) -> Result<AggregateRun> {
@@ -370,323 +255,145 @@ async fn dispatch(engine: Engine, args: &Args) -> Result<(&'static str, Aggregat
             let shared = Arc::new(db);
             Ok((
                 "Arc<redb::Database>",
-                run_clients_without_starving_runtime(RedbClient(shared), args)?,
+                run_clients_without_starving_runtime(shared, args)?,
             ))
         }
-        Engine::Fjall { db, keyspace } => Ok((
+        Engine::Fjall(handle) => Ok((
             "native Clone handles",
-            run_clients_without_starving_runtime(FjallClient { db, keyspace }, args)?,
+            run_clients_without_starving_runtime(handle, args)?,
         )),
         Engine::Surrealkv(tree) => {
-            let run = run_clients_without_starving_runtime(SurrealClient(tree.clone()), args)?;
+            let run = run_clients_without_starving_runtime(tree.clone(), args)?;
             // The last handle's Drop schedules an asynchronous shutdown. Wait for
             // it explicitly before the caller measures/removes the database files.
             tree.close().await?;
             Ok(("native Clone handle", run))
         }
-        Engine::Heed { env, db } => Ok((
+        Engine::Heed(handle) => Ok((
             "native Clone Env/Database handles",
-            run_clients_without_starving_runtime(HeedClient { env, db }, args)?,
+            run_clients_without_starving_runtime(handle, args)?,
         )),
         Engine::Sled(db) => Ok((
             "one native sled::Db clone per client; handle is Send+Clone but !Sync",
-            run_clients_without_starving_runtime(SledClient(*db), args)?,
+            run_clients_without_starving_runtime(*db, args)?,
         )),
         Engine::Lkv(_) => bail!(
             "lkv concurrency unsupported: write transactions require &mut Database and 0.2.1 exposes no cloneable/shared writer handle; benchmark-side mutex would fake concurrency"
         ),
-        Engine::Manifold { _db: db, cf } => {
-            let shared = Arc::new(db);
+        Engine::Manifold(handle) => {
+            let shared = Arc::new(handle.owner);
             Ok((
                 "shared Arc<ColumnFamilyDatabase> owner + native ColumnFamily clones",
-                run_clients_without_starving_runtime(ManifoldClient { _db: shared, cf }, args)?,
+                run_clients_without_starving_runtime(
+                    ManifoldHandle {
+                        owner: shared,
+                        cf: handle.cf,
+                    },
+                    args,
+                )?,
             ))
         }
         Engine::Turbokv(mut slot) => {
-            let db = slot.take().context("TurboKV missing database handle")?;
+            let TurboHandle(db) = slot.take().context("TurboKV missing database handle")?;
             let shared = Arc::new(db);
-            let run = run_clients_without_starving_runtime(TurboClient(Arc::clone(&shared)), args)?;
+            let run = run_clients_without_starving_runtime(TurboHandle(Arc::clone(&shared)), args)?;
             let db = Arc::try_unwrap(shared)
                 .map_err(|_| anyhow::anyhow!("TurboKV client retained shared handle"))?;
             db.close().await?;
             Ok(("Arc<turbokv::Db>", run))
         }
-        Engine::ParitydbHash(db) => Ok((
-            "Arc<parity_db::Db> hash column",
-            run_clients_without_starving_runtime(
-                ParityClient {
-                    db: Arc::new(db),
-                    ordered: false,
-                },
-                args,
-            )?,
-        )),
-        Engine::ParitydbBtree(db) => Ok((
-            "Arc<parity_db::Db> B-tree column",
-            run_clients_without_starving_runtime(
-                ParityClient {
-                    db: Arc::new(db),
-                    ordered: true,
-                },
-                args,
-            )?,
-        )),
+        Engine::Paritydb(handle) => {
+            let description = if handle.ordered {
+                "Arc<parity_db::Db> B-tree column"
+            } else {
+                "Arc<parity_db::Db> hash column"
+            };
+            Ok((
+                description,
+                run_clients_without_starving_runtime(
+                    ParityHandle {
+                        db: Arc::new(handle.db),
+                        ordered: handle.ordered,
+                    },
+                    args,
+                )?,
+            ))
+        }
         #[cfg(feature = "kv-external")]
         Engine::Rocksdb(db) => Ok((
             "Arc<rocksdb::DB>",
-            run_clients_without_starving_runtime(RocksClient(Arc::new(db)), args)?,
+            run_clients_without_starving_runtime(Arc::new(db), args)?,
         )),
         #[cfg(feature = "kv-external")]
         Engine::Mdbx(db) => Ok((
             "Arc<libmdbx::Database>",
-            run_clients_without_starving_runtime(MdbxClient(Arc::new(db)), args)?,
+            run_clients_without_starving_runtime(Arc::new(db), args)?,
         )),
         #[cfg(feature = "kv-external")]
         Engine::Persy(db) => Ok((
             "native Persy clone per client",
-            run_clients_without_starving_runtime(PersyClient(db), args)?,
+            run_clients_without_starving_runtime(db, args)?,
         )),
         #[cfg(feature = "kv-experimental")]
         Engine::Roughdb(db) => Ok((
             "Arc<roughdb::Db>",
-            run_clients_without_starving_runtime(RoughClient(Arc::new(db)), args)?,
+            run_clients_without_starving_runtime(Arc::new(db), args)?,
         )),
         #[cfg(feature = "kv-experimental")]
         Engine::Jammdb(db) => Ok((
             "native jammdb::DB clone per client",
-            run_clients_without_starving_runtime(JammClient(db), args)?,
+            run_clients_without_starving_runtime(db, args)?,
         )),
         #[cfg(feature = "kv-experimental")]
         Engine::Lsmdb(db) => Ok((
             "Arc<lsm_db::Lsm>",
-            run_clients_without_starving_runtime(LsmClient(Arc::new(db)), args)?,
+            run_clients_without_starving_runtime(Arc::new(db), args)?,
         )),
     }
 }
 
-fn median(mut values: Vec<f64>) -> f64 {
-    values.sort_by(f64::total_cmp);
-    let n = values.len();
-    if n.is_multiple_of(2) {
-        f64::midpoint(values[n / 2 - 1], values[n / 2])
-    } else {
-        values[n / 2]
-    }
-}
-
-/// Run the shared-database multi-client scaling benchmark.
-///
-/// # Errors
-/// Returns an error for invalid arguments, unsupported engine semantics, backend failures, or result I/O failures.
-#[expect(
-    clippy::too_many_lines,
-    reason = "the top-level harness intentionally keeps benchmark phase ordering visible"
-)]
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the opened engine must remain alive through prefill, warmup, concurrent execution, and final measurement"
-)]
-pub async fn run() -> Result<()> {
-    let args = Args::parse();
-    if args.records == 0 {
-        bail!("--records must be greater than zero");
-    }
-    if args.ops == 0 {
-        bail!("--ops must be greater than zero");
-    }
-    if args.clients == 0 || args.clients as u64 > args.ops {
-        bail!("--clients must be in 1..=ops");
-    }
-    if args.key_bytes < 8 {
-        bail!("--key-bytes must be at least 8");
-    }
-    if args.miss_percent > 100 {
-        bail!("--miss-percent must be in 0..=100");
-    }
-    if args.key_shape == KeyShape::Hashed && matches!(args.workload, Workload::RangeScan) {
-        bail!("hashed keys are incompatible with ID-ordered range-scan");
-    }
-    if matches!(args.workload, Workload::DeleteBurst) && args.ops > args.records {
-        bail!("delete-burst requires total ops <= records");
-    }
-    if args.verify_bounded_state
-        && !(args.state_evolution == StateEvolution::Bounded
-            && matches!(args.workload, Workload::Balanced | Workload::Churn))
-    {
-        bail!("--verify-bounded-state requires bounded balanced or churn workload");
-    }
-    if args.state_evolution == StateEvolution::Bounded {
-        if matches!(args.workload, Workload::DeleteBurst) {
-            bail!(
-                "bounded state evolution is unsupported for delete-burst; it is a finite transition diagnostic"
-            );
-        }
-        if matches!(args.workload, Workload::TinyTxn | Workload::WriteBurst)
-            && args.write_pattern == WritePattern::Append
-        {
-            bail!(
-                "bounded tiny-txn/write-burst requires update-uniform or update-hot write pattern"
-            );
-        }
-        if matches!(args.workload, Workload::Balanced | Workload::Churn) {
-            if args.write_pattern != WritePattern::UpdateUniform {
-                bail!("bounded balanced/churn requires canonical write-pattern=update-uniform");
-            }
-            if args.txn_size < 2 {
-                bail!(
-                    "bounded balanced/churn requires txn-size >= 2 for paired delete/insert toggles"
-                );
-            }
-            let minimum_slots = (args.clients as u64).saturating_mul(300);
-            if args.bounded_churn_slots < minimum_slots {
-                bail!(
-                    "bounded-churn-slots must be >= clients*300 ({minimum_slots}) to avoid slot reuse within a 1000-op epoch"
-                );
-            }
-            args.records
-                .checked_add(args.bounded_churn_slots.saturating_mul(2))
-                .context("bounded churn key-id range overflow")?;
-        }
-    }
-    if matches!(args.engine, EngineKind::Lkv) {
-        bail!(
-            "lkv concurrency unsupported: no native shared/cloneable writer handle; external serialization is intentionally not benchmarked"
-        );
-    }
-
-    let durability_mapping = args.engine.durability_mapping(args.durability)?;
-    let run_name = format!(
-        "{:?}-{:?}-{:?}-c{}-n{}-k{}-{:?}-v{}-{:?}-tx{}-scan{}-trial{}",
-        args.engine,
-        args.durability,
-        args.workload,
-        args.clients,
-        args.records,
-        args.key_bytes,
-        args.key_shape,
-        args.value_bytes,
-        args.value_pattern,
-        args.txn_size,
-        args.scan_len,
-        args.trial,
-    )
-    .to_lowercase()
-    .replace('_', "-");
-    let path = args.root.join(run_name);
-    if path.exists() && !args.reuse_db {
-        fs::remove_dir_all(&path).context("remove stale concurrency run directory")?;
-    }
-    if args.reuse_db && !path.exists() {
-        bail!(
-            "--reuse-db requested but prepared database path does not exist: {}",
-            path.display()
-        );
-    }
-    fs::create_dir_all(&path)?;
-
-    let open_started = Instant::now();
-    let mut engine = Engine::open(args.engine, args.durability, &path).await?;
-    let open_s = open_started.elapsed().as_secs_f64();
-    let dataset = DatasetSpec {
-        records: args.records,
-        key_bytes: args.key_bytes,
-        key_shape: args.key_shape,
-        seed: args.seed,
-        value_bytes: args.value_bytes,
-        value_pattern: args.value_pattern,
-        durability: args.durability,
-    };
-
-    let prefill_s = if args.reuse_db {
-        0.0
-    } else {
-        let prefill_started = Instant::now();
-        prefill(
-            &mut engine,
-            dataset,
-            if args.state_evolution == StateEvolution::Bounded
-                && matches!(args.workload, Workload::Balanced | Workload::Churn)
-            {
-                args.bounded_churn_slots
-            } else {
-                0
+fn report_measurement(
+    args: &Args,
+    path: &Path,
+    setup: SetupTimings,
+    durability_mapping: &'static str,
+    concurrency_handle: &'static str,
+    run: AggregateRun,
+) -> Result<Measurement> {
+    let db_bytes = dir_size(path);
+    let client_summary = ClientSummary::from_clients(run.clients.into_iter().map(|client| {
+        (
+            client.timing,
+            ClientWorkload {
+                reads: client.reads,
+                writes: client.writes,
+                deletes: client.deletes,
+                write_conflict_retries: client.write_conflict_retries,
+                read_latency: quantiles(&client.read_hist),
+                write_txn_latency: quantiles(&client.write_hist),
             },
         )
-        .await?;
-        prefill_started.elapsed().as_secs_f64()
-    };
+    }))?;
 
-    if args.prepare_only {
-        engine.close().await?;
-        return Ok(());
-    }
-
-    let warmup_started = Instant::now();
-    warm_existing_reads(
-        &mut engine,
-        dataset,
-        args.warmup_reads,
-        args.access_pattern,
-        args.workload,
-    )
-    .await?;
-    let warmup_s = warmup_started.elapsed().as_secs_f64();
-
-    let (concurrency_handle, run) = dispatch(engine, &args).await?;
-    if run.completed != args.ops {
-        bail!(
-            "concurrency run completed {} operations, expected {}",
-            run.completed,
-            args.ops
-        );
-    }
-
-    let db_bytes = dir_size(&path);
-    let mut client_elapsed = Vec::with_capacity(run.clients.len());
-    let mut client_rates = Vec::with_capacity(run.clients.len());
-    let mut client_measurements = Vec::with_capacity(run.clients.len());
-    for client in run.clients {
-        let rate = count_as_f64(client.ops_completed) / client.elapsed_s.max(f64::MIN_POSITIVE);
-        client_elapsed.push(client.elapsed_s);
-        client_rates.push(rate);
-        client_measurements.push(ClientMeasurement {
-            client: client.client,
-            ops_requested: client.ops_requested,
-            ops_completed: client.ops_completed,
-            elapsed_s: client.elapsed_s,
-            ops_per_s: rate,
-            reads: client.reads,
-            writes: client.writes,
-            deletes: client.deletes,
-            write_conflict_retries: client.write_conflict_retries,
-            read_latency: quantiles(&client.read_hist),
-            write_txn_latency: quantiles(&client.write_hist),
-        });
-    }
-    let elapsed_min = client_elapsed.iter().copied().fold(f64::INFINITY, f64::min);
-    let elapsed_max = client_elapsed.iter().copied().fold(0.0, f64::max);
-    let rate_min = client_rates.iter().copied().fold(f64::INFINITY, f64::min);
-    let rate_max = client_rates.iter().copied().fold(0.0, f64::max);
-
-    let result = Measurement {
+    Ok(Measurement {
         format_version: 6,
         lane: "kv-concurrency",
-        engine: args.engine,
-        engine_version: args.engine.version(),
-        durability: args.durability,
+        engine: args.work.engine,
+        engine_version: args.work.engine.version(),
+        durability: args.work.durability,
         durability_mapping,
-        workload: args.workload,
-        records: args.records,
-        ops_requested: args.ops,
+        workload: args.work.workload,
+        records: args.work.records,
+        ops_requested: args.work.ops,
         ops_completed: run.completed,
         clients: args.clients,
-        value_bytes: args.value_bytes,
-        value_pattern: args.value_pattern,
-        key_bytes: args.key_bytes,
-        key_shape: args.key_shape,
-        access_pattern: args.access_pattern,
-        miss_percent: args.miss_percent,
-        write_pattern: args.write_pattern,
+        value_bytes: args.work.value_bytes,
+        value_pattern: args.work.value_pattern,
+        key_bytes: args.work.key_bytes,
+        key_shape: args.work.key_shape,
+        access_pattern: args.work.access_pattern,
+        miss_percent: args.work.miss_percent,
+        write_pattern: args.work.write_pattern,
         state_evolution: args.state_evolution,
         bounded_churn_slots: if args.state_evolution == StateEvolution::Bounded {
             args.bounded_churn_slots
@@ -695,14 +402,12 @@ pub async fn run() -> Result<()> {
         },
         verify_bounded_state: args.verify_bounded_state,
         bounded_state_verified: run.bounded_state_verified,
-        txn_size: args.txn_size,
-        scan_len: args.scan_len,
-        trial: args.trial,
-        seed: args.seed,
+        txn_size: args.work.txn_size,
+        scan_len: args.work.scan_len,
+        trial: args.work.trial,
+        seed: args.work.seed,
         scenario: args.scenario.clone(),
-        open_s,
-        prefill_s,
-        warmup_s,
+        setup,
         elapsed_s: run.elapsed_s,
         ops_per_s: count_as_f64(run.completed) / run.elapsed_s.max(f64::MIN_POSITIVE),
         reads: run.reads,
@@ -711,14 +416,7 @@ pub async fn run() -> Result<()> {
         write_conflict_retries: run.write_conflict_retries,
         read_latency: quantiles(&run.read_hist),
         write_txn_latency: quantiles(&run.write_hist),
-        client_elapsed_s_min: elapsed_min,
-        client_elapsed_s_median: median(client_elapsed),
-        client_elapsed_s_max: elapsed_max,
-        client_ops_per_s_min: rate_min,
-        client_ops_per_s_median: median(client_rates),
-        client_ops_per_s_max: rate_max,
-        client_throughput_max_min_ratio: rate_max / rate_min.max(f64::MIN_POSITIVE),
-        client_measurements,
+        client_summary,
         db_bytes,
         peak_rss_kib: peak_rss_kib(),
         measured_process: run.process,
@@ -729,22 +427,207 @@ pub async fn run() -> Result<()> {
         db_kept: args.keep_db,
         warmup_reads: args.warmup_reads,
         concurrency_handle,
-    };
+    })
+}
 
-    let line = serde_json::to_string(&result)?;
-    if args.output == "-" {
-        println!("{line}");
-    } else {
-        use std::io::Write;
-        let mut f = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&args.output)?;
-        writeln!(f, "{line}")?;
+impl Args {
+    const fn uses_churn_pool(&self) -> bool {
+        matches!(self.state_evolution, StateEvolution::Bounded)
+            && matches!(self.work.workload, Workload::Balanced | Workload::Churn)
     }
 
-    if !args.keep_db {
-        fs::remove_dir_all(&path).context("remove completed concurrency database")?;
+    const fn churn_pool_slots(&self) -> u64 {
+        if self.uses_churn_pool() {
+            self.bounded_churn_slots
+        } else {
+            0
+        }
     }
+}
+
+fn validate_args(args: &Args) -> Result<()> {
+    args.work
+        .spec()
+        .validate(args.work.engine, args.churn_pool_slots())?;
+    if args.clients == 0 || args.clients as u64 > args.work.ops {
+        bail!("--clients must be in 1..=ops");
+    }
+    if args.verify_bounded_state && !args.uses_churn_pool() {
+        bail!("--verify-bounded-state requires bounded balanced or churn workload");
+    }
+    if args.state_evolution == StateEvolution::Bounded {
+        if matches!(args.work.workload, Workload::DeleteBurst) {
+            bail!(
+                "bounded state evolution is unsupported for delete-burst; it is a finite transition diagnostic"
+            );
+        }
+        if matches!(args.work.workload, Workload::TinyTxn | Workload::WriteBurst)
+            && args.work.write_pattern == WritePattern::Append
+        {
+            bail!(
+                "bounded tiny-txn/write-burst requires update-uniform or update-hot write pattern"
+            );
+        }
+        if matches!(args.work.workload, Workload::Balanced | Workload::Churn) {
+            if args.work.write_pattern != WritePattern::UpdateUniform {
+                bail!("bounded balanced/churn requires canonical write-pattern=update-uniform");
+            }
+            if args.work.txn_size < 2 {
+                bail!(
+                    "bounded balanced/churn requires txn-size >= 2 for paired delete/insert toggles"
+                );
+            }
+            let minimum_slots = (args.clients as u64).saturating_mul(300);
+            if args.bounded_churn_slots < minimum_slots {
+                bail!(
+                    "bounded-churn-slots must be >= clients*300 ({minimum_slots}) to avoid slot reuse within a 1000-op epoch"
+                );
+            }
+        }
+    }
+    if matches!(args.work.engine, EngineKind::Lkv) {
+        bail!(
+            "lkv concurrency unsupported: no native shared/cloneable writer handle; external serialization is intentionally not benchmarked"
+        );
+    }
+
     Ok(())
+}
+
+fn prepare_run_path(args: &Args, mode: DatabaseMode) -> Result<PathBuf> {
+    let run_name = format!(
+        "{:?}-{:?}-{:?}-c{}-n{}-k{}-{:?}-v{}-{:?}-tx{}-scan{}-trial{}",
+        args.work.engine,
+        args.work.durability,
+        args.work.workload,
+        args.clients,
+        args.work.records,
+        args.work.key_bytes,
+        args.work.key_shape,
+        args.work.value_bytes,
+        args.work.value_pattern,
+        args.work.txn_size,
+        args.work.scan_len,
+        args.work.trial,
+    )
+    .to_lowercase()
+    .replace('_', "-");
+    prepare_database(&args.root, &run_name, mode == DatabaseMode::Reuse)
+}
+
+/// Run the shared-database multi-client scaling benchmark.
+///
+/// # Errors
+/// Returns an error for invalid arguments, unsupported engine semantics, backend failures, or result I/O failures.
+pub async fn run() -> Result<()> {
+    let args = Args::parse();
+    validate_args(&args)?;
+
+    let durability_mapping = args.work.engine.durability_mapping(args.work.durability)?;
+    let mode = args.database.mode();
+    let path = prepare_run_path(&args, mode)?;
+
+    let (setup, (concurrency_handle, run)) = {
+        let open_started = Instant::now();
+        let mut engine = Engine::open(args.work.engine, args.work.durability, &path).await?;
+        let open_s = open_started.elapsed().as_secs_f64();
+        let dataset = args.work.spec().dataset;
+
+        let prefill_s = if mode == DatabaseMode::Reuse {
+            0.0
+        } else {
+            let prefill_started = Instant::now();
+            prefill(&mut engine, dataset, args.churn_pool_slots()).await?;
+            prefill_started.elapsed().as_secs_f64()
+        };
+
+        if mode == DatabaseMode::Prepare {
+            engine.close().await?;
+            drop(engine);
+            return Ok(());
+        }
+
+        let warmup_started = Instant::now();
+        warm_existing_reads(
+            &mut engine,
+            dataset,
+            args.warmup_reads,
+            args.work.access_pattern,
+            args.work.workload,
+        )
+        .await?;
+        let warmup_s = warmup_started.elapsed().as_secs_f64();
+
+        (
+            SetupTimings {
+                open: open_s,
+                prefill: prefill_s,
+                warmup: warmup_s,
+            },
+            dispatch(engine, &args).await?,
+        )
+    };
+    if run.completed != args.work.ops {
+        bail!(
+            "concurrency run completed {} operations, expected {}",
+            run.completed,
+            args.work.ops
+        );
+    }
+
+    let result = report_measurement(
+        &args,
+        &path,
+        setup,
+        durability_mapping,
+        concurrency_handle,
+        run,
+    )?;
+    finish_database(
+        &path,
+        args.keep_db,
+        &result,
+        &args.output,
+        ReportMode::AppendLine,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Args, DatabaseMode};
+    use anyhow::Result;
+    use clap::Parser;
+
+    #[test]
+    fn preparation_cli_resolves_to_one_database_mode() -> Result<()> {
+        let base = [
+            "kvconcurrency",
+            "--engine",
+            "redb",
+            "--durability",
+            "sync",
+            "--workload",
+            "point-read",
+        ];
+        assert_eq!(
+            Args::try_parse_from(base)?.database.mode(),
+            DatabaseMode::Fresh
+        );
+        assert_eq!(
+            Args::try_parse_from(base.into_iter().chain(["--prepare-only"]))?
+                .database
+                .mode(),
+            DatabaseMode::Prepare
+        );
+        assert_eq!(
+            Args::try_parse_from(base.into_iter().chain(["--reuse-db"]))?
+                .database
+                .mode(),
+            DatabaseMode::Reuse
+        );
+        assert!(
+            Args::try_parse_from(base.into_iter().chain(["--prepare-only", "--reuse-db"])).is_err()
+        );
+        Ok(())
+    }
 }

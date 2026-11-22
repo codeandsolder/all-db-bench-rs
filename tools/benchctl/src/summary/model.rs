@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 use serde_json::Value;
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub(super) struct GroupKey {
     pub(super) format_version: u64,
     pub(super) lane: String,
@@ -32,71 +32,65 @@ pub(super) struct GroupKey {
     pub(super) settle_ms: u64,
 }
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub(super) struct ConcurrencyKey {
-    pub(super) lane: String,
-    pub(super) format_version: u64,
-    pub(super) scenario: String,
-    pub(super) engine: String,
-    pub(super) engine_version: String,
-    pub(super) durability: String,
-    pub(super) workload: String,
-    pub(super) records: u64,
-    pub(super) ops_requested: u64,
-    pub(super) value_bytes: Option<u64>,
-    pub(super) value_pattern: String,
-    pub(super) payload_pattern: String,
-    pub(super) engine_compression: String,
-    pub(super) key_bytes: u64,
-    pub(super) key_shape: String,
-    pub(super) access_pattern: String,
-    pub(super) miss_percent: u64,
-    pub(super) write_pattern: String,
-    pub(super) state_evolution: String,
-    pub(super) bounded_churn_slots: u64,
-    pub(super) txn_size: u64,
-    pub(super) read_materialization: String,
-    pub(super) write_materialization: String,
-    pub(super) scan_len: Option<u64>,
-    pub(super) settle_ms: u64,
+#[derive(Clone, Debug, Serialize)]
+pub(super) struct ThroughputMetrics {
+    #[serde(rename = "ops_per_s_median")]
+    pub(super) median: f64,
+    #[serde(rename = "ops_per_s_q1")]
+    pub(super) q1: f64,
+    #[serde(rename = "ops_per_s_q3")]
+    pub(super) q3: f64,
+    #[serde(rename = "ops_per_s_min")]
+    pub(super) min: f64,
+    #[serde(rename = "ops_per_s_max")]
+    pub(super) max: f64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(super) struct ProcessMetrics {
+    #[serde(rename = "cpu_ns_per_op_median")]
+    pub(super) cpu_ns_per_op: Option<f64>,
+    #[serde(rename = "cpu_cores_median")]
+    pub(super) cpu_cores: Option<f64>,
+    #[serde(rename = "runqueue_wait_fraction_median")]
+    pub(super) runqueue_wait_fraction: Option<f64>,
+    #[serde(rename = "read_bytes_per_op_median")]
+    pub(super) read_bytes_per_op: Option<f64>,
+    #[serde(rename = "write_bytes_per_op_median")]
+    pub(super) write_bytes_per_op: Option<f64>,
+    #[serde(rename = "major_faults_per_kop_median")]
+    pub(super) major_faults_per_kop: Option<f64>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(super) struct SystemMetrics {
+    #[serde(rename = "cpu_psi_some_fraction_median")]
+    pub(super) cpu_psi_some_fraction: Option<f64>,
+    #[serde(rename = "io_psi_full_fraction_median")]
+    pub(super) io_psi_full_fraction: Option<f64>,
+    #[serde(rename = "swap_activity_pages_median")]
+    pub(super) swap_activity_pages: Option<f64>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(super) struct SettleMetrics {
+    #[serde(rename = "settle_cpu_ns_median")]
+    pub(super) cpu_ns: Option<f64>,
+    #[serde(rename = "settle_write_bytes_median")]
+    pub(super) write_bytes: Option<f64>,
+    #[serde(rename = "settle_db_delta_bytes_median")]
+    pub(super) db_delta_bytes: Option<f64>,
 }
 
 #[derive(Clone, Debug, Serialize)]
 pub(super) struct SummaryGroup {
-    pub(super) format_version: u64,
-    pub(super) lane: String,
-    pub(super) scenario: String,
-    pub(super) engine: String,
-    pub(super) engine_version: String,
-    pub(super) durability: String,
-    pub(super) workload: String,
-    pub(super) records: u64,
-    pub(super) ops_requested: u64,
-    pub(super) clients: u64,
-    pub(super) value_bytes: Option<u64>,
-    pub(super) value_pattern: String,
-    pub(super) payload_pattern: String,
-    pub(super) engine_compression: String,
+    #[serde(flatten)]
+    pub(super) key: GroupKey,
     pub(super) engine_compression_mapping: Vec<String>,
-    pub(super) key_bytes: u64,
-    pub(super) key_shape: String,
-    pub(super) access_pattern: String,
-    pub(super) miss_percent: u64,
-    pub(super) write_pattern: String,
-    pub(super) state_evolution: String,
-    pub(super) bounded_churn_slots: u64,
-    pub(super) txn_size: u64,
-    pub(super) read_materialization: String,
-    pub(super) write_materialization: String,
-    pub(super) scan_len: Option<u64>,
-    pub(super) settle_ms: u64,
     pub(super) configuration: String,
     pub(super) trials: Vec<u64>,
-    pub(super) ops_per_s_median: f64,
-    pub(super) ops_per_s_q1: f64,
-    pub(super) ops_per_s_q3: f64,
-    pub(super) ops_per_s_min: f64,
-    pub(super) ops_per_s_max: f64,
+    #[serde(flatten)]
+    pub(super) throughput: ThroughputMetrics,
     pub(super) p99_read_us_median: Option<f64>,
     pub(super) p99_operation_us_median: Option<f64>,
     pub(super) p99_write_txn_us_median: Option<f64>,
@@ -105,21 +99,15 @@ pub(super) struct SummaryGroup {
     pub(super) open_s_median: Option<f64>,
     pub(super) prefill_s_median: Option<f64>,
     pub(super) client_setup_s_median: Option<f64>,
-    pub(super) cpu_ns_per_op_median: Option<f64>,
-    pub(super) cpu_cores_median: Option<f64>,
+    #[serde(flatten)]
+    pub(super) process: ProcessMetrics,
     pub(super) client_throughput_max_min_ratio_median: Option<f64>,
     pub(super) write_conflict_retries_median: Option<f64>,
     pub(super) write_conflict_retries_per_k_write_ops_median: Option<f64>,
-    pub(super) runqueue_wait_fraction_median: Option<f64>,
-    pub(super) read_bytes_per_op_median: Option<f64>,
-    pub(super) write_bytes_per_op_median: Option<f64>,
-    pub(super) major_faults_per_kop_median: Option<f64>,
-    pub(super) cpu_psi_some_fraction_median: Option<f64>,
-    pub(super) io_psi_full_fraction_median: Option<f64>,
-    pub(super) swap_activity_pages_median: Option<f64>,
-    pub(super) settle_cpu_ns_median: Option<f64>,
-    pub(super) settle_write_bytes_median: Option<f64>,
-    pub(super) settle_db_delta_bytes_median: Option<f64>,
+    #[serde(flatten)]
+    pub(super) system: SystemMetrics,
+    #[serde(flatten)]
+    pub(super) settle: SettleMetrics,
     pub(super) durability_mapping: Vec<String>,
     pub(super) speedup_vs_c1: Option<f64>,
     pub(super) parallel_efficiency_vs_c1: Option<f64>,
@@ -214,33 +202,11 @@ pub(super) fn group_key(row: &Value) -> Result<GroupKey> {
     })
 }
 
-pub(super) fn concurrency_key(group: &SummaryGroup) -> ConcurrencyKey {
-    ConcurrencyKey {
-        lane: group.lane.clone(),
-        format_version: group.format_version,
-        scenario: group.scenario.clone(),
-        engine: group.engine.clone(),
-        engine_version: group.engine_version.clone(),
-        durability: group.durability.clone(),
-        workload: group.workload.clone(),
-        records: group.records,
-        ops_requested: group.ops_requested,
-        value_bytes: group.value_bytes,
-        value_pattern: group.value_pattern.clone(),
-        payload_pattern: group.payload_pattern.clone(),
-        engine_compression: group.engine_compression.clone(),
-        key_bytes: group.key_bytes,
-        key_shape: group.key_shape.clone(),
-        access_pattern: group.access_pattern.clone(),
-        miss_percent: group.miss_percent,
-        write_pattern: group.write_pattern.clone(),
-        state_evolution: group.state_evolution.clone(),
-        bounded_churn_slots: group.bounded_churn_slots,
-        txn_size: group.txn_size,
-        read_materialization: group.read_materialization.clone(),
-        write_materialization: group.write_materialization.clone(),
-        scan_len: group.scan_len,
-        settle_ms: group.settle_ms,
+impl GroupKey {
+    pub(super) fn single_client(&self) -> Self {
+        let mut key = self.clone();
+        key.clients = 1;
+        key
     }
 }
 

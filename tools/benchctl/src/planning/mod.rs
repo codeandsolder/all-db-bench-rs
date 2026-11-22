@@ -1,11 +1,15 @@
+#[cfg(test)]
+use crate::file_hash::noise_source_sha256;
 use crate::file_hash::{lower_hex, sha256};
 use crate::json_io::read_json;
-use crate::json_value::json_truthy;
+use crate::json_value::{exact_i64 as value_i64, json_truthy};
 use crate::support::{canonical_identity_sha256, support_identity};
 use anyhow::{Context, Result, bail};
-use serde_json::{Map, Number, Value};
+use num_traits::ToPrimitive;
+use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::{
+    collections::{BTreeMap, BTreeSet},
     fs::{self, File},
     io::Read,
     path::{Path, PathBuf},
@@ -13,6 +17,7 @@ use std::{
 
 mod audit;
 mod kv;
+mod kv_identity;
 mod kv_materialize;
 mod record;
 mod record_calibration;
@@ -50,24 +55,6 @@ fn get_str<'a>(value: &'a Value, key: &str) -> Result<&'a str> {
         .with_context(|| format!("missing or invalid {key}"))
 }
 
-fn value_i64(value: &Value) -> Option<i64> {
-    if let Some(value) = value.as_i64() {
-        return Some(value);
-    }
-    if let Some(value) = value.as_u64() {
-        return i64::try_from(value).ok();
-    }
-    if let Some(value) = value.as_f64()
-        && value.is_finite()
-        && value.fract() == 0.0
-        && value >= int_as_f64!(i64::MIN)
-        && value <= int_as_f64!(i64::MAX)
-    {
-        return Some(f64_to_i64!(value));
-    }
-    value.as_str()?.parse::<i64>().ok()
-}
-
 fn get_i64(value: &Value, key: &str) -> Result<i64> {
     let raw = value.get(key).with_context(|| format!("missing {key}"))?;
     value_i64(raw).with_context(|| format!("invalid {key}: {raw}"))
@@ -98,26 +85,24 @@ fn clone_field(value: &Value, key: &str) -> Result<Value> {
         .with_context(|| format!("missing {key}"))
 }
 
-fn number(value: f64) -> Result<Value> {
-    Number::from_f64(value)
-        .map(Value::Number)
-        .with_context(|| format!("cannot encode non-finite float {value}"))
-}
-
 fn rounded_ops(value: f64) -> Result<i64> {
     if !value.is_finite() || value <= 0.0 {
         bail!("invalid operation recommendation: {value}");
     }
-    let exponent = f64_to_i32!(value.log10().floor());
+    let exponent = value
+        .log10()
+        .floor()
+        .to_i32()
+        .context("invalid operation recommendation exponent")?;
     let scale = 10_f64.powi(exponent);
     let normalized = value / scale;
     for step in [1.0, 2.0, 5.0, 10.0] {
         if normalized <= step {
             let result = step * scale;
-            if result > int_as_f64!(i64::MAX) {
-                bail!("operation recommendation too large: {result}");
-            }
-            return Ok(f64_to_i64!(result).max(1));
+            return Ok(result
+                .to_i64()
+                .with_context(|| format!("operation recommendation too large: {result}"))?
+                .max(1));
         }
     }
     bail!("unable to round operation recommendation: {value}")
@@ -151,6 +136,99 @@ fn case_paths(run_dir: &Path) -> Result<Vec<PathBuf>> {
     }
     paths.sort_by(|left, right| left.file_name().cmp(&right.file_name()));
     Ok(paths)
+}
+
+fn verify_case_coverage<K: Ord + std::fmt::Debug>(
+    plan: &Value,
+    rows: &[Value],
+    key: impl Fn(&Value) -> Result<K>,
+) -> Result<()> {
+    let cases = plan
+        .get("cases")
+        .and_then(Value::as_array)
+        .context("plan cases must be an array")?;
+    let mut expected = BTreeSet::new();
+    for case in cases {
+        if !expected.insert(key(case)?) {
+            bail!("duplicate planned case identity");
+        }
+    }
+    if i64::try_from(expected.len())? != get_i64(plan, "case_count")? {
+        bail!("plan case count mismatch");
+    }
+    for row in rows {
+        let identity = key(row)?;
+        if !expected.remove(&identity) {
+            bail!("duplicate or unplanned measurement: {identity:?}");
+        }
+    }
+    if !expected.is_empty() {
+        bail!("missing {} planned measurements", expected.len());
+    }
+    Ok(())
+}
+
+pub fn verify_plan_results(plan: &Value, rows: &[Value], lane: &str) -> Result<()> {
+    match lane {
+        "kv-concurrency" => verify_case_coverage(plan, rows, kv_identity::result_key),
+        "record-concurrency" => record_calibration::verify_results(plan, rows),
+        _ => bail!("unsupported concurrency result lane: {lane}"),
+    }
+}
+
+fn load_calibration_cases<K: Ord + std::fmt::Debug>(
+    plan: &Value,
+    paths: &[PathBuf],
+    key: impl Fn(&Value) -> Result<K>,
+    validate: impl Fn(&Value, &Path) -> Result<()>,
+) -> Result<BTreeMap<K, Value>> {
+    let cases = plan
+        .get("cases")
+        .and_then(Value::as_array)
+        .context("calibration plan cases must be an array")?;
+    let mut planned = BTreeSet::new();
+    for item in cases {
+        if !planned.insert(key(item)?) {
+            bail!("duplicate calibration plan identity");
+        }
+    }
+    if i64::try_from(planned.len()).context("planned count overflow")?
+        != get_i64(plan, "case_count")?
+    {
+        bail!("calibration plan case count mismatch");
+    }
+    let mut results = BTreeMap::new();
+    for path in paths {
+        let row = read_json(path)?;
+        validate(&row, path)?;
+        let identity = key(&row)?;
+        if !planned.contains(&identity) {
+            bail!(
+                "calibration result outside plan: {}: {identity:?}",
+                path.display()
+            );
+        }
+        if get_i64(&row, "ops_completed")? != get_i64(&row, "ops_requested")? {
+            bail!("partial calibration result: {}", path.display());
+        }
+        let elapsed = get_f64(&row, "elapsed_s")?;
+        let rate = get_f64(&row, "ops_per_s")?;
+        if !elapsed.is_finite() || elapsed <= 0.0 || !rate.is_finite() || rate <= 0.0 {
+            bail!("invalid calibration timing: {}", path.display());
+        }
+        match results.entry(identity) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(row);
+            }
+            std::collections::btree_map::Entry::Occupied(entry) => {
+                bail!("duplicate calibration result: {:?}", entry.key());
+            }
+        }
+    }
+    if planned.iter().ne(results.keys()) {
+        bail!("calibration results do not exactly cover plan");
+    }
+    Ok(results)
 }
 
 fn case_set_sha256(paths: &[PathBuf]) -> Result<String> {
@@ -205,8 +283,8 @@ fn kv_support(repo: &Path) -> Result<Value> {
         "concurrency_runner_common_sha256": sha256(&repo.join("scripts/concurrency-runner-common.sh"))?,
         "continuous_noise_common_sha256": sha256(&repo.join("scripts/continuous-noise-runner-common.sh"))?,
         "concurrency_policy_sha256": sha256(&repo.join("scripts/concurrency-matrix-policy.sh"))?,
-        "noise_guard_sha256": sha256(&repo.join("tools/benchctl/src/noise.rs"))?,
-        "continuous_noise_guard_sha256": sha256(&repo.join("tools/benchctl/src/noise.rs"))?,
+        "noise_guard_sha256": noise_source_sha256(repo)?,
+        "continuous_noise_guard_sha256": noise_source_sha256(repo)?,
         "benchmark_binary_sha256": "a".repeat(64),
         "build_profile": "external",
         "hostname": "test-host",
@@ -240,8 +318,8 @@ fn record_support(repo: &Path) -> Result<Value> {
         "concurrency_runner_common_sha256": sha256(&repo.join("scripts/concurrency-runner-common.sh"))?,
         "continuous_noise_common_sha256": sha256(&repo.join("scripts/continuous-noise-runner-common.sh"))?,
         "concurrency_policy_sha256": sha256(&repo.join("scripts/concurrency-matrix-policy.sh"))?,
-        "noise_guard_sha256": sha256(&repo.join("tools/benchctl/src/noise.rs"))?,
-        "continuous_noise_guard_sha256": sha256(&repo.join("tools/benchctl/src/noise.rs"))?,
+        "noise_guard_sha256": noise_source_sha256(repo)?,
+        "continuous_noise_guard_sha256": noise_source_sha256(repo)?,
         "benchmark_binary_sha256": "a".repeat(64),
         "build_profile": "external",
         "surrealdb_rocksdb_binary_sha256": "b".repeat(64),
@@ -290,5 +368,105 @@ impl TestDir {
 impl Drop for TestDir {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+#[cfg(test)]
+mod calibration_case_tests {
+    use super::{TestDir, get_i64, load_calibration_cases, write_json};
+    use anyhow::Result;
+    use serde_json::json;
+
+    #[test]
+    fn completed_results_must_match_exact_plan_dimensions() -> Result<()> {
+        use super::verify_plan_results;
+        for lane in ["kv-concurrency", "record-concurrency"] {
+            let first = json!({
+                "scenario": "test", "engine": "test", "durability": "sync",
+                "workload": "point-read", "records": 100, "ops": 200,
+                "clients": 1, "trial": 1, "state_evolution": "growth",
+                "write_pattern": "append", "bounded_churn_slots": 0,
+                "payload_bytes": 512, "txn_size": 100,
+                "read_materialization": "full-record-v1", "write_materialization": "no-return-v1"
+            });
+            let mut second = first.clone();
+            second["trial"] = json!(2);
+            let plan = json!({"case_count": 2, "cases": [first, second]});
+            let result = |mut case: serde_json::Value| -> Result<serde_json::Value> {
+                let ops = case
+                    .as_object_mut()
+                    .ok_or_else(|| anyhow::anyhow!("case object"))?
+                    .remove("ops")
+                    .ok_or_else(|| anyhow::anyhow!("ops"))?;
+                case["ops_requested"] = ops;
+                Ok(case)
+            };
+            let first = result(first)?;
+            let second = result(second)?;
+            verify_plan_results(&plan, &[first.clone(), second.clone()], lane)?;
+            assert!(verify_plan_results(&plan, &[first.clone(), first.clone()], lane).is_err());
+            assert!(verify_plan_results(&plan, std::slice::from_ref(&first), lane).is_err());
+            for (field, invalid) in [
+                ("records", json!(101)),
+                ("clients", json!(2)),
+                ("ops_requested", json!(201)),
+                ("state_evolution", json!("bounded")),
+                ("trial", json!(3)),
+            ] {
+                let mut bad = second.clone();
+                bad[field] = invalid;
+                assert!(
+                    verify_plan_results(&plan, &[first.clone(), bad], lane).is_err(),
+                    "{lane} {field}"
+                );
+            }
+            let (field, invalid) = if lane == "kv-concurrency" {
+                ("bounded_churn_slots", json!(4))
+            } else {
+                ("payload_bytes", json!(256))
+            };
+            let mut bad = second;
+            bad[field] = invalid;
+            assert!(verify_plan_results(&plan, &[first, bad], lane).is_err());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn calibration_requires_exact_complete_positive_results() -> Result<()> {
+        let dir = TestDir::new("case-coverage")?;
+        let first = dir.0.join("first.json");
+        let second = dir.0.join("second.json");
+        let plan = json!({"case_count": 2, "cases": [{"id": 1}, {"id": 2}]});
+        let valid = json!({"id": 1, "ops_requested": 10, "ops_completed": 10,
+                           "elapsed_s": 1.0, "ops_per_s": 10.0});
+        write_json(&first, &valid)?;
+        let load = |plan, paths: &[std::path::PathBuf]| {
+            load_calibration_cases(plan, paths, |row| get_i64(row, "id"), |_, _| Ok(()))
+        };
+        assert!(load(&plan, std::slice::from_ref(&first)).is_err());
+        assert!(load(&plan, &[first.clone(), first.clone()]).is_err());
+        let paths = [first, second.clone()];
+        for (key, value) in [
+            ("id", json!(3)),
+            ("ops_completed", json!(9)),
+            ("elapsed_s", json!(0.0)),
+            ("ops_per_s", json!(-1.0)),
+        ] {
+            let mut invalid = valid.clone();
+            invalid["id"] = json!(2);
+            invalid[key] = value;
+            write_json(&second, &invalid)?;
+            assert!(load(&plan, &paths).is_err());
+        }
+        let mut valid_second = valid;
+        valid_second["id"] = json!(2);
+        write_json(&second, &valid_second)?;
+        assert_eq!(load(&plan, &paths)?.len(), 2);
+        let duplicate = json!({"case_count": 2, "cases": [{"id": 1}, {"id": 1}]});
+        assert!(load(&duplicate, &paths).is_err());
+        let wrong_count = json!({"case_count": 3, "cases": [{"id": 1}, {"id": 2}]});
+        assert!(load(&wrong_count, &paths).is_err());
+        Ok(())
     }
 }

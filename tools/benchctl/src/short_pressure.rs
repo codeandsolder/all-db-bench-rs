@@ -631,31 +631,39 @@ pub fn run_audit_stock(args: AuditStockArgs<'_>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{ScrubConfig, build_plan, pressure_evidence, runner_ops_override, scrub};
-    use anyhow::Result;
+    use anyhow::{Context, Result};
+    use num_traits::ToPrimitive;
     use serde_json::{Value, json};
     use std::fs;
 
-    fn row(trial: i64, elapsed: f64, rq: f64, psi: f64, cpu: f64) -> Value {
-        let wall_ns = f64_to_i64!((elapsed * 1_000_000_000.0));
-        json!({
+    fn row(trial: i64, elapsed: f64, rq: f64, psi: f64, cpu: f64) -> Result<Value> {
+        let wall_ns = (elapsed * 1_000_000_000.0)
+            .to_i64()
+            .context("fixture wall time out of range")?;
+        let psi_us = (psi * int_as_f64!(wall_ns) / 1000.0)
+            .to_i64()
+            .context("fixture pressure out of range")?;
+        Ok(json!({
             "trial":trial,"engine":"rocksdb","durability":"relaxed","workload":"write-burst",
             "elapsed_s":elapsed,"ops_per_s":1_000_000.0,
             "measured_process":{"cpu_runtime_fraction_of_wall":cpu,"runqueue_wait_fraction_of_wall":rq,"write_bytes":1234},
-            "measured_system_delta":{"accounting_wall_ns":wall_ns,"psi_cpu_some_us":f64_to_i64!((psi*int_as_f64!(wall_ns)/1000.0))}
-        })
+            "measured_system_delta":{"accounting_wall_ns":wall_ns,"psi_cpu_some_us":psi_us}
+        }))
     }
 
     #[test]
     fn flags_short_pressure_without_self_pressure_false_positive() -> Result<()> {
         let config = ScrubConfig::default();
         assert!(
-            pressure_evidence(&row(1, 0.03, 0.031, 0.0, 1.0), "measured", &config, 8)?.is_some()
+            pressure_evidence(&row(1, 0.03, 0.031, 0.0, 1.0)?, "measured", &config, 8)?.is_some()
         );
         assert!(
-            pressure_evidence(&row(2, 0.03, 0.0, 0.051, 1.0), "measured", &config, 8)?.is_some()
+            pressure_evidence(&row(2, 0.03, 0.0, 0.051, 1.0)?, "measured", &config, 8)?.is_some()
         );
-        assert!(pressure_evidence(&row(3, 0.6, 0.5, 0.5, 1.0), "measured", &config, 8)?.is_none());
-        assert!(pressure_evidence(&row(4, 0.03, 0.5, 0.5, 4.1), "measured", &config, 8)?.is_none());
+        assert!(pressure_evidence(&row(3, 0.6, 0.5, 0.5, 1.0)?, "measured", &config, 8)?.is_none());
+        assert!(
+            pressure_evidence(&row(4, 0.03, 0.5, 0.5, 4.1)?, "measured", &config, 8)?.is_none()
+        );
         Ok(())
     }
 
@@ -670,8 +678,8 @@ mod tests {
         fs::create_dir_all(root.join("stderr"))?;
         let good = root.join("cases/t1.json");
         let bad = root.join("cases/t2.json");
-        fs::write(&good, serde_json::to_string(&row(1, 0.03, 0.0, 0.0, 1.0))?)?;
-        fs::write(&bad, serde_json::to_string(&row(2, 0.03, 0.0, 0.2, 1.0))?)?;
+        fs::write(&good, serde_json::to_string(&row(1, 0.03, 0.0, 0.0, 1.0)?)?)?;
+        fs::write(&bad, serde_json::to_string(&row(2, 0.03, 0.0, 0.2, 1.0)?)?)?;
         fs::write(root.join("noise/t2.before.json"), "{}")?;
         for name in [
             "results.ndjson",

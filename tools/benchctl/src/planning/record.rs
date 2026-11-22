@@ -3,7 +3,9 @@ use super::{
     WRITE_MATERIALIZATION, canonical_identity_sha256, case_paths, case_set_sha256, clone_field,
     get_f64, get_i64, get_str, json_truthy, read_json, sha256, support_identity, write_json,
 };
+use crate::numeric::align_up;
 use anyhow::{Context, Result, bail};
+use num_traits::ToPrimitive;
 use serde_json::{Map, Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -71,10 +73,6 @@ struct CalibrationResults {
     provenance: Map<String, Value>,
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
-)]
 fn load_results(repo: &Path, plan_path: &Path, run_dir: &Path) -> Result<CalibrationResults> {
     let plan = read_json(plan_path)?;
     if get_i64(&plan, "record_concurrency_plan_version")? != RECORD_PLAN_VERSION
@@ -120,53 +118,21 @@ fn load_results(repo: &Path, plan_path: &Path, run_dir: &Path) -> Result<Calibra
     if failures.is_file() && failures.metadata()?.len() != 0 {
         bail!("calibration run has failures");
     }
-    let cases = plan
-        .get("cases")
-        .and_then(Value::as_array)
-        .context("calibration plan cases must be an array")?;
-    let mut planned = BTreeMap::new();
-    for item in cases {
-        if planned.insert(result_key(item)?, item.clone()).is_some() {
-            bail!("duplicate calibration plan identity");
-        }
-    }
-    if i64::try_from(planned.len()).context("planned count overflow")? != expected {
-        bail!("duplicate calibration plan identity");
-    }
-    let mut results = BTreeMap::new();
-    for path in &paths {
-        let row = read_json(path)?;
-        if get_str(&row, "read_materialization")? != READ_MATERIALIZATION {
+    let results = super::load_calibration_cases(&plan, &paths, result_key, |row, path| {
+        if get_str(row, "read_materialization")? != READ_MATERIALIZATION {
             bail!(
                 "unexpected calibration read materialization: {}",
                 path.display()
             );
         }
-        if get_str(&row, "write_materialization")? != WRITE_MATERIALIZATION {
+        if get_str(row, "write_materialization")? != WRITE_MATERIALIZATION {
             bail!(
                 "unexpected calibration write materialization: {}",
                 path.display()
             );
         }
-        let key = result_key(&row)?;
-        if !planned.contains_key(&key) {
-            bail!("result outside calibration plan: {}", path.display());
-        }
-        if results.insert(key.clone(), row.clone()).is_some() {
-            bail!("duplicate calibration result: {key:?}");
-        }
-        if get_i64(&row, "ops_completed")? != get_i64(&row, "ops_requested")? {
-            bail!("partial calibration result: {}", path.display());
-        }
-        let elapsed = get_f64(&row, "elapsed_s")?;
-        let rate = get_f64(&row, "ops_per_s")?;
-        if !elapsed.is_finite() || elapsed <= 0.0 || !rate.is_finite() || rate <= 0.0 {
-            bail!("invalid calibration timing: {}", path.display());
-        }
-    }
-    if planned.keys().ne(results.keys()) {
-        bail!("calibration results do not exactly cover plan");
-    }
+        Ok(())
+    })?;
     let mut provenance = Map::new();
     provenance.insert("calibration_plan_sha256".to_owned(), json!(plan_sha));
     provenance.insert(
@@ -220,8 +186,14 @@ fn choose_ops(
         fastest = fastest.max(rate);
         slowest = slowest.min(rate);
     }
-    let mut desired = f64_to_i64!((fastest * TARGET_SECONDS).ceil());
-    let mut cap = f64_to_i64!((slowest * RECORD_MAX_SLOW_SECONDS).floor());
+    let mut desired = (fastest * TARGET_SECONDS)
+        .ceil()
+        .to_i64()
+        .context("desired record ops exceed integer range")?;
+    let mut cap = (slowest * RECORD_MAX_SLOW_SECONDS)
+        .floor()
+        .to_i64()
+        .context("record op cap exceeds integer range")?;
     let workload = get_str(&cases[0], "workload")?;
     let txn = get_i64(&cases[0], "txn_size")?;
     if txn < 1 {
@@ -238,9 +210,11 @@ fn choose_ops(
         if current_ops % txn != 0 {
             bail!("calibration write-burst ops are not transaction aligned");
         }
-        desired = ((desired + txn - 1) / txn) * txn;
+        desired = align_up(desired, txn)?;
         cap = (cap / txn) * txn;
-        max_clients * txn
+        max_clients
+            .checked_mul(txn)
+            .context("minimum record ops overflow")?
     } else {
         max_clients
     };
@@ -272,10 +246,55 @@ fn choose_ops(
     Ok((selected, analysis))
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
-)]
+fn select_family(
+    family_key: &FamilyKey,
+    cases: &[Value],
+    results: &BTreeMap<ResultKey, Value>,
+) -> Result<(i64, Value)> {
+    let mut clients: Vec<i64> = cases
+        .iter()
+        .map(|item| get_i64(item, "clients"))
+        .collect::<Result<_>>()?;
+    clients.sort_unstable();
+    if clients.windows(2).any(|window| window[0] == window[1]) {
+        bail!("duplicate client group in family: {family_key:?}");
+    }
+    let (ops, analysis) = choose_ops(cases, results)?;
+    let template = cases.first().context("empty calibration family")?;
+    let mut family = Map::new();
+    family.insert("scenario".to_owned(), clone_field(template, "scenario")?);
+    family.insert("engine".to_owned(), clone_field(template, "engine")?);
+    family.insert(
+        "durability".to_owned(),
+        clone_field(template, "durability")?,
+    );
+    family.insert("workload".to_owned(), clone_field(template, "workload")?);
+    family.insert("records".to_owned(), json!(get_i64(template, "records")?));
+    family.insert(
+        "payload_bytes".to_owned(),
+        json!(get_i64(template, "payload_bytes")?),
+    );
+    family.insert("txn_size".to_owned(), json!(get_i64(template, "txn_size")?));
+    family.insert(
+        "state_evolution".to_owned(),
+        clone_field(template, "state_evolution")?,
+    );
+    family.insert(
+        "read_materialization".to_owned(),
+        clone_field(template, "read_materialization")?,
+    );
+    family.insert(
+        "write_materialization".to_owned(),
+        clone_field(template, "write_materialization")?,
+    );
+    family.insert("clients".to_owned(), json!(clients));
+    family.insert("final_ops".to_owned(), json!(ops));
+    for (key, value) in analysis {
+        family.insert(key, value);
+    }
+    Ok((ops, Value::Object(family)))
+}
+
 fn build_final(repo: &Path, plan_path: &Path, run_dir: &Path, trials: i64) -> Result<Value> {
     if trials < 1 {
         bail!("trials must be positive");
@@ -296,48 +315,8 @@ fn build_final(repo: &Path, plan_path: &Path, run_dir: &Path, trials: i64) -> Re
     let mut final_cases = Vec::new();
     let mut selected = Vec::new();
     for (family_key, cases) in families {
-        let mut clients: Vec<i64> = cases
-            .iter()
-            .map(|item| get_i64(item, "clients"))
-            .collect::<Result<_>>()?;
-        clients.sort_unstable();
-        if clients.windows(2).any(|window| window[0] == window[1]) {
-            bail!("duplicate client group in family: {family_key:?}");
-        }
-        let (ops, analysis) = choose_ops(&cases, &calibration.results)?;
-        let template = cases.first().context("empty calibration family")?;
-        let mut family = Map::new();
-        family.insert("scenario".to_owned(), clone_field(template, "scenario")?);
-        family.insert("engine".to_owned(), clone_field(template, "engine")?);
-        family.insert(
-            "durability".to_owned(),
-            clone_field(template, "durability")?,
-        );
-        family.insert("workload".to_owned(), clone_field(template, "workload")?);
-        family.insert("records".to_owned(), json!(get_i64(template, "records")?));
-        family.insert(
-            "payload_bytes".to_owned(),
-            json!(get_i64(template, "payload_bytes")?),
-        );
-        family.insert("txn_size".to_owned(), json!(get_i64(template, "txn_size")?));
-        family.insert(
-            "state_evolution".to_owned(),
-            clone_field(template, "state_evolution")?,
-        );
-        family.insert(
-            "read_materialization".to_owned(),
-            clone_field(template, "read_materialization")?,
-        );
-        family.insert(
-            "write_materialization".to_owned(),
-            clone_field(template, "write_materialization")?,
-        );
-        family.insert("clients".to_owned(), json!(clients));
-        family.insert("final_ops".to_owned(), json!(ops));
-        for (key, value) in analysis {
-            family.insert(key, value);
-        }
-        selected.push(Value::Object(family));
+        let (ops, family) = select_family(&family_key, &cases, &calibration.results)?;
+        selected.push(family);
         for trial in 1..=trials {
             for base in &cases {
                 let mut item = base.clone();

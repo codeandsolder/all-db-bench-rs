@@ -1,8 +1,8 @@
-use crate::file_hash::sha256;
-use crate::json_io::read_json;
+use crate::file_hash::{lower_hex, noise_source_sha256, sha256};
 use crate::json_value::json_truthy;
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value, json};
+use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
@@ -11,6 +11,38 @@ use std::{
 };
 
 pub const CONTINUOUS_ADMISSION_POLICY: &str = "pre-io+pre/continuous/post-external-v3";
+
+const CONTINUOUS_FIELDS: [(&str, &str, &str); 5] = [
+    (
+        "continuous_noise_guard_sha256",
+        "guard_sha256",
+        "selected_continuous_noise_guard_sha256",
+    ),
+    (
+        "continuous_noise_sample_ms",
+        "sample_ms",
+        "continuous_noise_sample_ms",
+    ),
+    (
+        "continuous_noise_max_cpu_percent",
+        "max_cpu_percent",
+        "continuous_noise_max_cpu_percent",
+    ),
+    (
+        "continuous_noise_max_io_average_mib_s",
+        "max_io_average_mib_s",
+        "continuous_noise_max_io_average_mib_s",
+    ),
+    (
+        "continuous_noise_max_io_rate_mib_s",
+        "max_io_rate_mib_s",
+        "continuous_noise_max_io_rate_mib_s",
+    ),
+];
+
+fn has_provenance_value(value: Option<&Value>) -> bool {
+    value.is_some_and(|value| !value.is_null() && value.as_str() != Some(""))
+}
 
 #[derive(Clone, Copy)]
 pub struct ReadyArgs<'a> {
@@ -23,17 +55,36 @@ pub struct ReadyArgs<'a> {
     pub(crate) out: &'a Path,
 }
 
-fn read_rows(path: &Path) -> Result<Vec<Value>> {
+struct Hashed<T> {
+    value: T,
+    sha256: String,
+}
+
+fn read_hashed<T>(path: &Path, parse: impl FnOnce(&str) -> Result<T>) -> Result<Hashed<T>> {
     let text =
         fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
-    text.lines()
-        .enumerate()
-        .filter(|(_, line)| !line.trim().is_empty())
-        .map(|(index, line)| {
-            serde_json::from_str(line)
-                .with_context(|| format!("invalid JSON at {}:{}", path.display(), index + 1))
-        })
-        .collect()
+    let value = parse(&text)?;
+    let sha256 = lower_hex(&Sha256::digest(text.as_bytes()));
+    Ok(Hashed { value, sha256 })
+}
+
+fn read_hashed_json(path: &Path) -> Result<Hashed<Value>> {
+    read_hashed(path, |text| {
+        serde_json::from_str(text).with_context(|| format!("invalid JSON in {}", path.display()))
+    })
+}
+
+fn read_rows(path: &Path) -> Result<Hashed<Vec<Value>>> {
+    read_hashed(path, |text| {
+        text.lines()
+            .enumerate()
+            .filter(|(_, line)| !line.trim().is_empty())
+            .map(|(index, line)| {
+                serde_json::from_str(line)
+                    .with_context(|| format!("invalid JSON at {}:{}", path.display(), index + 1))
+            })
+            .collect()
+    })
 }
 
 fn value_i64(value: Option<&Value>) -> Result<i64> {
@@ -154,14 +205,6 @@ fn kv_source_identity(repo: &Path, support: &Value) -> Result<Value> {
             "continuous_noise_common_sha256",
             repo.join("scripts/continuous-noise-runner-common.sh"),
         ),
-        (
-            "noise_guard_sha256",
-            repo.join("tools/benchctl/src/noise.rs"),
-        ),
-        (
-            "continuous_noise_guard_sha256",
-            repo.join("tools/benchctl/src/noise.rs"),
-        ),
     ];
     let mut identity = Map::new();
     for (field, path) in files {
@@ -170,6 +213,13 @@ fn kv_source_identity(repo: &Path, support: &Value) -> Result<Value> {
             bail!("KV runtime provenance mismatch: {field}");
         }
         identity.insert(field.to_owned(), json!(actual));
+    }
+    let noise = noise_source_sha256(repo)?;
+    for field in ["noise_guard_sha256", "continuous_noise_guard_sha256"] {
+        if support.get(field).and_then(Value::as_str) != Some(noise.as_str()) {
+            bail!("KV runtime provenance mismatch: {field}");
+        }
+        identity.insert(field.to_owned(), json!(noise));
     }
     for field in [
         "admission_policy",
@@ -190,46 +240,115 @@ fn kv_source_identity(repo: &Path, support: &Value) -> Result<Value> {
     Ok(Value::Object(identity))
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
-)]
-pub fn verify_kv(args: &ReadyArgs<'_>) -> Result<Value> {
-    let manifest_path = args.selected.join("manifest.json");
-    let summary_path = args.selected.join("summary.json");
-    let results_path = args.selected.join("results.ndjson");
-    for path in [
-        &manifest_path,
-        &summary_path,
-        &results_path,
-        args.binary_manifest,
-    ] {
-        if !path.is_file() {
-            bail!("missing KV readiness artifact: {}", path.display());
+struct SelectedArtifacts {
+    manifest: Hashed<Value>,
+    summary_sha256: String,
+    results: Hashed<Vec<Value>>,
+    groups: i64,
+}
+
+impl SelectedArtifacts {
+    fn load(args: &ReadyArgs<'_>, lane: &str, groups: i64) -> Result<Self> {
+        let manifest_path = args.selected.join("manifest.json");
+        let summary_path = args.selected.join("summary.json");
+        let results_path = args.selected.join("results.ndjson");
+        for path in [
+            &manifest_path,
+            &summary_path,
+            &results_path,
+            args.binary_manifest,
+        ] {
+            if !path.is_file() {
+                bail!("missing {lane} readiness artifact: {}", path.display());
+            }
         }
+        let manifest = read_hashed_json(&manifest_path)?;
+        let summary = read_hashed_json(&summary_path)?;
+        let results = read_rows(&results_path)?;
+        if manifest.value.get("complete").and_then(Value::as_bool) != Some(true)
+            || value_i64(manifest.value.get("selected_groups"))? != groups
+        {
+            bail!("{lane} selection is not complete at {groups} groups");
+        }
+        if value_i64(summary.value.get("group_count"))? != groups
+            || json_truthy(summary.value.get("problems"))
+        {
+            bail!("{lane} summary is not a clean {groups}-group corpus");
+        }
+        let count = i64::try_from(results.value.len())?;
+        if value_i64(summary.value.get("row_count"))? != count
+            || value_i64(manifest.value.get("selected_rows"))? != count
+        {
+            bail!("{lane} row-count provenance mismatch");
+        }
+        Ok(Self {
+            manifest,
+            summary_sha256: summary.sha256,
+            results,
+            groups,
+        })
     }
-    let manifest = read_json(&manifest_path)?;
-    let summary = read_json(&summary_path)?;
-    let rows = read_rows(&results_path)?;
-    if !manifest
-        .get("complete")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-        || value_i64(manifest.get("selected_groups"))? != 180
-    {
-        bail!("KV selection is not complete at 180 groups");
+
+    fn certificate(
+        &self,
+        args: &ReadyArgs<'_>,
+        ready_version: u32,
+        runner_repo_commit: &str,
+        support_hashes: Map<String, Value>,
+        binary_manifest_sha256: &str,
+    ) -> Map<String, Value> {
+        Map::from_iter([
+            ("ready_version".to_owned(), json!(ready_version)),
+            ("repo_commit".to_owned(), json!(args.expected_commit)),
+            ("binary_repo_commit".to_owned(), json!(args.expected_commit)),
+            ("runner_repo_commit".to_owned(), json!(runner_repo_commit)),
+            (
+                "admission_policy".to_owned(),
+                json!(args.expected_admission_policy),
+            ),
+            ("group_count".to_owned(), json!(self.groups)),
+            ("row_count".to_owned(), json!(self.results.value.len())),
+            (
+                "source_support_sha256".to_owned(),
+                Value::Object(support_hashes),
+            ),
+            ("results_sha256".to_owned(), json!(self.results.sha256)),
+            (
+                "selection_manifest_sha256".to_owned(),
+                json!(self.manifest.sha256),
+            ),
+            ("summary_sha256".to_owned(), json!(self.summary_sha256)),
+            (
+                "binary_manifest_sha256".to_owned(),
+                json!(binary_manifest_sha256),
+            ),
+        ])
     }
-    if value_i64(summary.get("group_count"))? != 180 || json_truthy(summary.get("problems")) {
-        bail!("KV summary is not a clean 180-group corpus");
+}
+
+fn pinned_binary_sha<'a>(binary: &'a Map<String, Value>, label: &str) -> Result<&'a str> {
+    let path = PathBuf::from(binary.get("path").and_then(Value::as_str).unwrap_or(""));
+    let expected = binary.get("sha256").and_then(Value::as_str).unwrap_or("");
+    if !path.is_file() || expected.is_empty() || sha256(&path)? != expected {
+        bail!("pinned binary verification failed: {label}");
     }
-    if value_i64(summary.get("row_count"))? != i64::try_from(rows.len()).unwrap_or(i64::MAX)
-        || value_i64(manifest.get("selected_rows"))?
-            != i64::try_from(rows.len()).unwrap_or(i64::MAX)
-    {
-        bail!("KV row-count provenance mismatch");
+    Ok(expected)
+}
+
+fn load_binary_manifest(args: &ReadyArgs<'_>) -> Result<Hashed<Value>> {
+    let manifest = read_hashed_json(args.binary_manifest)?;
+    if manifest.value.get("repo_commit").and_then(Value::as_str) != Some(args.expected_commit) {
+        bail!("binary manifest commit mismatch");
     }
+    Ok(manifest)
+}
+
+pub fn verify_kv(args: &ReadyArgs<'_>) -> Result<Value> {
+    let selected = SelectedArtifacts::load(args, "KV", 180)?;
     if value_i64(
-        manifest
+        selected
+            .manifest
+            .value
             .get("final_status_counts")
             .and_then(|value| value.get("undersized")),
     )
@@ -239,40 +358,45 @@ pub fn verify_kv(args: &ReadyArgs<'_>) -> Result<Value> {
         bail!("KV selection still contains undersized groups");
     }
 
-    let binary_data = read_json(args.binary_manifest)?;
-    if binary_data.get("repo_commit").and_then(Value::as_str) != Some(args.expected_commit) {
-        bail!("KV binary manifest commit mismatch");
-    }
+    let binary_data = load_binary_manifest(args)?;
     let binary = binary_data
+        .value
         .get("kv")
         .and_then(Value::as_object)
         .context("KV binary manifest is missing the kv binary")?;
-    let binary_path = PathBuf::from(binary.get("path").and_then(Value::as_str).unwrap_or(""));
-    let binary_sha = binary.get("sha256").and_then(Value::as_str).unwrap_or("");
-    if !binary_path.is_file() || binary_sha.is_empty() || sha256(&binary_path)? != binary_sha {
-        bail!("pinned KV binary verification failed");
-    }
+    let binary_sha = pinned_binary_sha(binary, "KV")?;
 
-    let run_ids = selected_run_ids(&manifest, args.stock_run_id)?;
+    let run_ids = selected_run_ids(&selected.manifest.value, args.stock_run_id)?;
     if run_ids.is_empty() {
         bail!("KV selection has no source runs");
     }
-    let mut support_hashes = Map::new();
+    let SourceSupports { supports, hashes } =
+        load_source_supports(args.repo, &run_ids, args.expected_admission_policy)?;
+    let identity = kv_support_identity(args, binary_sha, &supports)?;
+    let runner_repo_commit = checked_runner_commit(args.repo)?;
+    if runner_repo_commit != args.expected_commit {
+        bail!("KV runner checkout commit does not match pinned binary commit");
+    }
+
+    let mut readiness =
+        selected.certificate(args, 7, &runner_repo_commit, hashes, &binary_data.sha256);
+    readiness.insert("benchmark_binary_sha256".to_owned(), json!(binary_sha));
+    readiness.extend(
+        identity
+            .as_object()
+            .context("KV identity is not an object")?
+            .clone(),
+    );
+    Ok(Value::Object(readiness))
+}
+
+fn kv_support_identity(
+    args: &ReadyArgs<'_>,
+    binary_sha: &str,
+    supports: &[(String, Value)],
+) -> Result<Value> {
     let mut identities = BTreeMap::<String, Value>::new();
-    for run_id in &run_ids {
-        let path = support_path(args.repo, run_id);
-        if !path.is_file() {
-            bail!("missing source support: {}", path.display());
-        }
-        let support = read_json(&path)?;
-        if support.get("admission_policy").and_then(Value::as_str)
-            != Some(args.expected_admission_policy)
-        {
-            bail!(
-                "unexpected admission policy for {run_id}: {:?}",
-                support.get("admission_policy").unwrap_or(&Value::Null)
-            );
-        }
+    for (run_id, support) in supports {
         if support
             .get("benchmark_binary_sha256")
             .and_then(Value::as_str)
@@ -288,15 +412,14 @@ pub fn verify_kv(args: &ReadyArgs<'_>) -> Result<Value> {
         {
             bail!("KV source free-space provenance is below quick-publication policy: {run_id}");
         }
-        let identity = kv_source_identity(args.repo, &support)?;
+        let identity = kv_source_identity(args.repo, support)?;
         identities.insert(serde_json::to_string(&identity)?, identity);
-        support_hashes.insert(run_id.clone(), json!(sha256(&path)?));
     }
     if identities.len() != 1 {
         bail!("selected KV sources have inconsistent runtime/admission identities");
     }
     let identity = identities
-        .values()
+        .into_values()
         .next()
         .context("missing KV source identity")?;
     if identity.get("admission_policy").and_then(Value::as_str)
@@ -305,60 +428,13 @@ pub fn verify_kv(args: &ReadyArgs<'_>) -> Result<Value> {
         bail!("KV selected source admission identity mismatch");
     }
     if args.expected_admission_policy == CONTINUOUS_ADMISSION_POLICY {
-        for field in [
-            "continuous_noise_guard_sha256",
-            "continuous_noise_sample_ms",
-            "continuous_noise_max_cpu_percent",
-            "continuous_noise_max_io_average_mib_s",
-            "continuous_noise_max_io_rate_mib_s",
-        ] {
-            let value = identity.get(field);
-            if value.is_none()
-                || matches!(value, Some(Value::Null))
-                || value.and_then(Value::as_str) == Some("")
-            {
+        for (field, _, _) in CONTINUOUS_FIELDS {
+            if !has_provenance_value(identity.get(field)) {
                 bail!("KV continuous admission provenance is incomplete");
             }
         }
     }
-    let runner_repo_commit = checked_runner_commit(args.repo)?;
-    if runner_repo_commit != args.expected_commit {
-        bail!("KV runner checkout commit does not match pinned binary commit");
-    }
-
-    let mut readiness = Map::new();
-    readiness.insert("ready_version".to_owned(), json!(7));
-    readiness.insert("repo_commit".to_owned(), json!(args.expected_commit));
-    readiness.insert("binary_repo_commit".to_owned(), json!(args.expected_commit));
-    readiness.insert("runner_repo_commit".to_owned(), json!(runner_repo_commit));
-    readiness.insert(
-        "admission_policy".to_owned(),
-        json!(args.expected_admission_policy),
-    );
-    readiness.insert("group_count".to_owned(), json!(180));
-    readiness.insert("row_count".to_owned(), json!(rows.len()));
-    readiness.insert("benchmark_binary_sha256".to_owned(), json!(binary_sha));
-    readiness.insert(
-        "source_support_sha256".to_owned(),
-        Value::Object(support_hashes),
-    );
-    readiness.insert("results_sha256".to_owned(), json!(sha256(&results_path)?));
-    readiness.insert(
-        "selection_manifest_sha256".to_owned(),
-        json!(sha256(&manifest_path)?),
-    );
-    readiness.insert("summary_sha256".to_owned(), json!(sha256(&summary_path)?));
-    readiness.insert(
-        "binary_manifest_sha256".to_owned(),
-        json!(sha256(args.binary_manifest)?),
-    );
-    for (key, value) in identity
-        .as_object()
-        .context("KV identity is not an object")?
-    {
-        readiness.insert(key.clone(), value.clone());
-    }
-    Ok(Value::Object(readiness))
+    Ok(identity)
 }
 
 struct RecordSupports {
@@ -367,11 +443,16 @@ struct RecordSupports {
     continuous_identity: Option<Value>,
 }
 
-fn load_record_supports(
+struct SourceSupports {
+    supports: Vec<(String, Value)>,
+    hashes: Map<String, Value>,
+}
+
+fn load_source_supports(
     repo: &Path,
     run_ids: &[String],
     expected_admission_policy: &str,
-) -> Result<RecordSupports> {
+) -> Result<SourceSupports> {
     let mut supports = Vec::new();
     let mut hashes = Map::new();
     for run_id in run_ids {
@@ -379,18 +460,34 @@ fn load_record_supports(
         if !path.is_file() {
             bail!("missing source support: {}", path.display());
         }
-        let support = read_json(&path)?;
-        if support.get("admission_policy").and_then(Value::as_str)
+        let support = read_hashed_json(&path)?;
+        if support
+            .value
+            .get("admission_policy")
+            .and_then(Value::as_str)
             != Some(expected_admission_policy)
         {
             bail!(
                 "unexpected admission policy for {run_id}: {:?}",
-                support.get("admission_policy").unwrap_or(&Value::Null)
+                support
+                    .value
+                    .get("admission_policy")
+                    .unwrap_or(&Value::Null)
             );
         }
-        hashes.insert(run_id.clone(), json!(sha256(&path)?));
-        supports.push((run_id.clone(), support));
+        hashes.insert(run_id.clone(), json!(support.sha256));
+        supports.push((run_id.clone(), support.value));
     }
+    Ok(SourceSupports { supports, hashes })
+}
+
+fn load_record_supports(
+    repo: &Path,
+    run_ids: &[String],
+    expected_admission_policy: &str,
+) -> Result<RecordSupports> {
+    let SourceSupports { supports, hashes } =
+        load_source_supports(repo, run_ids, expected_admission_policy)?;
     let noise_guards = supports
         .iter()
         .map(|(_, support)| {
@@ -419,21 +516,15 @@ fn load_record_supports(
     let continuous_identity = if expected_admission_policy == CONTINUOUS_ADMISSION_POLICY {
         let mut identities = BTreeMap::<String, Value>::new();
         for (run_id, support) in &supports {
-            let identity = json!({
-                "guard_sha256": support.get("continuous_noise_guard_sha256").cloned().unwrap_or(Value::Null),
-                "sample_ms": support.get("continuous_noise_sample_ms").cloned().unwrap_or(Value::Null),
-                "max_cpu_percent": support.get("continuous_noise_max_cpu_percent").cloned().unwrap_or(Value::Null),
-                "max_io_average_mib_s": support.get("continuous_noise_max_io_average_mib_s").cloned().unwrap_or(Value::Null),
-                "max_io_rate_mib_s": support.get("continuous_noise_max_io_rate_mib_s").cloned().unwrap_or(Value::Null),
-            });
-            if identity
-                .as_object()
-                .context("continuous identity is not an object")?
-                .values()
-                .any(|value| value.is_null() || value.as_str() == Some(""))
-            {
-                bail!("missing continuous admission provenance for {run_id}");
+            let mut identity = Map::new();
+            for (source, field, _) in CONTINUOUS_FIELDS {
+                let value = support.get(source);
+                if !has_provenance_value(value) {
+                    bail!("missing continuous admission provenance for {run_id}");
+                }
+                identity.insert(field.to_owned(), value.cloned().unwrap_or(Value::Null));
             }
+            let identity = Value::Object(identity);
             identities.insert(serde_json::to_string(&identity)?, identity);
         }
         if identities.len() != 1 {
@@ -455,51 +546,19 @@ fn load_record_supports(
     })
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
-)]
 pub fn verify_record(args: &ReadyArgs<'_>) -> Result<Value> {
     let runner_repo_commit = checked_runner_commit(args.repo)?;
-    let manifest_path = args.selected.join("manifest.json");
-    let summary_path = args.selected.join("summary.json");
-    let results_path = args.selected.join("results.ndjson");
-    for path in [
-        &manifest_path,
-        &summary_path,
-        &results_path,
-        args.binary_manifest,
-    ] {
-        if !path.is_file() {
-            bail!("missing record readiness artifact: {}", path.display());
-        }
-    }
-    let manifest = read_json(&manifest_path)?;
-    let summary = read_json(&summary_path)?;
-    let binary_manifest = read_json(args.binary_manifest)?;
-    let rows = read_rows(&results_path)?;
-    if !manifest
-        .get("complete")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-        || value_i64(manifest.get("selected_groups"))? != 40
-    {
-        bail!("record selection is not complete at 40 groups");
-    }
-    if value_i64(summary.get("group_count"))? != 40 || json_truthy(summary.get("problems")) {
-        bail!("record summary is not a clean 40-group corpus");
-    }
-    if value_i64(summary.get("row_count"))? != i64::try_from(rows.len()).unwrap_or(i64::MAX)
-        || value_i64(manifest.get("selected_rows"))?
-            != i64::try_from(rows.len()).unwrap_or(i64::MAX)
-    {
-        bail!("record row-count provenance mismatch");
-    }
-    let reads = rows
+    let selected = SelectedArtifacts::load(args, "record", 40)?;
+    let binary_manifest = load_binary_manifest(args)?;
+    let reads = selected
+        .results
+        .value
         .iter()
         .map(|row| row.get("read_materialization").and_then(Value::as_str))
         .collect::<BTreeSet<_>>();
-    let writes = rows
+    let writes = selected
+        .results
+        .value
         .iter()
         .map(|row| row.get("write_materialization").and_then(Value::as_str))
         .collect::<BTreeSet<_>>();
@@ -510,16 +569,15 @@ pub fn verify_record(args: &ReadyArgs<'_>) -> Result<Value> {
         bail!("unexpected write semantics: {writes:?}");
     }
 
-    let run_ids = selected_run_ids(&manifest, args.stock_run_id)?;
+    let run_ids = selected_run_ids(&selected.manifest.value, args.stock_run_id)?;
     let supports = load_record_supports(args.repo, &run_ids, args.expected_admission_policy)?;
-    if binary_manifest.get("repo_commit").and_then(Value::as_str) != Some(args.expected_commit) {
-        bail!("binary manifest commit mismatch");
-    }
     if binary_manifest
+        .value
         .get("read_materialization")
         .and_then(Value::as_str)
         != Some("full-record-v1")
         || binary_manifest
+            .value
             .get("write_materialization")
             .and_then(Value::as_str)
             != Some("no-return-v1")
@@ -527,6 +585,7 @@ pub fn verify_record(args: &ReadyArgs<'_>) -> Result<Value> {
         bail!("binary manifest semantic mismatch");
     }
     let binaries = binary_manifest
+        .value
         .get("binaries")
         .and_then(Value::as_object)
         .context("binary manifest does not describe exactly six record binaries")?;
@@ -534,81 +593,37 @@ pub fn verify_record(args: &ReadyArgs<'_>) -> Result<Value> {
         bail!("binary manifest does not describe exactly six record binaries");
     }
     for (name, item) in binaries {
-        let path = PathBuf::from(item.get("path").and_then(Value::as_str).unwrap_or(""));
-        let expected = item.get("sha256").and_then(Value::as_str).unwrap_or("");
-        if !path.is_file() || expected.is_empty() || sha256(&path)? != expected {
-            bail!("pinned binary verification failed: {name}");
-        }
+        pinned_binary_sha(
+            item.as_object().context("binary entry is not an object")?,
+            name,
+        )?;
     }
 
-    let mut readiness = Map::new();
-    readiness.insert(
-        "ready_version".to_owned(),
-        json!(if supports.continuous_identity.is_some() {
-            5
-        } else {
-            4
-        }),
-    );
-    readiness.insert("repo_commit".to_owned(), json!(args.expected_commit));
-    readiness.insert("binary_repo_commit".to_owned(), json!(args.expected_commit));
-    readiness.insert("runner_repo_commit".to_owned(), json!(runner_repo_commit));
-    readiness.insert(
-        "admission_policy".to_owned(),
-        json!(args.expected_admission_policy),
-    );
-    readiness.insert(
-        "source_support_sha256".to_owned(),
-        Value::Object(supports.hashes),
+    let ready_version = if supports.continuous_identity.is_some() {
+        5
+    } else {
+        4
+    };
+    let mut readiness = selected.certificate(
+        args,
+        ready_version,
+        &runner_repo_commit,
+        supports.hashes,
+        &binary_manifest.sha256,
     );
     readiness.insert(
         "selected_noise_guard_sha256".to_owned(),
         json!(supports.selected_noise_guard_sha256),
     );
-    readiness.insert("group_count".to_owned(), json!(40));
-    readiness.insert("row_count".to_owned(), json!(rows.len()));
     readiness.insert("read_materialization".to_owned(), json!("full-record-v1"));
     readiness.insert("write_materialization".to_owned(), json!("no-return-v1"));
-    readiness.insert("results_sha256".to_owned(), json!(sha256(&results_path)?));
-    readiness.insert(
-        "selection_manifest_sha256".to_owned(),
-        json!(sha256(&manifest_path)?),
-    );
-    readiness.insert("summary_sha256".to_owned(), json!(sha256(&summary_path)?));
-    readiness.insert(
-        "binary_manifest_sha256".to_owned(),
-        json!(sha256(args.binary_manifest)?),
-    );
     if let Some(identity) = supports.continuous_identity {
-        readiness.insert(
-            "selected_continuous_noise_guard_sha256".to_owned(),
-            identity.get("guard_sha256").cloned().unwrap_or(Value::Null),
-        );
-        readiness.insert(
-            "continuous_noise_sample_ms".to_owned(),
-            identity.get("sample_ms").cloned().unwrap_or(Value::Null),
-        );
-        readiness.insert(
-            "continuous_noise_max_cpu_percent".to_owned(),
-            identity
-                .get("max_cpu_percent")
-                .cloned()
-                .unwrap_or(Value::Null),
-        );
-        readiness.insert(
-            "continuous_noise_max_io_average_mib_s".to_owned(),
-            identity
-                .get("max_io_average_mib_s")
-                .cloned()
-                .unwrap_or(Value::Null),
-        );
-        readiness.insert(
-            "continuous_noise_max_io_rate_mib_s".to_owned(),
-            identity
-                .get("max_io_rate_mib_s")
-                .cloned()
-                .unwrap_or(Value::Null),
-        );
+        for (_, field, certificate_field) in CONTINUOUS_FIELDS {
+            readiness.insert(
+                certificate_field.to_owned(),
+                identity.get(field).cloned().unwrap_or(Value::Null),
+            );
+        }
     }
     Ok(Value::Object(readiness))
 }
@@ -625,8 +640,13 @@ pub fn run_record(args: ReadyArgs<'_>) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{CONTINUOUS_ADMISSION_POLICY, load_record_supports, selected_run_ids};
+    use super::{
+        CONTINUOUS_ADMISSION_POLICY, ReadyArgs, SelectedArtifacts, load_binary_manifest,
+        load_record_supports, selected_run_ids,
+    };
+    use crate::file_hash::sha256;
     use anyhow::Result;
+    use serde_json::Map;
     use serde_json::json;
     use std::{
         fs,
@@ -643,6 +663,56 @@ mod tests {
         ));
         fs::create_dir(&path)?;
         Ok(path)
+    }
+
+    #[test]
+    fn certificate_hashes_bind_the_exact_validated_artifacts() -> Result<()> {
+        let repo = temp_dir("artifacts")?;
+        let manifest = repo.join("manifest.json");
+        let summary = repo.join("summary.json");
+        let results = repo.join("results.ndjson");
+        let binary = repo.join("binary.json");
+        fs::write(
+            &manifest,
+            r#"{"complete":true,"selected_groups":2,"selected_rows":2}"#,
+        )?;
+        fs::write(&summary, r#"{"group_count":2,"row_count":2,"problems":[]}"#)?;
+        fs::write(&results, "{\"trial\":1}\n{\"trial\":2}\n")?;
+        fs::write(&binary, r#"{"repo_commit":"abc"}"#)?;
+        let args = ReadyArgs {
+            selected: &repo,
+            binary_manifest: &binary,
+            expected_commit: "abc",
+            repo: &repo,
+            stock_run_id: "stock",
+            expected_admission_policy: CONTINUOUS_ADMISSION_POLICY,
+            out: &repo.join("ready.json"),
+        };
+        let artifacts = SelectedArtifacts::load(&args, "KV", 2)?;
+        let binary_manifest = load_binary_manifest(&args)?;
+        let original_result_hash = sha256(&results)?;
+        let original_manifest_hash = sha256(&manifest)?;
+        let original_summary_hash = sha256(&summary)?;
+        let original_binary_hash = sha256(&binary)?;
+        fs::write(&results, "{}\n")?;
+        fs::write(&manifest, "{}")?;
+        fs::write(&summary, "{}")?;
+        fs::write(&binary, "{}")?;
+        let certificate =
+            artifacts.certificate(&args, 7, "abc", Map::new(), &binary_manifest.sha256);
+        assert_eq!(certificate["group_count"], 2);
+        assert_eq!(certificate["row_count"], 2);
+        assert_eq!(certificate["results_sha256"], original_result_hash);
+        assert_eq!(
+            certificate["selection_manifest_sha256"],
+            original_manifest_hash
+        );
+        assert_eq!(certificate["summary_sha256"], original_summary_hash);
+        assert_eq!(certificate["binary_manifest_sha256"], original_binary_hash);
+        assert!(SelectedArtifacts::load(&args, "record", 2).is_err());
+        assert!(load_binary_manifest(&args).is_err());
+        fs::remove_dir_all(repo)?;
+        Ok(())
     }
 
     #[test]

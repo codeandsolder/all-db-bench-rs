@@ -11,18 +11,17 @@ const READ: &str = "full-record-v1";
 const WRITE: &str = "no-return-v1";
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
-#[expect(
-    clippy::struct_field_names,
-    reason = "bin suffix distinguishes the executable roles in the smoke-test contract"
-)]
+#[derive(Clone, Copy)]
+pub struct RecordBinaries<'a> {
+    pub(crate) bench: &'a Path,
+    pub(crate) concurrency: &'a Path,
+    pub(crate) sustained: &'a Path,
+}
+
 #[derive(Clone, Copy)]
 pub struct RecordSmokeArgs<'a> {
-    pub(crate) bench_bin: &'a Path,
-    pub(crate) concurrency_bin: &'a Path,
-    pub(crate) sustained_bin: &'a Path,
-    pub(crate) rocks_bench_bin: &'a Path,
-    pub(crate) rocks_concurrency_bin: &'a Path,
-    pub(crate) rocks_sustained_bin: &'a Path,
+    pub(crate) standard: RecordBinaries<'a>,
+    pub(crate) rocks: RecordBinaries<'a>,
 }
 
 struct TempRoot(PathBuf);
@@ -217,12 +216,12 @@ fn sustained_command(binary: &Path, engine: &str, root: &Path) -> (Command, Path
 
 fn verify_files(args: &RecordSmokeArgs<'_>) -> Result<()> {
     for path in [
-        args.bench_bin,
-        args.concurrency_bin,
-        args.sustained_bin,
-        args.rocks_bench_bin,
-        args.rocks_concurrency_bin,
-        args.rocks_sustained_bin,
+        args.standard.bench,
+        args.standard.concurrency,
+        args.standard.sustained,
+        args.rocks.bench,
+        args.rocks.concurrency,
+        args.rocks.sustained,
     ] {
         if !path.is_file() {
             bail!("binary does not exist: {}", path.display());
@@ -237,7 +236,8 @@ pub fn run(args: RecordSmokeArgs<'_>) -> Result<()> {
 
     for engine in ["surrealdb", "turso", "sqlite"] {
         for workload in ["point-read", "write-burst"] {
-            let (command, output) = baseline_command(args.bench_bin, engine, workload, root.path());
+            let (command, output) =
+                baseline_command(args.standard.bench, engine, workload, root.path());
             checked_result(
                 command,
                 &output,
@@ -248,12 +248,8 @@ pub fn run(args: RecordSmokeArgs<'_>) -> Result<()> {
         }
     }
     for workload in ["point-read", "write-burst"] {
-        let (command, output) = baseline_command(
-            args.rocks_bench_bin,
-            "surrealdb-rocksdb",
-            workload,
-            root.path(),
-        );
+        let (command, output) =
+            baseline_command(args.rocks.bench, "surrealdb-rocksdb", workload, root.path());
         checked_result(
             command,
             &output,
@@ -264,8 +260,8 @@ pub fn run(args: RecordSmokeArgs<'_>) -> Result<()> {
     }
 
     for (binary, engine) in [
-        (args.concurrency_bin, "surrealdb"),
-        (args.rocks_concurrency_bin, "surrealdb-rocksdb"),
+        (args.standard.concurrency, "surrealdb"),
+        (args.rocks.concurrency, "surrealdb-rocksdb"),
     ] {
         let (command, output) = concurrency_command(binary, engine, root.path());
         checked_result(
@@ -278,7 +274,7 @@ pub fn run(args: RecordSmokeArgs<'_>) -> Result<()> {
     }
 
     for engine in ["surrealdb", "turso", "sqlite"] {
-        let (command, output) = sustained_command(args.sustained_bin, engine, root.path());
+        let (command, output) = sustained_command(args.standard.sustained, engine, root.path());
         checked_result(
             command,
             &output,
@@ -288,7 +284,7 @@ pub fn run(args: RecordSmokeArgs<'_>) -> Result<()> {
         )?;
     }
     let (command, output) =
-        sustained_command(args.rocks_sustained_bin, "surrealdb-rocksdb", root.path());
+        sustained_command(args.rocks.sustained, "surrealdb-rocksdb", root.path());
     checked_result(command, &output, "sustained/surrealdb-rocksdb/churn", 7, 40)?;
 
     println!("record runtime smoke complete: 14/14");

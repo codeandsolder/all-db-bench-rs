@@ -1,9 +1,12 @@
+use super::kv_identity::{FamilyKey, WorkSpec, result_key};
 use super::{
-    get_f64, get_i64, get_str, median, number, object, read_json, sha256, support_identity,
-    value_i64, write_json,
+    get_f64, get_i64, get_str, median, object, read_json, sha256, support_identity, value_i64,
+    write_json,
 };
 use anyhow::{Context, Result, bail};
-use serde_json::{Map, Value, json};
+use num_traits::ToPrimitive;
+use serde::Serialize;
+use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
@@ -23,36 +26,6 @@ const FLOOR_SECONDS: f64 = 2.0;
 const SEVERE_SECONDS: f64 = 0.25;
 const STATEFUL_MAX_TRIALS: i64 = 15;
 const POLICY_VERSION: i64 = 1;
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct FamilyKey {
-    scenario: String,
-    engine: String,
-    durability: String,
-    workload: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct ClientKey {
-    family: FamilyKey,
-    clients: i64,
-}
-
-fn family_key(value: &Value) -> Result<FamilyKey> {
-    Ok(FamilyKey {
-        scenario: get_str(value, "scenario")?.to_owned(),
-        engine: get_str(value, "engine")?.to_owned(),
-        durability: get_str(value, "durability")?.to_owned(),
-        workload: get_str(value, "workload")?.to_owned(),
-    })
-}
-
-fn client_key(value: &Value) -> Result<ClientKey> {
-    Ok(ClientKey {
-        family: family_key(value)?,
-        clients: get_i64(value, "clients")?,
-    })
-}
 
 fn stock_ops(
     profile: &str,
@@ -188,10 +161,388 @@ pub struct AuditArgs<'a> {
     pub(crate) expected_admission_policy: Option<&'a str>,
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
-)]
+struct PlannedFamily<'a> {
+    work: WorkSpec,
+    clients: BTreeMap<i64, &'a Value>,
+}
+
+type PlannedMatrix<'a> = BTreeMap<FamilyKey, PlannedFamily<'a>>;
+type ObservedMatrix<'a> = BTreeMap<FamilyKey, BTreeMap<i64, Vec<&'a Value>>>;
+
+fn planned_matrix(jobs: &[Value]) -> Result<PlannedMatrix<'_>> {
+    let mut families = PlannedMatrix::new();
+    let mut identities = BTreeSet::new();
+    for job in jobs {
+        let key = result_key(job)?;
+        if key.clients < 1
+            || key.trial < 1
+            || key.work.records < 1
+            || key.work.ops < 1
+            || key.work.bounded_churn_slots < 0
+        {
+            bail!("invalid planned case dimensions: {key:?}");
+        }
+        if !identities.insert(key.clone()) {
+            bail!("duplicate planned case identity: {key:?}");
+        }
+        let family = families
+            .entry(key.family.clone())
+            .or_insert_with(|| PlannedFamily {
+                work: key.work.clone(),
+                clients: BTreeMap::new(),
+            });
+        if family.work != key.work {
+            bail!(
+                "family total-work or state mismatch: {:?}: {:?} != {:?}",
+                key.family,
+                family.work,
+                key.work
+            );
+        }
+        family.clients.entry(key.clients).or_insert(job);
+    }
+    Ok(families)
+}
+
+fn observed_matrix<'a>(
+    rows: &'a [Value],
+    planned: &PlannedMatrix<'_>,
+) -> Result<ObservedMatrix<'a>> {
+    let mut observed = ObservedMatrix::new();
+    let mut identities = BTreeSet::new();
+    for row in rows {
+        let key = result_key(row)?;
+        if key.trial < 1 {
+            bail!("invalid observed trial: {key:?}");
+        }
+        let family = planned
+            .get(&key.family)
+            .filter(|family| family.clients.contains_key(&key.clients))
+            .with_context(|| {
+                format!(
+                    "result outside planned matrix: {:?}: {key:?}",
+                    row.get("_case_file")
+                )
+            })?;
+        if get_i64(row, "ops_requested")? != key.work.ops || key.work != family.work {
+            bail!(
+                "stock result work identity mismatch for {:?}: {:?} != {:?}",
+                row.get("_case_file"),
+                key.work,
+                family.work
+            );
+        }
+        if get_i64(row, "ops_completed")? != key.work.ops {
+            bail!("partial result: {:?}", row.get("_case_file"));
+        }
+        let elapsed = get_f64(row, "elapsed_s")?;
+        let rate = get_f64(row, "ops_per_s")?;
+        if !elapsed.is_finite() || elapsed <= 0.0 || !rate.is_finite() || rate <= 0.0 {
+            bail!("invalid timing: {:?}", row.get("_case_file"));
+        }
+        if !identities.insert(key.clone()) {
+            bail!("duplicate result identity across runs: {key:?}");
+        }
+        observed
+            .entry(key.family)
+            .or_default()
+            .entry(key.clients)
+            .or_default()
+            .push(row);
+    }
+    Ok(observed)
+}
+
+#[derive(Serialize)]
+struct ClientStats {
+    median_elapsed_s: f64,
+    #[serde(rename = "median_ops_per_s")]
+    median_rate: f64,
+    min_elapsed_s: f64,
+    max_elapsed_s: f64,
+}
+
+struct ClientEvidence {
+    observed_trials: Vec<i64>,
+    stats: Option<ClientStats>,
+}
+
+impl ClientEvidence {
+    fn from_samples(samples: &[&Value]) -> Result<Self> {
+        let mut observed_trials = samples
+            .iter()
+            .map(|row| get_i64(row, "trial"))
+            .collect::<Result<Vec<_>>>()?;
+        observed_trials.sort_unstable();
+        let stats = if samples.is_empty() {
+            None
+        } else {
+            let mut elapsed = samples
+                .iter()
+                .map(|row| get_f64(row, "elapsed_s"))
+                .collect::<Result<Vec<_>>>()?;
+            let mut rates = samples
+                .iter()
+                .map(|row| get_f64(row, "ops_per_s"))
+                .collect::<Result<Vec<_>>>()?;
+            Some(ClientStats {
+                min_elapsed_s: elapsed.iter().copied().fold(f64::INFINITY, f64::min),
+                max_elapsed_s: elapsed.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+                median_elapsed_s: median(&mut elapsed)?,
+                median_rate: median(&mut rates)?,
+            })
+        };
+        Ok(Self {
+            observed_trials,
+            stats,
+        })
+    }
+
+    fn report(&self, template: &Value) -> Result<Value> {
+        let mut entry = object(template)?.clone();
+        entry.remove("trial");
+        entry.insert("observed_trials".to_owned(), json!(self.observed_trials));
+        entry.insert(
+            "observed_count".to_owned(),
+            json!(self.observed_trials.len()),
+        );
+        if let Some(stats) = &self.stats {
+            let stats = serde_json::to_value(stats)?;
+            entry.extend(object(&stats)?.clone());
+        }
+        Ok(Value::Object(entry))
+    }
+}
+
+#[derive(Serialize)]
+struct FamilyStats {
+    fastest_observed_median_elapsed_s: f64,
+    max_observed_median_ops_per_s: f64,
+}
+
+impl FamilyStats {
+    fn from_clients<'a>(stats: impl Iterator<Item = &'a ClientStats>) -> Option<Self> {
+        stats
+            .map(|stats| Self {
+                fastest_observed_median_elapsed_s: stats.median_elapsed_s,
+                max_observed_median_ops_per_s: stats.median_rate,
+            })
+            .reduce(|left, right| Self {
+                fastest_observed_median_elapsed_s: left
+                    .fastest_observed_median_elapsed_s
+                    .min(right.fastest_observed_median_elapsed_s),
+                max_observed_median_ops_per_s: left
+                    .max_observed_median_ops_per_s
+                    .max(right.max_observed_median_ops_per_s),
+            })
+    }
+}
+
+#[derive(Serialize)]
+struct SizingDecision {
+    status: &'static str,
+    recommendation: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    suggested_ops: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    suggested_trials: Option<i64>,
+}
+
+#[derive(Serialize)]
+struct StatefulRisk {
+    provisional_stateful_trials_needed: i64,
+    provisional_stateful_risk: &'static str,
+}
+
+fn stateful_risk(fastest: f64, trials: i64) -> Result<StatefulRisk> {
+    let needed = trials.max(
+        (TARGET_SECONDS / fastest)
+            .ceil()
+            .to_i64()
+            .context("stateful trial requirement exceeds integer range")?,
+    );
+    Ok(StatefulRisk {
+        provisional_stateful_trials_needed: needed,
+        provisional_stateful_risk: if fastest < SEVERE_SECONDS || needed > STATEFUL_MAX_TRIALS {
+            "redesign-required"
+        } else if fastest < FLOOR_SECONDS {
+            "more-fresh-trials"
+        } else {
+            "sized"
+        },
+    })
+}
+
+fn sizing_decision(
+    fixed: bool,
+    complete: bool,
+    evidence: Option<&FamilyStats>,
+    current_ops: i64,
+    trials: i64,
+) -> Result<SizingDecision> {
+    let Some(evidence) = evidence.filter(|_| complete) else {
+        return Ok(SizingDecision {
+            status: "needs-probe",
+            recommendation: "collect-stock-probe",
+            suggested_ops: None,
+            suggested_trials: None,
+        });
+    };
+    let fastest = evidence.fastest_observed_median_elapsed_s;
+    if fixed {
+        let (status, recommendation, ops) = if fastest < FLOOR_SECONDS {
+            (
+                "undersized",
+                "more-ops",
+                current_ops.max(super::rounded_ops(
+                    evidence.max_observed_median_ops_per_s * TARGET_SECONDS,
+                )?),
+            )
+        } else {
+            ("sized", "keep-stock", current_ops)
+        };
+        return Ok(SizingDecision {
+            status,
+            recommendation,
+            suggested_ops: Some(ops),
+            suggested_trials: Some(trials),
+        });
+    }
+    let risk = stateful_risk(fastest, trials)?;
+    let (status, recommendation) = if fastest >= FLOOR_SECONDS {
+        ("sized", "keep-stock")
+    } else if risk.provisional_stateful_risk == "more-fresh-trials" {
+        ("undersized", "more-fresh-trials")
+    } else {
+        ("redesign-required", "state-preserving-longer-window")
+    };
+    Ok(SizingDecision {
+        status,
+        recommendation,
+        suggested_ops: Some(current_ops),
+        suggested_trials: Some(risk.provisional_stateful_trials_needed),
+    })
+}
+
+#[derive(Serialize)]
+struct FamilyReport<'a> {
+    #[serde(flatten)]
+    key: &'a FamilyKey,
+    clients: Vec<i64>,
+    missing_clients: Vec<i64>,
+    current_records: i64,
+    current_ops: i64,
+    observed_client_groups: usize,
+    planned_client_groups: usize,
+    semantics: &'static str,
+    #[serde(flatten)]
+    stats: Option<FamilyStats>,
+    #[serde(flatten)]
+    decision: SizingDecision,
+    #[serde(flatten)]
+    provisional: Option<StatefulRisk>,
+}
+
+fn family_report<'a>(
+    key: &'a FamilyKey,
+    plan: &PlannedFamily<'_>,
+    evidence: &BTreeMap<i64, ClientEvidence>,
+    trials: i64,
+) -> Result<FamilyReport<'a>> {
+    let clients: Vec<_> = plan.clients.keys().copied().collect();
+    let missing_clients: Vec<_> = evidence
+        .iter()
+        .filter(|(_, item)| item.stats.is_none())
+        .map(|(count, _)| *count)
+        .collect();
+    let stats =
+        FamilyStats::from_clients(evidence.values().filter_map(|client| client.stats.as_ref()));
+    let fixed = SAFE_OP_SCALE_WORKLOADS.contains(&key.workload.as_str());
+    let decision = sizing_decision(
+        fixed,
+        missing_clients.is_empty(),
+        stats.as_ref(),
+        plan.work.ops,
+        trials,
+    )?;
+    let provisional = stats
+        .as_ref()
+        .filter(|_| STATE_CHANGING_WORKLOADS.contains(&key.workload.as_str()))
+        .map(|stats| stateful_risk(stats.fastest_observed_median_elapsed_s, trials))
+        .transpose()?;
+    let observed_client_groups = clients.len() - missing_clients.len();
+    Ok(FamilyReport {
+        key,
+        planned_client_groups: clients.len(),
+        clients,
+        missing_clients,
+        current_records: plan.work.records,
+        current_ops: plan.work.ops,
+        observed_client_groups,
+        semantics: if fixed {
+            "fixed-keyspace"
+        } else {
+            "state-changing"
+        },
+        stats,
+        decision,
+        provisional,
+    })
+}
+
+#[derive(Default)]
+struct MatrixSummary<'a> {
+    client_groups: Vec<Value>,
+    families: Vec<FamilyReport<'a>>,
+    missing_probe_cases: Vec<Value>,
+    counts: BTreeMap<&'static str, i64>,
+    planned_clients: usize,
+    observed_clients: usize,
+    observed_families: usize,
+    severe_stateful: usize,
+}
+
+fn summarize_matrix<'a>(
+    planned: &'a PlannedMatrix<'_>,
+    observed: &ObservedMatrix<'_>,
+    trials: i64,
+) -> Result<MatrixSummary<'a>> {
+    let mut summary = MatrixSummary::default();
+    for (key, plan) in planned {
+        let mut evidence = BTreeMap::new();
+        let family_observed = observed.get(key);
+        for (&clients, &template) in &plan.clients {
+            let samples = family_observed
+                .and_then(|family| family.get(&clients))
+                .map_or(&[][..], Vec::as_slice);
+            let client = ClientEvidence::from_samples(samples)?;
+            if client.stats.is_none() {
+                let mut probe = template.clone();
+                probe
+                    .as_object_mut()
+                    .context("planned group must be object")?
+                    .insert("trial".to_owned(), json!(1));
+                summary.missing_probe_cases.push(probe);
+            }
+            summary.client_groups.push(client.report(template)?);
+            evidence.insert(clients, client);
+        }
+        let family = family_report(key, plan, &evidence, trials)?;
+        summary.planned_clients += family.planned_client_groups;
+        summary.observed_clients += family.observed_client_groups;
+        summary.observed_families += usize::from(family.observed_client_groups != 0);
+        summary.severe_stateful += usize::from(
+            family
+                .provisional
+                .as_ref()
+                .is_some_and(|risk| risk.provisional_stateful_risk == "redesign-required"),
+        );
+        *summary.counts.entry(family.decision.status).or_default() += 1;
+        summary.families.push(family);
+    }
+    Ok(summary)
+}
+
 fn audit(
     repo: &Path,
     run_dir: &Path,
@@ -249,272 +600,9 @@ fn audit(
         rows.extend(read_cases(extra)?);
     }
 
-    let mut seen_rows = BTreeSet::new();
-    for row in &rows {
-        let identity = (
-            client_key(row)?,
-            get_i64(row, "trial")?,
-            get_i64(row, "records")?,
-            get_i64(row, "ops_requested")?,
-        );
-        if !seen_rows.insert(identity.clone()) {
-            bail!("duplicate result identity across runs: {identity:?}");
-        }
-    }
-
-    let mut planned_groups: BTreeMap<ClientKey, Value> = BTreeMap::new();
-    let mut planned_families: BTreeMap<FamilyKey, BTreeSet<i64>> = BTreeMap::new();
-    let mut planned_family_work: BTreeMap<FamilyKey, (i64, i64)> = BTreeMap::new();
-    for job in &jobs {
-        let ck = client_key(job)?;
-        planned_groups
-            .entry(ck.clone())
-            .or_insert_with(|| job.clone());
-        let fk = ck.family;
-        planned_families
-            .entry(fk.clone())
-            .or_default()
-            .insert(get_i64(job, "clients")?);
-        let work = (get_i64(job, "records")?, get_i64(job, "ops")?);
-        if let Some(previous) = planned_family_work.get(&fk) {
-            if *previous != work {
-                bail!("family total-work mismatch: {fk:?}: {previous:?} != {work:?}");
-            }
-        } else {
-            planned_family_work.insert(fk, work);
-        }
-    }
-
-    let mut observed: BTreeMap<ClientKey, Vec<Value>> = BTreeMap::new();
-    for row in &rows {
-        let ck = client_key(row)?;
-        let template = planned_groups.get(&ck).with_context(|| {
-            format!(
-                "result outside planned matrix: {:?}: {ck:?}",
-                row.get("_case_file")
-            )
-        })?;
-        let expected_ops = get_i64(template, "ops")?;
-        let actual_ops = get_i64(row, "ops_requested")?;
-        if actual_ops != expected_ops {
-            bail!(
-                "stock result op mismatch for {:?}: {actual_ops} != {expected_ops}",
-                row.get("_case_file")
-            );
-        }
-        if get_i64(row, "ops_completed")? != actual_ops {
-            bail!("partial result: {:?}", row.get("_case_file"));
-        }
-        let elapsed = get_f64(row, "elapsed_s")?;
-        let rate = get_f64(row, "ops_per_s")?;
-        if !elapsed.is_finite() || elapsed <= 0.0 || !rate.is_finite() || rate <= 0.0 {
-            bail!("invalid timing: {:?}", row.get("_case_file"));
-        }
-        observed.entry(ck).or_default().push(row.clone());
-    }
-
-    let mut client_groups = Vec::new();
-    let mut missing_probe_cases = Vec::new();
-    for (ck, template) in &planned_groups {
-        let samples = observed.get(ck).map_or(&[] as &[Value], Vec::as_slice);
-        let mut entry = object(template)?.clone();
-        entry.remove("trial");
-        let mut observed_trials: Vec<i64> = samples
-            .iter()
-            .map(|row| get_i64(row, "trial"))
-            .collect::<Result<Vec<_>>>()?;
-        observed_trials.sort_unstable();
-        entry.insert("observed_trials".to_owned(), json!(observed_trials));
-        entry.insert("observed_count".to_owned(), json!(samples.len()));
-        if samples.is_empty() {
-            let mut probe = template.clone();
-            probe
-                .as_object_mut()
-                .context("planned group must be object")?
-                .insert("trial".to_owned(), json!(1));
-            missing_probe_cases.push(probe);
-        } else {
-            let mut elapsed: Vec<f64> = samples
-                .iter()
-                .map(|row| get_f64(row, "elapsed_s"))
-                .collect::<Result<Vec<_>>>()?;
-            let mut rates: Vec<f64> = samples
-                .iter()
-                .map(|row| get_f64(row, "ops_per_s"))
-                .collect::<Result<Vec<_>>>()?;
-            let min_elapsed = elapsed.iter().copied().fold(f64::INFINITY, f64::min);
-            let max_elapsed = elapsed.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-            entry.insert(
-                "median_elapsed_s".to_owned(),
-                number(median(&mut elapsed)?)?,
-            );
-            entry.insert("median_ops_per_s".to_owned(), number(median(&mut rates)?)?);
-            entry.insert("min_elapsed_s".to_owned(), number(min_elapsed)?);
-            entry.insert("max_elapsed_s".to_owned(), number(max_elapsed)?);
-        }
-        client_groups.push(Value::Object(entry));
-    }
-
-    let mut by_family_observed: BTreeMap<FamilyKey, Vec<Value>> = BTreeMap::new();
-    for item in &client_groups {
-        if get_i64(item, "observed_count")? != 0 {
-            by_family_observed
-                .entry(family_key(item)?)
-                .or_default()
-                .push(item.clone());
-        }
-    }
-
-    let trials = get_i64(&support, "trials")?;
-    let mut families = Vec::new();
-    let mut counts: BTreeMap<String, i64> = BTreeMap::new();
-    for (fk, clients) in &planned_families {
-        let observed_groups = by_family_observed
-            .get(fk)
-            .map_or(&[] as &[Value], Vec::as_slice);
-        let observed_clients: BTreeSet<i64> = observed_groups
-            .iter()
-            .map(|item| get_i64(item, "clients"))
-            .collect::<Result<_>>()?;
-        let missing_clients: Vec<i64> = clients.difference(&observed_clients).copied().collect();
-        let (current_records, current_ops) = planned_family_work
-            .get(fk)
-            .copied()
-            .context("missing planned family work")?;
-        let mut entry = Map::new();
-        entry.insert("scenario".to_owned(), json!(fk.scenario));
-        entry.insert("engine".to_owned(), json!(fk.engine));
-        entry.insert("durability".to_owned(), json!(fk.durability));
-        entry.insert("workload".to_owned(), json!(fk.workload));
-        entry.insert(
-            "clients".to_owned(),
-            json!(clients.iter().copied().collect::<Vec<_>>()),
-        );
-        entry.insert("missing_clients".to_owned(), json!(missing_clients));
-        entry.insert("current_records".to_owned(), json!(current_records));
-        entry.insert("current_ops".to_owned(), json!(current_ops));
-        entry.insert(
-            "observed_client_groups".to_owned(),
-            json!(observed_groups.len()),
-        );
-        entry.insert("planned_client_groups".to_owned(), json!(clients.len()));
-        entry.insert(
-            "semantics".to_owned(),
-            json!(if SAFE_OP_SCALE_WORKLOADS.contains(&fk.workload.as_str()) {
-                "fixed-keyspace"
-            } else {
-                "state-changing"
-            }),
-        );
-
-        if observed_groups.is_empty() {
-            entry.insert("status".to_owned(), json!("needs-probe"));
-            entry.insert("recommendation".to_owned(), json!("collect-stock-probe"));
-        } else {
-            let fastest_elapsed = observed_groups
-                .iter()
-                .map(|item| get_f64(item, "median_elapsed_s"))
-                .collect::<Result<Vec<_>>>()?
-                .into_iter()
-                .fold(f64::INFINITY, f64::min);
-            let max_rate = observed_groups
-                .iter()
-                .map(|item| get_f64(item, "median_ops_per_s"))
-                .collect::<Result<Vec<_>>>()?
-                .into_iter()
-                .fold(f64::NEG_INFINITY, f64::max);
-            entry.insert(
-                "fastest_observed_median_elapsed_s".to_owned(),
-                number(fastest_elapsed)?,
-            );
-            entry.insert(
-                "max_observed_median_ops_per_s".to_owned(),
-                number(max_rate)?,
-            );
-            if !entry
-                .get("missing_clients")
-                .and_then(Value::as_array)
-                .is_some_and(Vec::is_empty)
-            {
-                entry.insert("status".to_owned(), json!("needs-probe"));
-                entry.insert("recommendation".to_owned(), json!("collect-stock-probe"));
-            } else if SAFE_OP_SCALE_WORKLOADS.contains(&fk.workload.as_str()) {
-                if fastest_elapsed < FLOOR_SECONDS {
-                    let suggested = super::rounded_ops(max_rate * TARGET_SECONDS)?;
-                    entry.insert("status".to_owned(), json!("undersized"));
-                    entry.insert("recommendation".to_owned(), json!("more-ops"));
-                    entry.insert(
-                        "suggested_ops".to_owned(),
-                        json!(current_ops.max(suggested)),
-                    );
-                } else {
-                    entry.insert("status".to_owned(), json!("sized"));
-                    entry.insert("recommendation".to_owned(), json!("keep-stock"));
-                    entry.insert("suggested_ops".to_owned(), json!(current_ops));
-                }
-                entry.insert("suggested_trials".to_owned(), json!(trials));
-            } else {
-                let needed_trials =
-                    trials.max(f64_to_i64!((TARGET_SECONDS / fastest_elapsed).ceil()));
-                entry.insert("suggested_ops".to_owned(), json!(current_ops));
-                entry.insert("suggested_trials".to_owned(), json!(needed_trials));
-                if fastest_elapsed >= FLOOR_SECONDS {
-                    entry.insert("status".to_owned(), json!("sized"));
-                    entry.insert("recommendation".to_owned(), json!("keep-stock"));
-                } else if needed_trials <= STATEFUL_MAX_TRIALS && fastest_elapsed >= SEVERE_SECONDS
-                {
-                    entry.insert("status".to_owned(), json!("undersized"));
-                    entry.insert("recommendation".to_owned(), json!("more-fresh-trials"));
-                } else {
-                    entry.insert("status".to_owned(), json!("redesign-required"));
-                    entry.insert(
-                        "recommendation".to_owned(),
-                        json!("state-preserving-longer-window"),
-                    );
-                }
-            }
-        }
-
-        if !observed_groups.is_empty() && STATE_CHANGING_WORKLOADS.contains(&fk.workload.as_str()) {
-            let fastest = entry
-                .get("fastest_observed_median_elapsed_s")
-                .and_then(Value::as_f64)
-                .context("missing fastest elapsed")?;
-            let provisional_trials = trials.max(f64_to_i64!((TARGET_SECONDS / fastest).ceil()));
-            entry.insert(
-                "provisional_stateful_trials_needed".to_owned(),
-                json!(provisional_trials),
-            );
-            entry.insert(
-                "provisional_stateful_risk".to_owned(),
-                json!(
-                    if fastest < SEVERE_SECONDS || provisional_trials > STATEFUL_MAX_TRIALS {
-                        "redesign-required"
-                    } else if fastest < FLOOR_SECONDS {
-                        "more-fresh-trials"
-                    } else {
-                        "sized"
-                    }
-                ),
-            );
-        }
-        let status = entry
-            .get("status")
-            .and_then(Value::as_str)
-            .context("missing family status")?
-            .to_owned();
-        *counts.entry(status).or_insert(0) += 1;
-        families.push(Value::Object(entry));
-    }
-
-    let severe_stateful = families
-        .iter()
-        .filter(|item| {
-            item.get("provisional_stateful_risk")
-                .and_then(Value::as_str)
-                == Some("redesign-required")
-        })
-        .count();
+    let planned = planned_matrix(&jobs)?;
+    let observed = observed_matrix(&rows, &planned)?;
+    let summary = summarize_matrix(&planned, &observed, get_i64(&support, "trials")?)?;
     Ok(json!({
         "concurrency_sizing_policy_version": POLICY_VERSION,
         "run_dir": run_dir.display().to_string(),
@@ -531,16 +619,16 @@ fn audit(
         },
         "row_count": rows.len(),
         "planned_case_count": jobs.len(),
-        "planned_client_group_count": planned_groups.len(),
-        "observed_client_group_count": observed.len(),
-        "planned_family_count": planned_families.len(),
-        "observed_family_count": by_family_observed.len(),
-        "missing_probe_case_count": missing_probe_cases.len(),
-        "observed_stateful_redesign_risk_count": severe_stateful,
-        "counts": counts,
-        "client_groups": client_groups,
-        "families": families,
-        "missing_probe_cases": missing_probe_cases,
+        "planned_client_group_count": summary.planned_clients,
+        "observed_client_group_count": summary.observed_clients,
+        "planned_family_count": planned.len(),
+        "observed_family_count": summary.observed_families,
+        "missing_probe_case_count": summary.missing_probe_cases.len(),
+        "observed_stateful_redesign_risk_count": summary.severe_stateful,
+        "counts": summary.counts,
+        "client_groups": summary.client_groups,
+        "families": summary.families,
+        "missing_probe_cases": summary.missing_probe_cases,
     }))
 }
 
@@ -820,6 +908,36 @@ mod tests {
         let report = audit(&repo()?, &dir.0, &[], None)?;
         assert_eq!(report["planned_case_count"], 1);
         assert_eq!(report["families"][0]["current_ops"], 200_000);
+        Ok(())
+    }
+
+    #[test]
+    fn results_must_match_the_planned_work_and_state() -> Result<()> {
+        let jobs = vec![
+            "concurrency-primary|fast|sync|point-read|1|100000|200000|1|growth|append|0".to_owned(),
+        ];
+        for (field, value) in [
+            ("records", json!(99_999)),
+            ("state_evolution", json!("bounded")),
+            ("state_evolution", json!(42)),
+            ("write_pattern", json!("update-uniform")),
+            ("bounded_churn_slots", json!(8192)),
+            ("bounded_churn_slots", json!("malformed")),
+            ("ops", json!(100)),
+        ] {
+            let mut bad = row("point-read", 1, 1, 1.0, 200_000.0);
+            bad[field] = value;
+            let dir = make_run(&jobs, &[bad])?;
+            assert!(audit(&repo()?, &dir.0, &[], None).is_err(), "{field}");
+        }
+        let mismatched = [
+            jobs[0].clone(),
+            "concurrency-primary|fast|sync|point-read|8|100000|200000|1|bounded|update-uniform|8192".to_owned(),
+        ];
+        let dir = make_run(&mismatched, &[])?;
+        assert!(audit(&repo()?, &dir.0, &[], None).is_err());
+        let duplicate = make_run(&[jobs[0].clone(), jobs[0].clone()], &[])?;
+        assert!(audit(&repo()?, &duplicate.0, &[], None).is_err());
         Ok(())
     }
 

@@ -124,10 +124,89 @@ fn fmt(value: f64, digits: usize) -> String {
     format!("{value:.digits$}")
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
-)]
+fn summarize_engine(engine: String, items: &[&Value]) -> Result<Value> {
+    let mut ingest_rate = Vec::with_capacity(items.len());
+    let mut startup = Vec::with_capacity(items.len());
+    let mut cpu_per_sample = Vec::with_capacity(items.len());
+    let mut write_per_sample = Vec::with_capacity(items.len());
+    let mut disk_per_sample = Vec::with_capacity(items.len());
+    let mut point_p99 = Vec::with_capacity(items.len());
+    let mut range_p99 = Vec::with_capacity(items.len());
+    let mut aggregate_p99 = Vec::with_capacity(items.len());
+
+    for item in items {
+        let samples = float_field(item, &["total_samples"])?;
+        if samples == 0.0 {
+            bail!("TSDB total_samples must be non-zero");
+        }
+        ingest_rate.push(float_field(item, &["ingest", "samples_per_s"])?);
+        startup.push(float_field(item, &["server_startup_s"])?);
+        cpu_per_sample.push(float_field(item, &["server_process", "cpu_runtime_ns"])? / samples);
+        write_per_sample.push(float_field(item, &["server_process", "write_bytes"])? / samples);
+        disk_per_sample.push(float_field(item, &["server_data_bytes"])? / samples);
+        point_p99.push(float_field(
+            item,
+            &["queries", "point", "latency", "p99_us"],
+        )?);
+        range_p99.push(float_field(
+            item,
+            &["queries", "range", "latency", "p99_us"],
+        )?);
+        aggregate_p99.push(float_field(
+            item,
+            &["queries", "aggregate", "latency", "p99_us"],
+        )?);
+    }
+
+    let first = items
+        .first()
+        .context("internal TSDB group unexpectedly empty")?;
+    let mut row = Map::new();
+    row.insert("engine".to_owned(), Value::String(engine));
+    row.insert(
+        "version".to_owned(),
+        field(first, &["engine_version"])?.clone(),
+    );
+    row.insert(
+        "transport".to_owned(),
+        field(first, &["transport"])?.clone(),
+    );
+    row.insert("trials".to_owned(), json!(items.len()));
+    row.insert(
+        "median_ingest_samples_per_s".to_owned(),
+        number(median(&mut ingest_rate)?)?,
+    );
+    row.insert(
+        "median_server_cpu_ns_per_sample".to_owned(),
+        number(median(&mut cpu_per_sample)?)?,
+    );
+    row.insert(
+        "median_server_write_bytes_per_sample".to_owned(),
+        number(median(&mut write_per_sample)?)?,
+    );
+    row.insert(
+        "median_data_bytes_per_sample".to_owned(),
+        number(median(&mut disk_per_sample)?)?,
+    );
+    row.insert(
+        "median_startup_s".to_owned(),
+        number(median(&mut startup)?)?,
+    );
+    row.insert(
+        "median_point_p99_us".to_owned(),
+        number(median(&mut point_p99)?)?,
+    );
+    row.insert(
+        "median_range_p99_us".to_owned(),
+        number(median(&mut range_p99)?)?,
+    );
+    row.insert(
+        "median_aggregate_p99_us".to_owned(),
+        number(median(&mut aggregate_p99)?)?,
+    );
+    Ok(Value::Object(row))
+}
+
 fn build_summary(cases: &[Value], expect_trials: Option<usize>) -> Result<Value> {
     let mut grouped = BTreeMap::<String, Vec<&Value>>::new();
     for case in cases {
@@ -153,87 +232,7 @@ fn build_summary(cases: &[Value], expect_trials: Option<usize>) -> Result<Value>
             )));
         }
 
-        let mut ingest_rate = Vec::with_capacity(items.len());
-        let mut startup = Vec::with_capacity(items.len());
-        let mut cpu_per_sample = Vec::with_capacity(items.len());
-        let mut write_per_sample = Vec::with_capacity(items.len());
-        let mut disk_per_sample = Vec::with_capacity(items.len());
-        let mut point_p99 = Vec::with_capacity(items.len());
-        let mut range_p99 = Vec::with_capacity(items.len());
-        let mut aggregate_p99 = Vec::with_capacity(items.len());
-
-        for item in &items {
-            let samples = float_field(item, &["total_samples"])?;
-            if samples == 0.0 {
-                bail!("TSDB total_samples must be non-zero");
-            }
-            ingest_rate.push(float_field(item, &["ingest", "samples_per_s"])?);
-            startup.push(float_field(item, &["server_startup_s"])?);
-            cpu_per_sample
-                .push(float_field(item, &["server_process", "cpu_runtime_ns"])? / samples);
-            write_per_sample.push(float_field(item, &["server_process", "write_bytes"])? / samples);
-            disk_per_sample.push(float_field(item, &["server_data_bytes"])? / samples);
-            point_p99.push(float_field(
-                item,
-                &["queries", "point", "latency", "p99_us"],
-            )?);
-            range_p99.push(float_field(
-                item,
-                &["queries", "range", "latency", "p99_us"],
-            )?);
-            aggregate_p99.push(float_field(
-                item,
-                &["queries", "aggregate", "latency", "p99_us"],
-            )?);
-        }
-
-        let first = items
-            .first()
-            .context("internal TSDB group unexpectedly empty")?;
-        let mut row = Map::new();
-        row.insert("engine".to_owned(), Value::String(engine));
-        row.insert(
-            "version".to_owned(),
-            field(first, &["engine_version"])?.clone(),
-        );
-        row.insert(
-            "transport".to_owned(),
-            field(first, &["transport"])?.clone(),
-        );
-        row.insert("trials".to_owned(), json!(items.len()));
-        row.insert(
-            "median_ingest_samples_per_s".to_owned(),
-            number(median(&mut ingest_rate)?)?,
-        );
-        row.insert(
-            "median_server_cpu_ns_per_sample".to_owned(),
-            number(median(&mut cpu_per_sample)?)?,
-        );
-        row.insert(
-            "median_server_write_bytes_per_sample".to_owned(),
-            number(median(&mut write_per_sample)?)?,
-        );
-        row.insert(
-            "median_data_bytes_per_sample".to_owned(),
-            number(median(&mut disk_per_sample)?)?,
-        );
-        row.insert(
-            "median_startup_s".to_owned(),
-            number(median(&mut startup)?)?,
-        );
-        row.insert(
-            "median_point_p99_us".to_owned(),
-            number(median(&mut point_p99)?)?,
-        );
-        row.insert(
-            "median_range_p99_us".to_owned(),
-            number(median(&mut range_p99)?)?,
-        );
-        row.insert(
-            "median_aggregate_p99_us".to_owned(),
-            number(median(&mut aggregate_p99)?)?,
-        );
-        rows.push(Value::Object(row));
+        rows.push(summarize_engine(engine, &items)?);
     }
 
     Ok(json!({

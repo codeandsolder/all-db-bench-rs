@@ -1,4 +1,4 @@
-use crate::json_value::py_string;
+use crate::json_value::{py_int, py_string};
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 use std::{
@@ -49,31 +49,6 @@ struct IdentityKey {
     trial: i64,
 }
 
-fn py_int(value: &Value) -> Option<i64> {
-    match value {
-        Value::Bool(value) => Some(i64::from(*value)),
-        Value::Number(number) => {
-            if let Some(value) = number.as_i64() {
-                Some(value)
-            } else if let Some(value) = number.as_u64() {
-                i64::try_from(value).ok()
-            } else {
-                let value = number.as_f64()?;
-                if value.is_finite()
-                    && value >= int_as_f64!(i64::MIN)
-                    && value <= int_as_f64!(i64::MAX)
-                {
-                    Some(f64_to_i64!(value.trunc()))
-                } else {
-                    None
-                }
-            }
-        }
-        Value::String(value) => value.trim().parse::<i64>().ok(),
-        Value::Null | Value::Array(_) | Value::Object(_) => None,
-    }
-}
-
 fn required<'a>(item: &'a Value, key: &str, index: usize) -> Result<&'a Value> {
     item.get(key)
         .with_context(|| format!("plan case {index} missing ['{key}']"))
@@ -105,10 +80,102 @@ fn python_list_repr(values: &[String]) -> String {
     format!("[{body}]")
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
-)]
+struct ValidatedCase {
+    family: FamilyKey,
+    clients: i64,
+    records: i64,
+    ops: i64,
+    trial: i64,
+}
+
+fn validate_case(item: &Value, index: usize, version: i64) -> Result<ValidatedCase> {
+    let missing = missing_fields(item, &BASE_REQUIRED);
+    if !missing.is_empty() {
+        bail!("plan case {index} missing {}", python_list_repr(&missing));
+    }
+
+    let state = item
+        .get("state_evolution")
+        .map_or_else(|| "growth".to_owned(), py_string);
+    let write = item
+        .get("write_pattern")
+        .map_or_else(|| "append".to_owned(), py_string);
+    let slots = item
+        .get("bounded_churn_slots")
+        .and_then(py_int)
+        .unwrap_or(0);
+
+    if version == 2 {
+        let missing = missing_fields(item, &STATE_FIELDS);
+        if !missing.is_empty() {
+            bail!(
+                "v2 plan case {index} missing {}",
+                python_list_repr(&missing)
+            );
+        }
+    }
+    if !matches!(state.as_str(), "growth" | "bounded") {
+        bail!("invalid state_evolution in case {index}: {state}");
+    }
+    if !matches!(write.as_str(), "append" | "update-uniform" | "update-hot") {
+        bail!("invalid write_pattern in case {index}: {write}");
+    }
+    if slots < 0 {
+        bail!("negative bounded_churn_slots in case {index}");
+    }
+    if state == "growth" && slots != 0 {
+        bail!("growth case {index} must use bounded_churn_slots=0");
+    }
+
+    let clients = int_field(item, "clients", index)?;
+    let records = int_field(item, "records", index)?;
+    let ops = int_field(item, "ops", index)?;
+    let trial = int_field(item, "trial", index)?;
+    if clients.min(records).min(ops).min(trial) < 1 {
+        bail!("non-positive numeric field in case {index}");
+    }
+    if clients > ops {
+        bail!("clients > ops in case {index}");
+    }
+    let workload = string_field(item, "workload", index)?;
+    if workload == "delete-burst" && ops > records {
+        bail!("delete-burst ops > records in case {index}");
+    }
+    if state == "bounded" {
+        if workload == "delete-burst" {
+            bail!("bounded delete-burst unsupported in case {index}");
+        }
+        if matches!(workload.as_str(), "tiny-txn" | "write-burst") && write == "append" {
+            bail!("bounded {workload} requires update write pattern in case {index}");
+        }
+        if matches!(workload.as_str(), "balanced" | "churn") {
+            if write != "update-uniform" {
+                bail!("bounded {workload} requires canonical update-uniform in case {index}");
+            }
+            if slots < clients * 300 {
+                bail!("bounded_churn_slots too small for client count in case {index}");
+            }
+        }
+    }
+
+    let family = FamilyKey {
+        scenario: string_field(item, "scenario", index)?,
+        engine: string_field(item, "engine", index)?,
+        durability: string_field(item, "durability", index)?,
+        workload,
+        state,
+        write,
+        slots,
+    };
+    Ok(ValidatedCase {
+        family,
+        clients,
+        records,
+        ops,
+        trial,
+    })
+}
+
 fn materialize(plan: &Value) -> Result<(Vec<Vec<String>>, Value)> {
     let version = plan
         .get("concurrency_probe_plan_version")
@@ -136,84 +203,16 @@ fn materialize(plan: &Value) -> Result<(Vec<Vec<String>>, Value)> {
     let mut rows = Vec::with_capacity(cases.len());
 
     for (index, item) in cases.iter().enumerate() {
-        let missing = missing_fields(item, &BASE_REQUIRED);
-        if !missing.is_empty() {
-            bail!("plan case {index} missing {}", python_list_repr(&missing));
-        }
-
-        let state = item
-            .get("state_evolution")
-            .map_or_else(|| "growth".to_owned(), py_string);
-        let write = item
-            .get("write_pattern")
-            .map_or_else(|| "append".to_owned(), py_string);
-        let slots = item
-            .get("bounded_churn_slots")
-            .and_then(py_int)
-            .unwrap_or(0);
-
-        if version == 2 {
-            let missing = missing_fields(item, &STATE_FIELDS);
-            if !missing.is_empty() {
-                bail!(
-                    "v2 plan case {index} missing {}",
-                    python_list_repr(&missing)
-                );
-            }
-        }
-        if !matches!(state.as_str(), "growth" | "bounded") {
-            bail!("invalid state_evolution in case {index}: {state}");
-        }
-        if !matches!(write.as_str(), "append" | "update-uniform" | "update-hot") {
-            bail!("invalid write_pattern in case {index}: {write}");
-        }
-        if slots < 0 {
-            bail!("negative bounded_churn_slots in case {index}");
-        }
-        if state == "growth" && slots != 0 {
-            bail!("growth case {index} must use bounded_churn_slots=0");
-        }
-
-        let clients = int_field(item, "clients", index)?;
-        let records = int_field(item, "records", index)?;
-        let ops = int_field(item, "ops", index)?;
-        let trial = int_field(item, "trial", index)?;
-        if clients.min(records).min(ops).min(trial) < 1 {
-            bail!("non-positive numeric field in case {index}");
-        }
-        if clients > ops {
-            bail!("clients > ops in case {index}");
-        }
-        let workload = string_field(item, "workload", index)?;
-        if workload == "delete-burst" && ops > records {
-            bail!("delete-burst ops > records in case {index}");
-        }
-        if state == "bounded" {
-            if workload == "delete-burst" {
-                bail!("bounded delete-burst unsupported in case {index}");
-            }
-            if matches!(workload.as_str(), "tiny-txn" | "write-burst") && write == "append" {
-                bail!("bounded {workload} requires update write pattern in case {index}");
-            }
-            if matches!(workload.as_str(), "balanced" | "churn") {
-                if write != "update-uniform" {
-                    bail!("bounded {workload} requires canonical update-uniform in case {index}");
-                }
-                if slots < clients * 300 {
-                    bail!("bounded_churn_slots too small for client count in case {index}");
-                }
-            }
-        }
-
-        let family = FamilyKey {
-            scenario: string_field(item, "scenario", index)?,
-            engine: string_field(item, "engine", index)?,
-            durability: string_field(item, "durability", index)?,
-            workload,
-            state: state.clone(),
-            write: write.clone(),
-            slots,
-        };
+        let ValidatedCase {
+            family,
+            clients,
+            records,
+            ops,
+            trial,
+        } = validate_case(item, index, version)?;
+        let state = family.state.clone();
+        let write = family.write.clone();
+        let slots = family.slots;
         let client = ClientKey {
             family: family.clone(),
             clients,
@@ -253,8 +252,10 @@ fn materialize(plan: &Value) -> Result<(Vec<Vec<String>>, Value)> {
 
     for (client, trials) in client_trials {
         let observed = i64::try_from(trials.len()).context("trial count overflow")?;
-        if observed != expect_trials {
-            bail!("client group {client:?} has {observed} trials, expected {expect_trials}");
+        if observed != expect_trials || trials.iter().copied().ne(1..=expect_trials) {
+            bail!(
+                "client group {client:?} has {observed} trials, expected {expect_trials}; IDs: {trials:?}"
+            );
         }
     }
     if !rows.is_empty() {
@@ -417,7 +418,7 @@ mod tests {
     }
 
     #[test]
-    fn trial_values_are_count_based_for_compatibility() -> Result<()> {
+    fn trial_values_must_match_numbered_sequence() {
         let mut cases = Vec::new();
         for trial in [2, 3, 4] {
             let mut item = case(1, trial);
@@ -426,13 +427,14 @@ mod tests {
             item["bounded_churn_slots"] = json!(0);
             cases.push(item);
         }
-        let (rows, _) = materialize(&json!({
-            "concurrency_probe_plan_version": 2,
-            "expect_trials": 3,
-            "case_count": 3,
-            "cases": cases,
-        }))?;
-        assert_eq!(rows.len(), 3);
-        Ok(())
+        assert!(
+            materialize(&json!({
+                "concurrency_probe_plan_version": 2,
+                "expect_trials": 3,
+                "case_count": 3,
+                "cases": cases,
+            }))
+            .is_err()
+        );
     }
 }
