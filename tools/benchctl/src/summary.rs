@@ -4,17 +4,11 @@ mod render;
 
 use aggregate::summarize_rows;
 use anyhow::{Context, Result, bail};
+use model::SummaryGroup;
 use render::markdown;
+use serde::Serialize;
 use serde_json::{Value, json};
 use std::{fs, path::Path};
-
-fn read_rows(input: &Path) -> Result<Vec<Value>> {
-    let rows = crate::json_io::read_ndjson(input)?;
-    if rows.is_empty() {
-        bail!("no measurements");
-    }
-    Ok(rows)
-}
 
 pub fn verify_result_evidence(
     rows: &[Value],
@@ -66,38 +60,86 @@ pub fn verify_result_evidence(
     Ok(())
 }
 
+#[derive(Serialize)]
+pub struct SummaryReport {
+    source: String,
+    row_count: usize,
+    group_count: usize,
+    problems: Vec<String>,
+    groups: Vec<SummaryGroup>,
+}
+
+impl SummaryReport {
+    pub fn from_rows(input: &Path, rows: &[Value], expect_trials: Option<usize>) -> Result<Self> {
+        if rows.is_empty() {
+            bail!("no measurements");
+        }
+        let (groups, problems) = summarize_rows(rows, expect_trials)?;
+        Ok(Self {
+            source: input.to_string_lossy().into_owned(),
+            row_count: rows.len(),
+            group_count: groups.len(),
+            problems,
+            groups,
+        })
+    }
+
+    pub fn validate_corpus(
+        &self,
+        lane: &str,
+        expected_rows: usize,
+        expected_groups: usize,
+    ) -> Result<()> {
+        if self.row_count != expected_rows
+            || self.group_count != expected_groups
+            || self.groups.iter().any(|group| group.key.lane != lane)
+        {
+            bail!(
+                "summary corpus mismatch for {lane}: {} rows, {} groups; expected {expected_rows} rows, {expected_groups} groups",
+                self.row_count,
+                self.group_count
+            );
+        }
+        self.check_completeness()
+    }
+
+    fn check_completeness(&self) -> Result<()> {
+        if !self.problems.is_empty() {
+            bail!(
+                "summary has {} completeness problem(s)",
+                self.problems.len()
+            );
+        }
+        Ok(())
+    }
+
+    pub fn write(&self, json_out: Option<&Path>, markdown_out: Option<&Path>) -> Result<()> {
+        let text = markdown(&self.groups, &self.problems);
+        if let Some(path) = markdown_out {
+            fs::write(path, format!("{text}\n"))
+                .with_context(|| format!("failed to write {}", path.display()))?;
+        } else {
+            println!("{text}");
+        }
+        if let Some(path) = json_out {
+            fs::write(path, serde_json::to_string_pretty(self)? + "\n")
+                .with_context(|| format!("failed to write {}", path.display()))?;
+        }
+        Ok(())
+    }
+}
+
 pub fn summarize_file(
     input: &Path,
     json_out: Option<&Path>,
     markdown_out: Option<&Path>,
     expect_trials: Option<usize>,
 ) -> Result<()> {
-    let rows = read_rows(input)?;
-    let (summary, problems) = summarize_rows(&rows, expect_trials)?;
-    let text = markdown(&summary, &problems);
-    if let Some(path) = markdown_out {
-        fs::write(path, format!("{text}\n"))
-            .with_context(|| format!("failed to write {}", path.display()))?;
-    } else {
-        println!("{text}");
-    }
-    if let Some(path) = json_out {
-        let payload = json!({
-            "source": input.to_string_lossy(),
-            "row_count": rows.len(),
-            "group_count": summary.len(),
-            "problems": problems,
-            "groups": summary,
-        });
-        fs::write(path, serde_json::to_string_pretty(&payload)? + "\n")
-            .with_context(|| format!("failed to write {}", path.display()))?;
-    }
-    if !problems.is_empty() {
-        bail!("summary has {} completeness problem(s)", problems.len());
-    }
-    Ok(())
+    let rows = crate::json_io::read_ndjson(input)?;
+    let report = SummaryReport::from_rows(input, &rows, expect_trials)?;
+    report.write(json_out, markdown_out)?;
+    report.check_completeness()
 }
-
 #[cfg(test)]
 mod tests {
     use super::{aggregate::summarize_rows, model::group_key};

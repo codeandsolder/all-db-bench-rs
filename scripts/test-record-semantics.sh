@@ -79,7 +79,7 @@ reject '20261009-record-full-v1-resize-v1' "$SUPERVISOR" 'historical record resi
 require 'FinalizeBaselineSizing' "$CLI" 'missing native baseline finalizer'
 require 'record_stock_results: Option<PathBuf>' "$CLI" 'finalizer lost explicit record stock input'
 require 'record_audit: Option<PathBuf>' "$CLI" 'finalizer lost explicit record audit input'
-require '--record-stock-results is required for the selected lane' "$DISPATCH" 'finalizer no longer fails closed without record stock input'
-require '--record-audit is required for the selected lane' "$DISPATCH" 'finalizer no longer fails closed without record audit input'
+# Missing selected-lane inputs and publication ordering are exercised by
+# baseline_selection::tests::finalization_* (real Rust behavior tests).
 
 echo record-semantics-ok

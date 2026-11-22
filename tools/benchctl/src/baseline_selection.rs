@@ -9,7 +9,7 @@ use serde_json::{Map, Value, json};
 use std::{
     collections::{HashMap, HashSet},
     fs,
-    path::Path,
+    path::{Component, Path, PathBuf},
 };
 
 const IDENTITY_FIELDS: [&str; 30] = [
@@ -76,13 +76,79 @@ pub struct SelectArgs<'a> {
 }
 
 #[derive(Clone, Copy)]
-pub struct FinalizeLane<'a> {
-    pub(crate) stock_results: &'a Path,
-    pub(crate) audit: &'a Path,
+pub enum FinalizeKind {
+    Kv,
+    Record,
+}
+
+impl FinalizeKind {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Kv => "kv",
+            Self::Record => "record",
+        }
+    }
+
+    const fn expected_groups(self) -> usize {
+        match self {
+            Self::Kv => 180,
+            Self::Record => 40,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct FinalizeInputs<'a> {
+    pub(crate) stock_results: Option<&'a Path>,
+    pub(crate) audit: Option<&'a Path>,
     pub(crate) resize_prefix: &'a str,
-    pub(crate) out_dir: &'a Path,
+    pub(crate) out_dir: Option<&'a Path>,
     pub(crate) quality_repair_plan: Option<&'a Path>,
-    pub(crate) expected_groups: i64,
+    pub(crate) skip_quality_repairs: bool,
+}
+
+#[derive(Clone, Copy)]
+pub struct FinalizeLane<'a> {
+    kind: FinalizeKind,
+    stock_results: &'a Path,
+    audit: &'a Path,
+    resize_prefix: &'a str,
+    out_dir: &'a Path,
+    quality_repair_plan: Option<&'a Path>,
+}
+
+impl<'a> FinalizeLane<'a> {
+    pub fn resolve(kind: FinalizeKind, inputs: FinalizeInputs<'a>) -> Result<Self> {
+        let name = kind.name();
+        Ok(Self {
+            kind,
+            stock_results: inputs.stock_results.with_context(|| {
+                format!("--{name}-stock-results is required for the selected lane")
+            })?,
+            audit: inputs
+                .audit
+                .with_context(|| format!("--{name}-audit is required for the selected lane"))?,
+            resize_prefix: inputs.resize_prefix,
+            out_dir: inputs
+                .out_dir
+                .with_context(|| format!("--{name}-out-dir is required for the selected lane"))?,
+            quality_repair_plan: if inputs.skip_quality_repairs {
+                None
+            } else {
+                inputs.quality_repair_plan
+            },
+        })
+    }
+}
+
+#[derive(Clone, Copy)]
+struct SelectionSource<'a> {
+    stock_results: &'a Path,
+    audit: &'a Path,
+    resize_root: &'a Path,
+    resize_prefix: &'a str,
+    quality_repair_plan: Option<&'a Path>,
+    allow_missing_resize: bool,
 }
 
 fn value_i64(value: Option<&Value>) -> Result<i64> {
@@ -711,16 +777,16 @@ fn write_selection(
     Ok(())
 }
 
-pub fn run_select(args: SelectArgs<'_>) -> Result<()> {
-    let stock_rows = read_ndjson(args.stock_results)?;
-    let audit = read_json(args.audit)?;
-    let quality = args.quality_repair_plan.map(read_json).transpose()?;
+fn read_selection(source: SelectionSource<'_>) -> Result<(Vec<Value>, Value)> {
+    let stock_rows = read_ndjson(source.stock_results)?;
+    let audit = read_json(source.audit)?;
+    let quality = source.quality_repair_plan.map(read_json).transpose()?;
     let (rows, mut manifest) = select_rows(
         &stock_rows,
         &audit,
-        args.resize_root,
-        args.resize_prefix,
-        args.allow_missing_resize,
+        source.resize_root,
+        source.resize_prefix,
+        source.allow_missing_resize,
         quality.as_ref(),
     )?;
     manifest
@@ -729,11 +795,24 @@ pub fn run_select(args: SelectArgs<'_>) -> Result<()> {
         .insert(
             "stock_rejected_pressure_attempts".to_owned(),
             json!(rejected_pressure_attempts(
-                args.stock_results
+                source
+                    .stock_results
                     .parent()
                     .context("stock results have no parent")?
             )?),
         );
+    Ok((rows, manifest))
+}
+
+pub fn run_select(args: SelectArgs<'_>) -> Result<()> {
+    let (rows, manifest) = read_selection(SelectionSource {
+        stock_results: args.stock_results,
+        audit: args.audit,
+        resize_root: args.resize_root,
+        resize_prefix: args.resize_prefix,
+        quality_repair_plan: args.quality_repair_plan,
+        allow_missing_resize: args.allow_missing_resize,
+    })?;
     write_selection(&rows, &manifest, args.ndjson_out, args.manifest_out)?;
     println!(
         "{{\"complete\": {}, \"pending_resize_groups\": {}, \"selected_groups\": {}, \"selected_quality_repair_groups\": {}, \"selected_resize_groups\": {}, \"selected_rows\": {}, \"selected_stock_groups\": {}}}",
@@ -762,65 +841,132 @@ pub fn run_select(args: SelectArgs<'_>) -> Result<()> {
     Ok(())
 }
 
-pub fn finalize_one(repo: &Path, lane: FinalizeLane<'_>) -> Result<()> {
-    fs::create_dir_all(lane.out_dir)
-        .with_context(|| format!("failed to create {}", lane.out_dir.display()))?;
-    let ndjson = lane.out_dir.join("results.ndjson");
-    let manifest_path = lane.out_dir.join("manifest.json");
-    let summary_path = lane.out_dir.join("summary.json");
-    let summary_md = lane.out_dir.join("summary.md");
-    let stock_rows = read_ndjson(lane.stock_results)?;
-    let audit = read_json(lane.audit)?;
-    let quality = lane.quality_repair_plan.map(read_json).transpose()?;
-    let resize_root = repo.join("results/runs");
-    let (rows, mut manifest) = select_rows(
-        &stock_rows,
-        &audit,
-        &resize_root,
-        lane.resize_prefix,
-        false,
-        quality.as_ref(),
-    )?;
-    manifest
-        .as_object_mut()
-        .context("selection manifest is not an object")?
-        .insert(
-            "stock_rejected_pressure_attempts".to_owned(),
-            json!(rejected_pressure_attempts(
-                lane.stock_results
-                    .parent()
-                    .context("stock results have no parent")?
-            )?),
-        );
-    write_selection(&rows, &manifest, &ndjson, &manifest_path)?;
-    summary::summarize_file(&ndjson, Some(&summary_path), Some(&summary_md), None)?;
-    let summary = read_json(&summary_path)?;
-    if !manifest
-        .get("complete")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-    {
-        bail!("selection remained incomplete: {}", lane.out_dir.display());
+struct PreparedFinalization<'a> {
+    lane: FinalizeLane<'a>,
+    rows: Vec<Value>,
+    manifest: Value,
+    report: summary::SummaryReport,
+}
+
+impl<'a> PreparedFinalization<'a> {
+    fn prepare(repo: &Path, lane: FinalizeLane<'a>) -> Result<Self> {
+        let (rows, manifest) = read_selection(SelectionSource {
+            stock_results: lane.stock_results,
+            audit: lane.audit,
+            resize_root: &repo.join("results/runs"),
+            resize_prefix: lane.resize_prefix,
+            quality_repair_plan: lane.quality_repair_plan,
+            allow_missing_resize: false,
+        })?;
+        let expected_groups = lane.kind.expected_groups();
+        if manifest.get("complete").and_then(Value::as_bool) != Some(true) {
+            bail!("selection remained incomplete: {}", lane.out_dir.display());
+        }
+        let selected_rows = usize::try_from(value_i64(manifest.get("selected_rows"))?)?;
+        if usize::try_from(value_i64(manifest.get("selected_groups"))?)? != expected_groups {
+            bail!("selection group-count mismatch: {}", lane.out_dir.display());
+        }
+        let report =
+            summary::SummaryReport::from_rows(&lane.out_dir.join("results.ndjson"), &rows, None)?;
+        report.validate_corpus(lane.kind.name(), selected_rows, expected_groups)?;
+        Ok(Self {
+            lane,
+            rows,
+            manifest,
+            report,
+        })
     }
-    let selected_rows = value_i64(manifest.get("selected_rows"))?;
-    if value_i64(manifest.get("selected_groups"))? != lane.expected_groups {
-        bail!("selection group-count mismatch: {}", lane.out_dir.display());
+
+    fn publish(&self) -> Result<String> {
+        let path = self.lane.out_dir;
+        fs::create_dir_all(path).with_context(|| format!("failed to create {}", path.display()))?;
+        write_selection(
+            &self.rows,
+            &self.manifest,
+            &path.join("results.ndjson"),
+            &path.join("manifest.json"),
+        )?;
+        self.report.write(
+            Some(&path.join("summary.json")),
+            Some(&path.join("summary.md")),
+        )?;
+        Ok(format!(
+            "{}={} groups",
+            self.lane.kind.name(),
+            self.lane.kind.expected_groups()
+        ))
     }
-    if value_i64(summary.get("row_count"))? != selected_rows
-        || value_i64(summary.get("group_count"))? != lane.expected_groups
-        || json_truthy(summary.get("problems"))
-    {
-        bail!("summary validation failed: {}", lane.out_dir.display());
+}
+
+/// Resolve existing symlinks and normalize the uncreated suffix without
+/// touching the filesystem. Relative and absolute spellings of an output
+/// directory must not allow two lanes to publish into the same corpus.
+fn output_identity(path: &Path) -> Result<PathBuf> {
+    let absolute = std::path::absolute(path)?;
+    let mut resolved = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::Prefix(_) | Component::RootDir => resolved.push(component.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                resolved.pop();
+            }
+            Component::Normal(name) => {
+                resolved.push(name);
+                match fs::symlink_metadata(&resolved) {
+                    Ok(_) => {
+                        resolved = resolved.canonicalize().with_context(|| {
+                            format!("resolve output directory {}", resolved.display())
+                        })?;
+                        if !resolved.is_dir() {
+                            bail!("output parent is not a directory: {}", resolved.display());
+                        }
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => {
+                        return Err(error).with_context(|| {
+                            format!("inspect output directory {}", resolved.display())
+                        });
+                    }
+                }
+            }
+        }
     }
+    Ok(resolved)
+}
+
+pub fn finalize_lanes(repo: &Path, lanes: Vec<FinalizeLane<'_>>) -> Result<()> {
+    if lanes.is_empty() {
+        bail!("no baseline lanes selected");
+    }
+    let mut destinations = HashSet::new();
+    for lane in &lanes {
+        if !destinations.insert(output_identity(lane.out_dir)?) {
+            bail!("baseline lanes must have distinct output directories");
+        }
+    }
+    // Complete all source/selection/summary validation before touching outputs.
+    let prepared = lanes
+        .into_iter()
+        .map(|lane| PreparedFinalization::prepare(repo, lane))
+        .collect::<Result<Vec<_>>>()?;
+    let labels = prepared
+        .iter()
+        .map(PreparedFinalization::publish)
+        .collect::<Result<Vec<_>>>()?;
+    println!("final baseline corpora validated: {}", labels.join(" "));
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{final_quality, run_id, select_rows};
-    use anyhow::Result;
+    use super::{
+        FinalizeInputs, FinalizeKind, FinalizeLane, final_quality, finalize_lanes, run_id,
+        select_rows,
+    };
+    use anyhow::{Context, Result};
     use serde_json::{Value, json};
-    use std::fs;
+    use std::{fs, path::Path};
 
     fn row(engine: &str, workload: &str, trial: i64, ops: i64, elapsed: f64, rate: f64) -> Value {
         json!({
@@ -868,6 +1014,147 @@ mod tests {
         }
         fs::create_dir_all(&root)?;
         Ok(root)
+    }
+
+    fn write_finalization_fixture(
+        root: &Path,
+        kind: FinalizeKind,
+        valid_summary: bool,
+    ) -> Result<()> {
+        let name = kind.name();
+        let mut stock = String::new();
+        let mut groups = Vec::new();
+        for group in 0..kind.expected_groups() {
+            let engine = format!("engine-{group}");
+            groups.push(audit_group(
+                &engine,
+                "point-read",
+                100,
+                "accepted",
+                None,
+                None,
+                None,
+            ));
+            for trial in 1..=3 {
+                let mut row = row(&engine, "point-read", trial, 100, 1.0, 100.0);
+                row["lane"] = json!(name);
+                row["ops_completed"] = json!(100);
+                row["durability_mapping"] = json!("test");
+                if valid_summary {
+                    row["db_bytes"] = json!(4096);
+                }
+                stock.push_str(&serde_json::to_string(&row)?);
+                stock.push('\n');
+            }
+        }
+        fs::write(root.join(format!("{name}-stock.ndjson")), stock)?;
+        fs::write(
+            root.join(format!("{name}-audit.json")),
+            serde_json::to_string(&audit(&groups))?,
+        )?;
+        Ok(())
+    }
+
+    fn fixture_lane<'a>(
+        kind: FinalizeKind,
+        stock: &'a Path,
+        audit: &'a Path,
+        out: &'a Path,
+    ) -> Result<FinalizeLane<'a>> {
+        FinalizeLane::resolve(
+            kind,
+            FinalizeInputs {
+                stock_results: Some(stock),
+                audit: Some(audit),
+                resize_prefix: "unused",
+                out_dir: Some(out),
+                quality_repair_plan: None,
+                skip_quality_repairs: false,
+            },
+        )
+    }
+
+    #[test]
+    fn finalization_validates_all_lanes_before_replacing_any_output() -> Result<()> {
+        let root = temp_root("finalization-preflight")?;
+        write_finalization_fixture(&root, FinalizeKind::Kv, true)?;
+        write_finalization_fixture(&root, FinalizeKind::Record, false)?;
+        let kv_out = root.join("kv");
+        let record_out = root.join("record");
+        fs::create_dir(&kv_out)?;
+        fs::write(kv_out.join("results.ndjson"), "previous corpus")?;
+        let kv_stock = root.join("kv-stock.ndjson");
+        let kv_audit = root.join("kv-audit.json");
+        let record_stock = root.join("record-stock.ndjson");
+        let record_audit = root.join("record-audit.json");
+        let kv = fixture_lane(FinalizeKind::Kv, &kv_stock, &kv_audit, &kv_out)?;
+        let record = fixture_lane(
+            FinalizeKind::Record,
+            &record_stock,
+            &record_audit,
+            &record_out,
+        )?;
+        assert!(finalize_lanes(&root, vec![kv, record]).is_err());
+        assert_eq!(
+            fs::read_to_string(kv_out.join("results.ndjson"))?,
+            "previous corpus"
+        );
+        assert!(!kv_out.join("manifest.json").exists());
+        assert!(!record_out.exists());
+
+        write_finalization_fixture(&root, FinalizeKind::Record, true)?;
+        finalize_lanes(&root, vec![kv, record])?;
+        for (path, groups) in [(&kv_out, 180), (&record_out, 40)] {
+            let summary: Value =
+                serde_json::from_str(&fs::read_to_string(path.join("summary.json"))?)?;
+            assert_eq!(summary["group_count"], groups);
+            assert_eq!(summary["row_count"], groups * 3);
+            assert_eq!(summary["problems"], json!([]));
+            assert!(path.join("manifest.json").is_file());
+            assert!(path.join("summary.md").is_file());
+        }
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn finalization_rejects_missing_inputs_and_duplicate_destinations() -> Result<()> {
+        let root = temp_root("finalization-resolve")?;
+        let stock = root.join("stock");
+        let audit = root.join("audit");
+        let out = root.join("out");
+        for (stock_results, audit_input, missing) in [
+            (None, Some(audit.as_path()), "stock-results"),
+            (Some(stock.as_path()), None, "audit"),
+        ] {
+            let error = FinalizeLane::resolve(
+                FinalizeKind::Record,
+                FinalizeInputs {
+                    stock_results,
+                    audit: audit_input,
+                    resize_prefix: "unused",
+                    out_dir: Some(&out),
+                    quality_repair_plan: None,
+                    skip_quality_repairs: false,
+                },
+            )
+            .err()
+            .context("expected missing input rejection")?;
+            assert_eq!(
+                error.to_string(),
+                format!("--record-{missing} is required for the selected lane")
+            );
+        }
+        let kv = fixture_lane(FinalizeKind::Kv, &stock, &audit, &out)?;
+        let alias = root.join("not-created/../out");
+        let record = fixture_lane(FinalizeKind::Record, &stock, &audit, &alias)?;
+        let error = finalize_lanes(&root, vec![kv, record])
+            .err()
+            .context("expected alias rejection")?;
+        assert!(error.to_string().contains("distinct output directories"));
+        assert!(!out.exists());
+        fs::remove_dir_all(root)?;
+        Ok(())
     }
 
     #[test]

@@ -8,7 +8,7 @@ use crate::{
     process_tree, ready, record_smoke, recovery, scaling, short_pressure, storage, summary,
     support, sustained, tsdb, tsdb_merge,
 };
-use anyhow::{Context, Result};
+use anyhow::Result;
 
 fn finish(code: i32) -> Result<()> {
     if code == 0 {
@@ -251,10 +251,6 @@ fn run_quality(command: QualityCommand) -> Result<()> {
     }
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
-)]
 fn run_readiness(command: ReadinessCommand) -> Result<()> {
     match command {
         ReadinessCommand::FinalizeBaselineSizing {
@@ -274,59 +270,35 @@ fn run_readiness(command: ReadinessCommand) -> Result<()> {
             record_quality_repair_plan,
             record_skip_quality_repairs,
         } => {
-            let run_kv = !record_only;
-            let run_record = !kv_only;
+            use baseline_selection::{FinalizeInputs, FinalizeKind, FinalizeLane};
             let mut lanes = Vec::new();
-            if run_kv {
-                baseline_selection::finalize_one(
-                    &repo,
-                    baseline_selection::FinalizeLane {
-                        stock_results: kv_stock_results
-                            .as_ref()
-                            .context("--kv-stock-results is required for the selected lane")?,
-                        audit: kv_audit
-                            .as_ref()
-                            .context("--kv-audit is required for the selected lane")?,
+            if !record_only {
+                lanes.push(FinalizeLane::resolve(
+                    FinalizeKind::Kv,
+                    FinalizeInputs {
+                        stock_results: kv_stock_results.as_deref(),
+                        audit: kv_audit.as_deref(),
                         resize_prefix: &kv_resize_prefix,
-                        out_dir: kv_out_dir
-                            .as_ref()
-                            .context("--kv-out-dir is required for the selected lane")?,
-                        quality_repair_plan: if kv_skip_quality_repairs {
-                            None
-                        } else {
-                            kv_quality_repair_plan.as_deref()
-                        },
-                        expected_groups: 180,
+                        out_dir: kv_out_dir.as_deref(),
+                        quality_repair_plan: kv_quality_repair_plan.as_deref(),
+                        skip_quality_repairs: kv_skip_quality_repairs,
                     },
-                )?;
-                lanes.push("kv=180 groups");
+                )?);
             }
-            if run_record {
-                baseline_selection::finalize_one(
-                    &repo,
-                    baseline_selection::FinalizeLane {
-                        stock_results: record_stock_results
-                            .as_ref()
-                            .context("--record-stock-results is required for the selected lane")?,
-                        audit: record_audit
-                            .as_ref()
-                            .context("--record-audit is required for the selected lane")?,
+            if !kv_only {
+                lanes.push(FinalizeLane::resolve(
+                    FinalizeKind::Record,
+                    FinalizeInputs {
+                        stock_results: record_stock_results.as_deref(),
+                        audit: record_audit.as_deref(),
                         resize_prefix: &record_resize_prefix,
-                        out_dir: record_out_dir
-                            .as_ref()
-                            .context("--record-out-dir is required for the selected lane")?,
-                        quality_repair_plan: if record_skip_quality_repairs {
-                            None
-                        } else {
-                            record_quality_repair_plan.as_deref()
-                        },
-                        expected_groups: 40,
+                        out_dir: record_out_dir.as_deref(),
+                        quality_repair_plan: record_quality_repair_plan.as_deref(),
+                        skip_quality_repairs: record_skip_quality_repairs,
                     },
-                )?;
-                lanes.push("record=40 groups");
+                )?);
             }
-            println!("final baseline corpora validated: {}", lanes.join(" "));
-            Ok(())
+            baseline_selection::finalize_lanes(&repo, lanes)
         }
         ReadinessCommand::VerifyKvReady {
             selected,
