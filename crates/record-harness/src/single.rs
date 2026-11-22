@@ -1,6 +1,7 @@
 use all_db_bench_common::{
     metrics::{ProcDelta, ProcSnapshot, SystemDelta, SystemSnapshot},
     record_payload::{PayloadPattern, payload_for},
+    recovery::{PresenceCounts, RecoveryVerification},
 };
 use anyhow::{Context, Result, bail};
 use clap::Args as ClapArgs;
@@ -63,26 +64,6 @@ pub struct SingleArgs {
 }
 
 #[derive(Debug, Serialize)]
-#[expect(
-    clippy::struct_field_names,
-    reason = "verification_ok is an established serialized result field and is clearer at the schema boundary"
-)]
-struct Verification {
-    expected_prefix_records: u64,
-    checked_prefix_records: u64,
-    missing_prefix_records: u64,
-    prefix_contiguous_present: u64,
-    prefix_present_after_gap: u64,
-    tail_checked_records: u64,
-    tail_prefix_present: u64,
-    tail_total_present: u64,
-    tail_present_after_gap: u64,
-    transaction_atomic_tail: bool,
-    verification_ok: bool,
-    verify_s: f64,
-}
-
-#[derive(Debug, Serialize)]
 struct Measurement<K> {
     format_version: u32,
     lane: &'static str,
@@ -120,7 +101,7 @@ struct Measurement<K> {
     reused_db: bool,
     prefill_skipped: bool,
     warmup_reads: u64,
-    verification: Option<Verification>,
+    verification: Option<RecoveryVerification>,
 }
 
 #[expect(
@@ -294,66 +275,24 @@ async fn verify_recovery<B: RecordBackend>(
     args: &SingleArgs,
     expected_prefix_records: u64,
     tail_records: u64,
-) -> Result<Verification> {
+) -> Result<RecoveryVerification> {
     let started = Instant::now();
-    let mut missing_prefix_records = 0u64;
-    let mut prefix_contiguous_present = 0u64;
-    let mut prefix_present_after_gap = 0u64;
-    let mut gap_seen = false;
+    let mut prefix = PresenceCounts::default();
     for id in 0..expected_prefix_records {
-        let present = engine.get(id).await?.is_some();
-        if present {
-            if gap_seen {
-                prefix_present_after_gap += 1;
-            } else {
-                prefix_contiguous_present += 1;
-            }
-        } else {
-            missing_prefix_records += 1;
-            gap_seen = true;
-        }
+        prefix.observe(engine.get(id).await?.is_some());
     }
-
-    let mut tail_prefix_present = 0u64;
-    let mut tail_total_present = 0u64;
-    let mut tail_present_after_gap = 0u64;
-    gap_seen = false;
+    let mut tail = PresenceCounts::default();
     for id in expected_prefix_records..expected_prefix_records.saturating_add(tail_records) {
-        let present = engine.get(id).await?.is_some();
-        if present {
-            tail_total_present += 1;
-            if gap_seen {
-                tail_present_after_gap += 1;
-            } else {
-                tail_prefix_present += 1;
-            }
-        } else {
-            gap_seen = true;
-        }
+        tail.observe(engine.get(id).await?.is_some());
     }
-
-    let txn = args.txn_size.max(1) as u64;
-    let transaction_atomic_tail =
-        tail_prefix_present == 0 || tail_prefix_present.is_multiple_of(txn);
-    let verification_ok = missing_prefix_records == 0
-        && prefix_present_after_gap == 0
-        && tail_present_after_gap == 0
-        && transaction_atomic_tail;
-
-    Ok(Verification {
+    Ok(RecoveryVerification::from_observations(
         expected_prefix_records,
-        checked_prefix_records: expected_prefix_records,
-        missing_prefix_records,
-        prefix_contiguous_present,
-        prefix_present_after_gap,
-        tail_checked_records: tail_records,
-        tail_prefix_present,
-        tail_total_present,
-        tail_present_after_gap,
-        transaction_atomic_tail,
-        verification_ok,
-        verify_s: started.elapsed().as_secs_f64(),
-    })
+        tail_records,
+        &prefix,
+        &tail,
+        args.txn_size,
+        started.elapsed().as_secs_f64(),
+    ))
 }
 
 /// Run the shared single-client record benchmark harness.
