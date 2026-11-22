@@ -1,15 +1,18 @@
+use crate::{
+    dataset::{RecordDataset, Warmup},
+    workload::{WorkExecutor, WorkMode, WorkSpec, WorkStats},
+};
 use all_db_bench_common::run_directory::{ReportMode, finish_database, prepare_database};
 use all_db_bench_common::{
     client_summary::{ClientSummary, ClientTiming},
     concurrency::{WorkPartition, WorkerMeasurement, partition_work, run_workers},
     measurement::SetupTimings,
     metrics::{ProcDelta, SystemDelta, SystemSnapshot},
-    record_payload::{PayloadPattern, payload_for},
+    record_payload::PayloadPattern,
 };
 use anyhow::{Result, bail};
 use clap::{Args as ClapArgs, ValueEnum};
 use hdrhistogram::Histogram;
-use rand::{RngExt, SeedableRng, rngs::SmallRng};
 use serde::Serialize;
 use std::{
     path::{Path, PathBuf},
@@ -17,8 +20,8 @@ use std::{
 };
 
 use crate::{
-    Durability, Quantiles, READ_MATERIALIZATION, RecordData, WRITE_MATERIALIZATION, Workload,
-    count_as_f64, dir_size, hist, peak_rss_kib, quantiles, record,
+    Durability, Quantiles, READ_MATERIALIZATION, WRITE_MATERIALIZATION, Workload, count_as_f64,
+    dir_size, hist, peak_rss_kib, quantiles,
 };
 
 use crate::backend::RecordBackend;
@@ -132,32 +135,6 @@ struct Measurement<K> {
     concurrency_handle: &'static str,
 }
 
-#[expect(
-    clippy::future_not_send,
-    reason = "record backends are thread-confined: each backend is owned and polled to completion on one worker thread, so requiring Sync would reject valid backends such as rusqlite"
-)]
-async fn prefill<B: RecordBackend>(engine: &B, args: &ConcurrencyArgs) -> Result<()> {
-    let batch = args.txn_size.clamp(100, 1000);
-    let mut rows = Vec::with_capacity(batch);
-    for id in 0..args.records {
-        rows.push((
-            id,
-            RecordData {
-                bucket: (id % 100) as u32,
-                payload: payload_for(PayloadPattern::HexRandom, id, args.payload_bytes, args.seed),
-            },
-        ));
-        if rows.len() == batch {
-            engine.upsert_batch(&rows).await?;
-            rows.clear();
-        }
-    }
-    if !rows.is_empty() {
-        engine.upsert_batch(&rows).await?;
-    }
-    Ok(())
-}
-
 fn partition_ops(args: &ConcurrencyArgs) -> Result<Vec<WorkPartition>> {
     if args.clients == 0 || args.clients as u64 > args.ops {
         bail!("--clients must be in 1..=ops");
@@ -176,244 +153,55 @@ fn partition_ops(args: &ConcurrencyArgs) -> Result<Vec<WorkPartition>> {
     }
 }
 
-const fn bounded_record_id(records: u64, logical_op: u64) -> u64 {
-    logical_op % records
-}
-
-const MAX_CONFLICT_RETRIES: u64 = 10_000;
-
-#[expect(
-    clippy::future_not_send,
-    reason = "record backends are thread-confined: each backend is owned and polled to completion on one worker thread, so requiring Sync would reject valid backends such as rusqlite"
-)]
-async fn upsert_one_with_retry<B: RecordBackend>(
-    engine: &B,
-    id: u64,
-    data: &RecordData,
-) -> Result<u64> {
-    let mut retries = 0u64;
-    loop {
-        match engine.upsert_one(id, data).await {
-            Ok(()) => return Ok(retries),
-            Err(err) if B::is_transaction_conflict(&err) && retries < MAX_CONFLICT_RETRIES => {
-                retries += 1;
-                if retries <= 8 {
-                    std::hint::spin_loop();
-                } else {
-                    tokio::task::yield_now().await;
-                }
-            }
-            Err(err) => return Err(err),
-        }
-    }
-}
-
-#[expect(
-    clippy::future_not_send,
-    reason = "record backends are thread-confined: each backend is owned and polled to completion on one worker thread, so requiring Sync would reject valid backends such as rusqlite"
-)]
-async fn upsert_batch_with_retry<B: RecordBackend>(
-    engine: &B,
-    rows: &[(u64, RecordData)],
-) -> Result<u64> {
-    let mut retries = 0u64;
-    loop {
-        match engine.upsert_batch(rows).await {
-            Ok(()) => return Ok(retries),
-            Err(err) if B::is_transaction_conflict(&err) && retries < MAX_CONFLICT_RETRIES => {
-                retries += 1;
-                if retries <= 8 {
-                    std::hint::spin_loop();
-                } else {
-                    tokio::task::yield_now().await;
-                }
-            }
-            Err(err) => return Err(err),
-        }
-    }
-}
-
-#[expect(
-    clippy::too_many_lines,
-    reason = "the per-client workload state machine is clearer as one exhaustive workload match"
-)]
-#[expect(
-    clippy::future_not_send,
-    reason = "record backends are thread-confined: each backend is owned and polled to completion on one worker thread, so requiring Sync would reject valid backends such as rusqlite"
-)]
 async fn run_client<B: RecordBackend>(
-    engine: &B,
+    engine: &mut B,
     args: &ConcurrencyArgs,
     client: usize,
     ops: u64,
     global_offset: u64,
 ) -> Result<ClientRun> {
-    let mut rng = SmallRng::seed_from_u64(
-        args.seed
-            ^ u64::from(args.trial)
-            ^ (u64::try_from(client)?
-                .saturating_add(1)
-                .wrapping_mul(0x9e37_79b9)),
-    );
-    let mut done = 0u64;
-    let mut reads = 0u64;
-    let mut writes = 0u64;
-    let mut transactions = 0u64;
-    let mut write_conflict_retries = 0u64;
-    let mut op_hist = hist()?;
-    let mut tx_hist = hist()?;
-    let mut next_id = args.records + global_offset;
+    let dataset = RecordDataset {
+        records: args.records,
+        payload_bytes: args.payload_bytes,
+        payload_pattern: PayloadPattern::HexRandom,
+        seed: args.seed,
+    };
+    let rng_seed = args.seed
+        ^ u64::from(args.trial)
+        ^ (u64::try_from(client)?
+            .saturating_add(1)
+            .wrapping_mul(0x9e37_79b9));
+    let mut executor = WorkExecutor::new(
+        WorkSpec {
+            dataset,
+            workload: args.workload,
+            ops,
+            txn_size: args.txn_size,
+            rng_seed,
+            mode: WorkMode::Concurrent {
+                offset: global_offset,
+                bounded: args.state_evolution == StateEvolution::Bounded,
+            },
+        },
+        WorkStats::new()?,
+    )?;
     let started = Instant::now();
-
-    match args.workload {
-        Workload::PointRead => {
-            while done < ops {
-                let id = rng.random_range(0..args.records);
-                let t = Instant::now();
-                let read = engine.get(id).await?;
-                if read.is_none() {
-                    bail!("prefilled record missing");
-                }
-                std::hint::black_box(read);
-                record(&mut op_hist, t.elapsed());
-                done += 1;
-                reads += 1;
-            }
-        }
-        Workload::IndexedRead => {
-            while done < ops {
-                let group = rng.random_range(0..100);
-                let t = Instant::now();
-                let read = engine.indexed_read(group).await?;
-                std::hint::black_box(read);
-                record(&mut op_hist, t.elapsed());
-                done += 1;
-                reads += 1;
-            }
-        }
-        Workload::ReadHeavy => {
-            while done < ops {
-                for _ in 0..19 {
-                    if done >= ops {
-                        break;
-                    }
-                    let id = rng.random_range(0..args.records);
-                    let t = Instant::now();
-                    let read = engine.get(id).await?;
-                    if read.is_none() {
-                        bail!("prefilled record missing");
-                    }
-                    std::hint::black_box(read);
-                    record(&mut op_hist, t.elapsed());
-                    done += 1;
-                    reads += 1;
-                }
-                if done < ops {
-                    let id = rng.random_range(0..args.records);
-                    let data = RecordData {
-                        bucket: (id % 100) as u32,
-                        payload: payload_for(
-                            PayloadPattern::HexRandom,
-                            id,
-                            args.payload_bytes,
-                            args.seed ^ global_offset ^ done,
-                        ),
-                    };
-                    let t = Instant::now();
-                    write_conflict_retries += upsert_one_with_retry(engine, id, &data).await?;
-                    record(&mut op_hist, t.elapsed());
-                    done += 1;
-                    writes += 1;
-                    transactions += 1;
-                }
-            }
-        }
-        Workload::TinyTxn => {
-            while done < ops {
-                let logical = global_offset.saturating_add(done);
-                let id = if args.state_evolution == StateEvolution::Bounded {
-                    bounded_record_id(args.records, logical)
-                } else {
-                    let id = next_id;
-                    next_id += 1;
-                    id
-                };
-                let payload_seed = if args.state_evolution == StateEvolution::Bounded {
-                    args.seed ^ logical
-                } else {
-                    args.seed ^ global_offset ^ done
-                };
-                let data = RecordData {
-                    bucket: (id % 100) as u32,
-                    payload: payload_for(
-                        PayloadPattern::HexRandom,
-                        id,
-                        args.payload_bytes,
-                        payload_seed,
-                    ),
-                };
-                let t = Instant::now();
-                write_conflict_retries += upsert_one_with_retry(engine, id, &data).await?;
-                record(&mut tx_hist, t.elapsed());
-                done += 1;
-                writes += 1;
-                transactions += 1;
-            }
-        }
-        Workload::WriteBurst => {
-            let batch = args.txn_size as u64;
-            while done < ops {
-                let mut rows = Vec::with_capacity(args.txn_size);
-                for local in 0..batch {
-                    let logical = global_offset.saturating_add(done).saturating_add(local);
-                    let id = if args.state_evolution == StateEvolution::Bounded {
-                        bounded_record_id(args.records, logical)
-                    } else {
-                        let id = next_id;
-                        next_id += 1;
-                        id
-                    };
-                    let payload_seed = if args.state_evolution == StateEvolution::Bounded {
-                        args.seed ^ logical
-                    } else {
-                        args.seed ^ global_offset ^ done
-                    };
-                    rows.push((
-                        id,
-                        RecordData {
-                            bucket: (id % 100) as u32,
-                            payload: payload_for(
-                                PayloadPattern::HexRandom,
-                                id,
-                                args.payload_bytes,
-                                payload_seed,
-                            ),
-                        },
-                    ));
-                }
-                let t = Instant::now();
-                write_conflict_retries += upsert_batch_with_retry(engine, &rows).await?;
-                record(&mut tx_hist, t.elapsed());
-                done += batch;
-                writes += batch;
-                transactions += 1;
-            }
-        }
-    }
-
+    executor.run(engine).await?;
+    let elapsed_s = started.elapsed().as_secs_f64();
+    let stats = executor.stats;
     Ok(ClientRun {
         timing: ClientTiming {
             client,
             ops_requested: ops,
-            ops_completed: done,
-            elapsed_s: started.elapsed().as_secs_f64(),
+            ops_completed: stats.completed,
+            elapsed_s,
         },
-        reads,
-        writes,
-        transactions,
-        write_conflict_retries,
-        operation_hist: op_hist,
-        transaction_hist: tx_hist,
+        reads: stats.reads,
+        writes: stats.writes,
+        transactions: stats.transactions,
+        write_conflict_retries: stats.write_conflict_retries,
+        operation_hist: stats.operation_hist,
+        transaction_hist: stats.transaction_hist,
     })
 }
 
@@ -446,12 +234,12 @@ fn run_clients<B: RecordBackend>(
         .into_iter()
         .zip(partitions)
         .enumerate()
-        .map(|(client_index, (engine, partition))| {
+        .map(|(client_index, (mut engine, partition))| {
             let args = args.clone();
             let runtime = runtime.clone();
             move || {
                 runtime.block_on(run_client(
-                    &engine,
+                    &mut engine,
                     &args,
                     client_index,
                     partition.count,
@@ -592,6 +380,12 @@ fn validate_args(args: &ConcurrencyArgs) -> Result<Vec<WorkPartition>> {
     {
         bail!("bounded write-burst requires txn-size <= records");
     }
+    if args.state_evolution == StateEvolution::Growth
+        && matches!(args.workload, Workload::TinyTxn | Workload::WriteBurst)
+        && args.records.checked_add(args.ops - 1).is_none()
+    {
+        bail!("append record ID range overflow");
+    }
     partition_ops(args)
 }
 
@@ -617,18 +411,26 @@ pub async fn run<B: RecordBackend>(engine_kind: B::Kind, args: ConcurrencyArgs) 
     .replace('_', "-");
     let path = prepare_database(&args.root, &run_name, false)?;
 
+    let dataset = RecordDataset {
+        records: args.records,
+        payload_bytes: args.payload_bytes,
+        payload_pattern: PayloadPattern::HexRandom,
+        seed: args.seed,
+    };
     let open_started = Instant::now();
-    let engine = B::open(engine_kind, args.durability, &path).await?;
+    let mut engine = B::open(engine_kind, args.durability, &path).await?;
     let open_s = open_started.elapsed().as_secs_f64();
 
     let prefill_started = Instant::now();
-    prefill(&engine, &args).await?;
+    dataset
+        .prefill(&mut engine, args.txn_size.clamp(100, 1000))
+        .await?;
     let prefill_s = prefill_started.elapsed().as_secs_f64();
 
     let warmup_started = Instant::now();
-    for id in 0..args.records.min(args.warmup_reads) {
-        std::hint::black_box(engine.get(id).await?);
-    }
+    dataset
+        .warm(&mut engine, args.warmup_reads, Warmup::Sequential)
+        .await?;
     let warmup_s = warmup_started.elapsed().as_secs_f64();
 
     let client_setup_started = Instant::now();
@@ -667,32 +469,4 @@ pub async fn run<B: RecordBackend>(engine_kind: B::Kind, args: ConcurrencyArgs) 
         &args.output,
         ReportMode::AppendLine,
     )
-}
-
-#[cfg(test)]
-mod bounded_tests {
-    use super::bounded_record_id;
-
-    use all_db_bench_common::concurrency::partition_work;
-    use anyhow::Result;
-
-    #[test]
-    fn bounded_stream_is_identical_across_client_counts() -> Result<()> {
-        let records = 64;
-        let total = 513;
-        let serial: Vec<_> = (0..total)
-            .map(|op| bounded_record_id(records, op))
-            .collect();
-        for clients in [1, 2, 4, 8] {
-            let mut parallel = Vec::new();
-            for partition in partition_work(total, clients, 1)? {
-                parallel.extend(
-                    (0..partition.count)
-                        .map(|local| bounded_record_id(records, partition.offset + local)),
-                );
-            }
-            assert_eq!(parallel, serial);
-        }
-        Ok(())
-    }
 }

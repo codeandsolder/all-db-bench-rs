@@ -1,19 +1,20 @@
+use crate::dataset::{RecordDataset, Warmup};
 use all_db_bench_common::run_directory::{ReportMode, finish_database, prepare_database};
 use all_db_bench_common::{
     measurement::SetupTimings,
     measurement::measure_settle,
-    record_payload::{PayloadPattern, payload_for},
+    record_payload::PayloadPattern,
     sustained::{Foreground, MutationStream, SustainedEvidence, SustainedPattern, WorkPlan},
 };
 use anyhow::Result;
 use clap::Args as ClapArgs;
-use rand::{RngExt, SeedableRng, rngs::SmallRng};
+use rand::{RngExt, rngs::SmallRng};
 use serde::Serialize;
 use std::{path::PathBuf, time::Instant};
 
 use crate::{
-    Durability, READ_MATERIALIZATION, RecordData, WRITE_MATERIALIZATION, backend::RecordBackend,
-    dir_size, peak_rss_kib,
+    Durability, READ_MATERIALIZATION, WRITE_MATERIALIZATION, backend::RecordBackend, dir_size,
+    peak_rss_kib,
 };
 
 #[derive(Clone, Debug, ClapArgs)]
@@ -75,13 +76,6 @@ struct Measurement<K> {
     evidence: SustainedEvidence,
 }
 
-fn row(id: u64, payload_bytes: usize, salt: u64) -> RecordData {
-    RecordData {
-        bucket: (id % 100) as u32,
-        payload: payload_for(PayloadPattern::HexRandom, id, payload_bytes, salt),
-    }
-}
-
 fn logical_put_bytes(payload_bytes: usize) -> u64 {
     12u64.saturating_add(u64::try_from(payload_bytes).unwrap_or(u64::MAX))
 }
@@ -93,39 +87,6 @@ fn hot95_id(rng: &mut SmallRng, records: u64) -> u64 {
     } else {
         rng.random_range(hot..records)
     }
-}
-
-#[expect(
-    clippy::future_not_send,
-    reason = "record backends are thread-confined: each backend is owned and polled to completion on one worker thread, so requiring Sync would reject valid backends such as rusqlite"
-)]
-async fn prefill<B: RecordBackend>(engine: &B, args: &SustainedArgs) -> Result<()> {
-    const BATCH: usize = 1_000;
-    let mut rows = Vec::with_capacity(BATCH);
-    for id in 0..args.records {
-        rows.push((id, row(id, args.payload_bytes, args.seed)));
-        if rows.len() == BATCH {
-            engine.upsert_batch(&rows).await?;
-            rows.clear();
-        }
-    }
-    if !rows.is_empty() {
-        engine.upsert_batch(&rows).await?;
-    }
-    Ok(())
-}
-
-#[expect(
-    clippy::future_not_send,
-    reason = "record backends are thread-confined: each backend is owned and polled to completion on one worker thread, so requiring Sync would reject valid backends such as rusqlite"
-)]
-async fn warm_reads<B: RecordBackend>(engine: &B, args: &SustainedArgs) -> Result<()> {
-    let mut rng = SmallRng::seed_from_u64(args.seed ^ u64::from(args.trial) ^ 0x7777);
-    for _ in 0..args.records.min(args.warmup_reads) {
-        let id = rng.random_range(0..args.records);
-        let _ = engine.get(id).await?;
-    }
-    Ok(())
 }
 
 fn prepare_path<K: std::fmt::Debug>(engine_kind: K, args: &SustainedArgs) -> Result<PathBuf> {
@@ -180,14 +141,28 @@ pub async fn run<B: RecordBackend>(engine_kind: B::Kind, args: SustainedArgs) ->
     let plan = WorkPlan::new(args.records, args.ops, args.window_ops, args.txn_size)?;
     let path = prepare_path(engine_kind, &args)?;
 
+    let dataset = RecordDataset {
+        records: args.records,
+        payload_bytes: args.payload_bytes,
+        payload_pattern: PayloadPattern::HexRandom,
+        seed: args.seed,
+    };
     let open_started = Instant::now();
-    let engine = B::open(engine_kind, args.durability, &path).await?;
+    let mut engine = B::open(engine_kind, args.durability, &path).await?;
     let open_s = open_started.elapsed().as_secs_f64();
     let prefill_started = Instant::now();
-    prefill(&engine, &args).await?;
+    dataset.prefill(&mut engine, 1_000).await?;
     let prefill_s = prefill_started.elapsed().as_secs_f64();
     let warmup_started = Instant::now();
-    warm_reads(&engine, &args).await?;
+    dataset
+        .warm(
+            &mut engine,
+            args.warmup_reads,
+            Warmup::Random {
+                seed: args.seed ^ u64::from(args.trial) ^ 0x7777,
+            },
+        )
+        .await?;
     let warmup_s = warmup_started.elapsed().as_secs_f64();
 
     let db_bytes_before = dir_size(&path);
@@ -201,7 +176,7 @@ pub async fn run<B: RecordBackend>(engine_kind: B::Kind, args: SustainedArgs) ->
                 work,
                 start,
                 hot95_id,
-                |id, salt| (id, row(id, args.payload_bytes, salt)),
+                |id, salt| (id, dataset.row(id, salt)),
                 |id| id,
             )?;
             let started = Instant::now();

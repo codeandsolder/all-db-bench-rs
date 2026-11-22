@@ -1,21 +1,23 @@
+use crate::{
+    dataset::{RecordDataset, Warmup},
+    workload::{WorkExecutor, WorkMode, WorkSpec, WorkStats},
+};
 use all_db_bench_common::{
     measurement::{MeasurementInterval, SetupTimings},
     single::{SingleEvidence, SingleOptions},
 };
 use all_db_bench_common::{
-    record_payload::{PayloadPattern, payload_for},
+    record_payload::PayloadPattern,
     recovery::{PresenceCounts, RecoveryVerification},
 };
 use anyhow::{Result, bail};
 use clap::Args as ClapArgs;
-use hdrhistogram::Histogram;
-use rand::{RngExt, SeedableRng, rngs::SmallRng};
 use serde::Serialize;
 use std::time::Instant;
 
 use crate::{
-    Durability, Quantiles, READ_MATERIALIZATION, RecordData, WRITE_MATERIALIZATION, Workload,
-    backend::RecordBackend, hist, quantiles, record,
+    Durability, Quantiles, READ_MATERIALIZATION, WRITE_MATERIALIZATION, Workload,
+    backend::RecordBackend, quantiles,
 };
 
 #[derive(Clone, Debug, ClapArgs)]
@@ -69,168 +71,8 @@ struct Measurement<K> {
     evidence: SingleEvidence,
 }
 
-#[expect(
-    clippy::future_not_send,
-    reason = "record backends are thread-confined: each backend is owned and polled to completion on one worker thread, so requiring Sync would reject valid backends such as rusqlite"
-)]
-async fn prefill<B: RecordBackend>(engine: &B, args: &SingleArgs) -> Result<()> {
-    let batch = args.txn_size.clamp(100, 1000);
-    let mut rows = Vec::with_capacity(batch);
-    for id in 0..args.records {
-        rows.push((
-            id,
-            RecordData {
-                bucket: (id % 100) as u32,
-                payload: payload_for(args.payload_pattern, id, args.payload_bytes, args.seed),
-            },
-        ));
-        if rows.len() == batch {
-            engine.upsert_batch(&rows).await?;
-            rows.clear();
-        }
-    }
-    if !rows.is_empty() {
-        engine.upsert_batch(&rows).await?;
-    }
-    Ok(())
-}
-
-#[expect(
-    clippy::too_many_lines,
-    reason = "the workload state machine is clearer as one exhaustive workload match"
-)]
-#[expect(
-    clippy::future_not_send,
-    reason = "record backends are thread-confined: each backend is owned and polled to completion on one worker thread, so requiring Sync would reject valid backends such as rusqlite"
-)]
-async fn run_workload<B: RecordBackend>(
-    engine: &B,
-    args: &SingleArgs,
-    op_hist: &mut Histogram<u64>,
-    tx_hist: &mut Histogram<u64>,
-) -> Result<u64> {
-    let mut rng = SmallRng::seed_from_u64(args.seed ^ u64::from(args.trial));
-    let mut done = 0u64;
-    let mut next_id = args.records;
-
-    match args.workload {
-        Workload::PointRead => {
-            while done < args.ops {
-                let id = rng.random_range(0..args.records);
-                let t = Instant::now();
-                let read = engine.get(id).await?;
-                if read.is_none() {
-                    bail!("prefilled record missing");
-                }
-                std::hint::black_box(read);
-                record(op_hist, t.elapsed());
-                done += 1;
-            }
-        }
-        Workload::IndexedRead => {
-            while done < args.ops {
-                let group = rng.random_range(0..100);
-                let t = Instant::now();
-                let read = engine.indexed_read(group).await?;
-                std::hint::black_box(read);
-                record(op_hist, t.elapsed());
-                done += 1;
-            }
-        }
-        Workload::ReadHeavy => {
-            while done < args.ops {
-                for _ in 0..19 {
-                    if done >= args.ops {
-                        break;
-                    }
-                    let id = rng.random_range(0..args.records);
-                    let t = Instant::now();
-                    let read = engine.get(id).await?;
-                    if read.is_none() {
-                        bail!("prefilled record missing");
-                    }
-                    std::hint::black_box(read);
-                    record(op_hist, t.elapsed());
-                    done += 1;
-                }
-                if done < args.ops {
-                    let id = rng.random_range(0..args.records);
-                    let data = RecordData {
-                        bucket: (id % 100) as u32,
-                        payload: payload_for(
-                            args.payload_pattern,
-                            id,
-                            args.payload_bytes,
-                            args.seed ^ done,
-                        ),
-                    };
-                    let t = Instant::now();
-                    engine.upsert_one(id, &data).await?;
-                    record(op_hist, t.elapsed());
-                    done += 1;
-                }
-            }
-        }
-        Workload::TinyTxn => {
-            while done < args.ops {
-                let id = next_id;
-                next_id += 1;
-                let data = RecordData {
-                    bucket: (id % 100) as u32,
-                    payload: payload_for(
-                        args.payload_pattern,
-                        id,
-                        args.payload_bytes,
-                        args.seed ^ done,
-                    ),
-                };
-                let t = Instant::now();
-                engine.upsert_one(id, &data).await?;
-                record(tx_hist, t.elapsed());
-                done += 1;
-                args.single.checkpoint(done)?;
-            }
-        }
-        Workload::WriteBurst => {
-            let batch = args.txn_size.max(1);
-            while done < args.ops {
-                let n = usize::try_from(args.ops - done)
-                    .unwrap_or(usize::MAX)
-                    .min(batch);
-                let mut rows = Vec::with_capacity(n);
-                for _ in 0..n {
-                    let id = next_id;
-                    next_id += 1;
-                    rows.push((
-                        id,
-                        RecordData {
-                            bucket: (id % 100) as u32,
-                            payload: payload_for(
-                                args.payload_pattern,
-                                id,
-                                args.payload_bytes,
-                                args.seed ^ done,
-                            ),
-                        },
-                    ));
-                }
-                let t = Instant::now();
-                engine.upsert_batch(&rows).await?;
-                record(tx_hist, t.elapsed());
-                done = done.saturating_add(u64::try_from(n).unwrap_or(u64::MAX));
-                args.single.checkpoint(done)?;
-            }
-        }
-    }
-    Ok(done)
-}
-
-#[expect(
-    clippy::future_not_send,
-    reason = "record backends are thread-confined: each backend is owned and polled to completion on one worker thread, so requiring Sync would reject valid backends such as rusqlite"
-)]
 async fn verify_recovery<B: RecordBackend>(
-    engine: &B,
+    engine: &mut B,
     args: &SingleArgs,
     expected_prefix_records: u64,
     tail_records: u64,
@@ -254,6 +96,20 @@ async fn verify_recovery<B: RecordBackend>(
     ))
 }
 
+fn run_name<K: std::fmt::Debug>(engine_kind: K, args: &SingleArgs) -> String {
+    let durability = &args.durability;
+    let workload = &args.workload;
+    let records = args.records;
+    let payload_bytes = args.payload_bytes;
+    let txn_size = args.txn_size;
+    let trial = args.trial;
+    format!(
+        "{engine_kind:?}-{durability:?}-{workload:?}-n{records}-p{payload_bytes}-tx{txn_size}-trial{trial}"
+    )
+    .to_lowercase()
+    .replace('_', "-")
+}
+
 /// Run the shared single-client record benchmark harness.
 ///
 /// # Errors
@@ -268,33 +124,40 @@ pub async fn run<B: RecordBackend>(engine_kind: B::Kind, args: SingleArgs) -> Re
         bail!("--progress-file requires tiny-txn or write-burst");
     }
 
-    let durability = &args.durability;
-    let workload = &args.workload;
-    let records = args.records;
-    let payload_bytes = args.payload_bytes;
-    let txn_size = args.txn_size;
-    let trial = args.trial;
-    let run_name = format!(
-        "{engine_kind:?}-{durability:?}-{workload:?}-n{records}-p{payload_bytes}-tx{txn_size}-trial{trial}"
-    )
-    .to_lowercase()
-    .replace('_', "-");
+    let dataset = RecordDataset {
+        records: args.records,
+        payload_bytes: args.payload_bytes,
+        payload_pattern: args.payload_pattern,
+        seed: args.seed,
+    };
+    let spec = WorkSpec {
+        dataset,
+        workload: args.workload,
+        ops: args.ops,
+        txn_size: args.txn_size,
+        rng_seed: args.seed ^ u64::from(args.trial),
+        mode: WorkMode::Single(&args.single),
+    };
+    spec.validate()?;
+    let run_name = run_name(engine_kind, &args);
     let path = args.single.prepare(&run_name)?;
 
     let open_started = Instant::now();
-    let engine = B::open(engine_kind, args.durability, &path).await?;
+    let mut engine = B::open(engine_kind, args.durability, &path).await?;
     let open_s = open_started.elapsed().as_secs_f64();
     let prefill_s = if args.single.skip_prefill {
         0.0
     } else {
         let prefill_started = Instant::now();
-        prefill(&engine, &args).await?;
+        dataset
+            .prefill(&mut engine, args.txn_size.clamp(100, 1000))
+            .await?;
         prefill_started.elapsed().as_secs_f64()
     };
     let verification = if let Some(expected_prefix_records) = args.single.verify_prefix_records {
         Some(
             verify_recovery(
-                &engine,
+                &mut engine,
                 &args,
                 expected_prefix_records,
                 args.single.verify_tail_records,
@@ -306,16 +169,18 @@ pub async fn run<B: RecordBackend>(engine_kind: B::Kind, args: SingleArgs) -> Re
     };
 
     let warmup_started = Instant::now();
-    for id in 0..args.records.min(args.single.warmup_reads) {
-        std::hint::black_box(engine.get(id).await?);
-    }
+    dataset
+        .warm(&mut engine, args.single.warmup_reads, Warmup::Sequential)
+        .await?;
     let warmup_s = warmup_started.elapsed().as_secs_f64();
 
-    let mut op_hist = hist()?;
-    let mut tx_hist = hist()?;
+    let stats = WorkStats::new()?;
     let foreground = MeasurementInterval::start();
-    let completed = run_workload(&engine, &args, &mut op_hist, &mut tx_hist).await?;
-    let work = foreground.finish().fixed_work(args.ops, completed)?;
+    let mut executor = WorkExecutor::new(spec, stats)?;
+    executor.run(&mut engine).await?;
+    let work = foreground
+        .finish()
+        .fixed_work(args.ops, executor.stats.completed)?;
     drop(engine);
 
     let result = Measurement {
@@ -335,8 +200,8 @@ pub async fn run<B: RecordBackend>(engine_kind: B::Kind, args: SingleArgs) -> Re
         trial: args.trial,
         seed: args.seed,
         scenario: args.scenario.clone(),
-        operation_latency: quantiles(&op_hist),
-        transaction_latency: quantiles(&tx_hist),
+        operation_latency: quantiles(&executor.stats.operation_hist),
+        transaction_latency: quantiles(&executor.stats.transaction_hist),
         evidence: args.single.evidence(
             &path,
             SetupTimings {

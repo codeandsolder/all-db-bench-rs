@@ -43,36 +43,43 @@ impl RecordBackend for Engine {
         kind: Self::Kind,
         durability: Durability,
         path: &Path,
-    ) -> impl Future<Output = Result<Self>> {
+    ) -> impl Future<Output = Result<Self>> + Send {
         Engine::open(kind, durability, path)
     }
 
-    fn get(&self, id: u64) -> impl Future<Output = Result<Option<ReadDigest>>> {
+    fn get(&mut self, id: u64) -> impl Future<Output = Result<Option<ReadDigest>>> + Send {
         Engine::get(self, id)
     }
 
-    fn indexed_read(&self, group: u32) -> impl Future<Output = Result<IndexedRead>> {
+    fn indexed_read(&mut self, group: u32) -> impl Future<Output = Result<IndexedRead>> + Send {
         Engine::indexed_read(self, group)
     }
 
-    fn upsert_one(&self, id: u64, data: &RecordData) -> impl Future<Output = Result<()>> {
+    fn upsert_one(
+        &mut self,
+        id: u64,
+        data: &RecordData,
+    ) -> impl Future<Output = Result<()>> + Send {
         Engine::upsert_one(self, id, data)
     }
 
-    fn upsert_batch(&self, rows: &[(u64, RecordData)]) -> impl Future<Output = Result<()>> {
+    fn upsert_batch(
+        &mut self,
+        rows: &[(u64, RecordData)],
+    ) -> impl Future<Output = Result<()>> + Send {
         Engine::upsert_batch(self, rows)
     }
 
     fn write_batch(
-        &self,
+        &mut self,
         rows: &[(u64, RecordData)],
         deletes: &[u64],
-    ) -> impl Future<Output = Result<()>> {
+    ) -> impl Future<Output = Result<()>> + Send {
         Engine::write_batch(self, rows, deletes)
     }
 
     async fn make_clients(
-        &self,
+        &mut self,
         clients: usize,
         path: &Path,
         durability: Durability,

@@ -1,8 +1,10 @@
 pub mod backend;
 pub mod concurrency;
+mod dataset;
 pub mod single;
 pub mod sustained;
 pub mod types;
+mod workload;
 
 pub use all_db_bench_common::measurement::Quantiles;
 pub use all_db_bench_common::measurement::{
