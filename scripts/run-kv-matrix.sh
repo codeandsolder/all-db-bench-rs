@@ -55,16 +55,7 @@ else
   CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" build --release --locked --features kv-all --bin kvbench || exit $?
 fi
 BIN_SHA=$(sha256sum "$BIN" | awk '{print $1}')
-RUNNER_SHA=$(sha256sum "$ROOT/scripts/run-kv-matrix.sh" | awk '{print $1}')
-POLICY_SHA=$(sha256sum "$ROOT/scripts/kv-matrix-policy.sh" | awk '{print $1}')
-NOISE_SHA=$("$ROOT/scripts/noise-source-sha256.sh" "$ROOT")
-CONTINUOUS_NOISE_SHA=$NOISE_SHA
-CONTINUOUS_NOISE_COMMON_SHA=$(sha256sum "$ROOT/scripts/continuous-noise-runner-common.sh" | awk '{print $1}')
-COMMON_SHA=$(sha256sum "$ROOT/scripts/performance-runner-common.sh" | awk '{print $1}')
-HOST_NAME=$(hostname)
-MACHINE_ID_SHA256=$("$ROOT/scripts/host-machine-id-sha256.sh")
-FILESYSTEM=$(findmnt -n -o FSTYPE --target "$DATA_DIR")
-SOURCE=$(findmnt -n -o SOURCE --target "$DATA_DIR")
+performance_capture_provenance "$ROOT" "run-kv-matrix.sh" "kv-matrix-policy.sh" "$DATA_DIR" || exit $?
 
 ENGINES=(redb fjall surrealkv heed sled lkv manifold turbokv paritydb-hash paritydb-btree rocksdb mdbx persy roughdb jammdb lsmdb)
 WORKLOADS=(point-read range-scan read-heavy balanced tiny-txn write-burst churn)

@@ -1,14 +1,14 @@
 use all_db_bench_common::recovery::{PresenceCounts, RecoveryVerification};
-use anyhow::{Context, Result, bail};
+use all_db_bench_common::{
+    measurement::{MeasurementInterval, SetupTimings},
+    single::{SingleEvidence, SingleOptions},
+};
+use anyhow::{Result, bail};
 use clap::Parser;
 use hdrhistogram::Histogram;
 use rand::{RngExt, SeedableRng, rngs::SmallRng, seq::SliceRandom};
 use serde::Serialize;
-use std::{
-    fs,
-    path::{Path, PathBuf},
-    time::Instant,
-};
+use std::{path::Path, time::Instant};
 
 use super::{
     data::{key, sample_existing_id, sample_read_id, value},
@@ -16,8 +16,8 @@ use super::{
     engine_policy::compression_mapping,
     lifecycle::{DatasetSpec, prefill, warm_existing_reads},
     metrics::{
-        ProcDelta, ProcSnapshot, Quantiles, SettleMeasurement, SystemDelta, SystemSnapshot,
-        count_as_f64, dir_size, hist, measure_settle, peak_rss_kib, quantiles, record,
+        ProcDelta, Quantiles, SettleMeasurement, SystemDelta, hist, measure_settle, quantiles,
+        record,
     },
     types::{
         AccessPattern, Durability, EngineCompression, EngineKind, KeyShape, ValuePattern, Workload,
@@ -65,26 +65,8 @@ struct Args {
     seed: u64,
     #[arg(long, default_value = "baseline")]
     scenario: String,
-    #[arg(long, default_value = "data")]
-    root: PathBuf,
-    #[arg(long, default_value = "-")]
-    output: String,
-    #[arg(long, default_value_t = false)]
-    keep_db: bool,
-    #[arg(long, default_value_t = false)]
-    reuse_db: bool,
-    #[arg(long, default_value_t = false)]
-    skip_prefill: bool,
-    #[arg(long, default_value_t = 5_000)]
-    warmup_reads: u64,
-    #[arg(long)]
-    db_name: Option<String>,
-    #[arg(long)]
-    progress_file: Option<PathBuf>,
-    #[arg(long)]
-    verify_prefix_records: Option<u64>,
-    #[arg(long, default_value_t = 0)]
-    verify_tail_records: u64,
+    #[command(flatten)]
+    single: SingleOptions,
     #[arg(long, default_value_t = 0)]
     settle_ms: u64,
     #[arg(long, default_value_t = 250)]
@@ -100,8 +82,6 @@ struct Measurement {
     durability_mapping: &'static str,
     workload: Workload,
     records: u64,
-    ops_requested: u64,
-    ops_completed: u64,
     value_bytes: usize,
     value_pattern: ValuePattern,
     engine_compression: EngineCompression,
@@ -116,31 +96,17 @@ struct Measurement {
     trial: u32,
     seed: u64,
     scenario: String,
-    open_s: f64,
     open_process: ProcDelta,
     open_system_delta: SystemDelta,
-    prefill_s: f64,
-    warmup_s: f64,
-    elapsed_s: f64,
-    ops_per_s: f64,
     reads: u64,
     writes: u64,
     deletes: u64,
     read_latency: Quantiles,
     write_txn_latency: Quantiles,
-    db_bytes: u64,
     post_workload_settle: Option<SettleMeasurement>,
-    peak_rss_kib: u64,
-    measured_process: ProcDelta,
-    system_before: SystemSnapshot,
-    system_after: SystemSnapshot,
-    measured_system_delta: SystemDelta,
-    path: String,
-    db_kept: bool,
-    reused_db: bool,
-    prefill_skipped: bool,
-    warmup_reads: u64,
-    verification: Option<RecoveryVerification>,
+
+    #[serde(flatten)]
+    evidence: SingleEvidence,
 }
 
 #[expect(
@@ -251,10 +217,7 @@ async fn run_workload(
                 record(write_hist, t.elapsed());
                 writes += n as u64;
                 done += n as u64;
-                if let Some(progress_file) = &args.progress_file {
-                    fs::write(progress_file, format!("{done}\n"))
-                        .context("write recovery progress marker")?;
-                }
+                args.single.checkpoint(done)?;
             }
         }
         Workload::DeleteBurst => {
@@ -430,18 +393,84 @@ async fn verify_recovery(
     ))
 }
 
+struct Prepared {
+    engine: Engine,
+    open: all_db_bench_common::measurement::MeasuredInterval,
+    setup: SetupTimings,
+    verification: Option<RecoveryVerification>,
+}
+
+async fn prepare(args: &Args, path: &Path) -> Result<Prepared> {
+    let open = MeasurementInterval::start();
+    let mut engine = if args.engine_compression == EngineCompression::Default {
+        Engine::open(args.engine, args.durability, path).await?
+    } else {
+        Engine::open_with_compression(args.engine, args.durability, path, args.engine_compression)
+            .await?
+    };
+    let open = open.finish();
+    let dataset = DatasetSpec {
+        records: args.records,
+        key_bytes: args.key_bytes,
+        key_shape: args.key_shape,
+        seed: args.seed,
+        value_bytes: args.value_bytes,
+        value_pattern: args.value_pattern,
+        durability: args.durability,
+    };
+    let prefill_s = if args.single.skip_prefill {
+        0.0
+    } else {
+        let prefill_started = Instant::now();
+        prefill(&mut engine, dataset, 0).await?;
+        prefill_started.elapsed().as_secs_f64()
+    };
+    let verification = if let Some(expected_prefix_records) = args.single.verify_prefix_records {
+        Some(
+            verify_recovery(
+                &mut engine,
+                args,
+                expected_prefix_records,
+                args.single.verify_tail_records,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+
+    let warmup_started = Instant::now();
+    warm_existing_reads(
+        &mut engine,
+        dataset,
+        args.single.warmup_reads,
+        args.access_pattern,
+        args.workload,
+    )
+    .await?;
+    let warmup_s = warmup_started.elapsed().as_secs_f64();
+
+    let setup = SetupTimings {
+        open: open.elapsed.as_secs_f64(),
+        prefill: prefill_s,
+        warmup: warmup_s,
+    };
+    Ok(Prepared {
+        engine,
+        open,
+        setup,
+        verification,
+    })
+}
+
 /// Run one single-client benchmark invocation and emit its measurement record.
 ///
 /// # Errors
 /// Returns an error for invalid arguments, backend failures, verification failures, or result I/O failures.
-#[expect(
-    clippy::too_many_lines,
-    reason = "the top-level benchmark keeps phase ordering explicit for measurement correctness"
-)]
 pub async fn run() -> Result<()> {
     let args = Args::parse();
-    if args.records == 0 {
-        bail!("--records must be greater than zero");
+    if args.records == 0 || args.ops == 0 || args.txn_size == 0 {
+        bail!("--records, --ops and --txn-size must be greater than zero");
     }
     if args.key_bytes < 8 {
         bail!("--key-bytes must be at least 8");
@@ -452,7 +481,12 @@ pub async fn run() -> Result<()> {
     if args.key_shape == KeyShape::Hashed && matches!(args.workload, Workload::RangeScan) {
         bail!("--key-shape hashed is incompatible with ID-ordered range-scan");
     }
-    if (args.progress_file.is_some() || args.verify_prefix_records.is_some())
+    if args.single.progress_file.is_some()
+        && !matches!(args.workload, Workload::TinyTxn | Workload::WriteBurst)
+    {
+        bail!("--progress-file requires tiny-txn or write-burst");
+    }
+    if (args.single.progress_file.is_some() || args.single.verify_prefix_records.is_some())
         && args.write_pattern != WritePattern::Append
     {
         bail!("recovery progress/verification requires --write-pattern append");
@@ -477,94 +511,21 @@ pub async fn run() -> Result<()> {
     )
     .to_lowercase()
     .replace('_', "-");
-    let path = if let Some(name) = &args.db_name {
-        let candidate = Path::new(name);
-        if candidate.components().count() != 1 || name == "." || name == ".." {
-            bail!("--db-name must be one plain path component");
-        }
-        args.root.join(candidate)
-    } else {
-        args.root.join(run_name)
-    };
-    if path.exists() && !args.reuse_db {
-        fs::remove_dir_all(&path).context("remove stale run directory")?;
-    }
-    if args.reuse_db && !path.exists() {
-        bail!(
-            "--reuse-db requested but database path does not exist: {}",
-            path.display()
-        );
-    }
-    fs::create_dir_all(&path)?;
+    let path = args.single.prepare(&run_name)?;
 
-    let open_system_before = SystemSnapshot::capture();
-    let open_process_before = ProcSnapshot::capture();
-    let open_started = Instant::now();
-    let mut engine = if args.engine_compression == EngineCompression::Default {
-        Engine::open(args.engine, args.durability, &path).await?
-    } else {
-        Engine::open_with_compression(args.engine, args.durability, &path, args.engine_compression)
-            .await?
-    };
-    let open_elapsed = open_started.elapsed();
-    let open_process_after = ProcSnapshot::capture();
-    let open_system_after = SystemSnapshot::capture();
-    let open_s = open_elapsed.as_secs_f64();
-    let open_process = open_process_before.delta(&open_process_after, open_elapsed);
-    let open_system_delta = open_system_before.delta(&open_system_after);
-    let dataset = DatasetSpec {
-        records: args.records,
-        key_bytes: args.key_bytes,
-        key_shape: args.key_shape,
-        seed: args.seed,
-        value_bytes: args.value_bytes,
-        value_pattern: args.value_pattern,
-        durability: args.durability,
-    };
-    let prefill_s = if args.skip_prefill {
-        0.0
-    } else {
-        let prefill_started = Instant::now();
-        prefill(&mut engine, dataset, 0).await?;
-        prefill_started.elapsed().as_secs_f64()
-    };
-    let verification = if let Some(expected_prefix_records) = args.verify_prefix_records {
-        Some(
-            verify_recovery(
-                &mut engine,
-                &args,
-                expected_prefix_records,
-                args.verify_tail_records,
-            )
-            .await?,
-        )
-    } else {
-        None
-    };
-
-    let warmup_started = Instant::now();
-    warm_existing_reads(
-        &mut engine,
-        dataset,
-        args.warmup_reads,
-        args.access_pattern,
-        args.workload,
-    )
-    .await?;
-    let warmup_s = warmup_started.elapsed().as_secs_f64();
+    let Prepared {
+        mut engine,
+        open,
+        setup,
+        verification,
+    } = prepare(&args, &path).await?;
 
     let mut read_hist = hist()?;
     let mut write_hist = hist()?;
-    let system_before = SystemSnapshot::capture();
-    let process_before = ProcSnapshot::capture();
-    let started = Instant::now();
+    let foreground = MeasurementInterval::start();
     let (completed, reads, writes, deletes) =
         run_workload(&mut engine, &args, &mut read_hist, &mut write_hist).await?;
-    let elapsed = started.elapsed();
-    let process_after = ProcSnapshot::capture();
-    let system_after = SystemSnapshot::capture();
-    let measured_process = process_before.delta(&process_after, elapsed);
-    let measured_system_delta = system_before.delta(&system_after);
+    let work = foreground.finish().fixed_work(args.ops, completed)?;
     let post_workload_settle = measure_settle(
         &path,
         args.settle_ms,
@@ -574,7 +535,6 @@ pub async fn run() -> Result<()> {
     .await;
     engine.close().await?;
     drop(engine);
-    let db_bytes = dir_size(&path);
 
     let result = Measurement {
         format_version: 8,
@@ -584,8 +544,6 @@ pub async fn run() -> Result<()> {
         durability_mapping: mapping,
         workload: args.workload,
         records: args.records,
-        ops_requested: args.ops,
-        ops_completed: completed,
         value_bytes: args.value_bytes,
         value_pattern: args.value_pattern,
         engine_compression: args.engine_compression,
@@ -600,46 +558,16 @@ pub async fn run() -> Result<()> {
         trial: args.trial,
         seed: args.seed,
         scenario: args.scenario.clone(),
-        open_s,
-        open_process,
-        open_system_delta,
-        prefill_s,
-        warmup_s,
-        elapsed_s: elapsed.as_secs_f64(),
-        ops_per_s: count_as_f64(completed) / elapsed.as_secs_f64(),
+        open_process: open.process,
+        open_system_delta: open.system_delta,
         reads,
         writes,
         deletes,
         read_latency: quantiles(&read_hist),
         write_txn_latency: quantiles(&write_hist),
-        db_bytes,
         post_workload_settle,
-        peak_rss_kib: peak_rss_kib(),
-        measured_process,
-        system_before,
-        system_after,
-        measured_system_delta,
-        path: path.display().to_string(),
-        db_kept: args.keep_db,
-        reused_db: args.reuse_db,
-        prefill_skipped: args.skip_prefill,
-        warmup_reads: args.warmup_reads,
-        verification,
+        evidence: args.single.evidence(&path, setup, work, verification),
     };
 
-    let line = serde_json::to_string(&result)?;
-    if args.output == "-" {
-        println!("{line}");
-    } else {
-        use std::io::Write;
-        let mut f = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&args.output)?;
-        writeln!(f, "{line}")?;
-    }
-    if !args.keep_db {
-        fs::remove_dir_all(&path).context("remove completed run database")?;
-    }
-    Ok(())
+    args.single.finish(&path, &result)
 }

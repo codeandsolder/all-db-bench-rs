@@ -5,6 +5,40 @@ COMMON_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 source "$COMMON_DIR/continuous-noise-runner-common.sh"
 PERFORMANCE_ADMISSION_POLICY=${PERFORMANCE_ADMISSION_POLICY:-$CONTINUOUS_ADMISSION_POLICY}
 
+# Capture the shared support identity once; the runner-specific JSON keeps its own policy field name.
+performance_capture_provenance() {
+  local root=$1 runner=$2 policy=$3 data=$4
+  RUNNER_SHA=$(sha256sum "$root/scripts/$runner" | awk '{print $1}') || return 2
+  POLICY_SHA=$(sha256sum "$root/scripts/$policy" | awk '{print $1}') || return 2
+  COMMON_SHA=$(sha256sum "$root/scripts/performance-runner-common.sh" | awk '{print $1}') || return 2
+  NOISE_SHA=$("$root/scripts/noise-source-sha256.sh" "$root") || return 2
+  CONTINUOUS_NOISE_SHA=$NOISE_SHA
+  CONTINUOUS_NOISE_COMMON_SHA=$(sha256sum "$root/scripts/continuous-noise-runner-common.sh" | awk '{print $1}') || return 2
+  HOST_NAME=$(hostname) || return 2
+  MACHINE_ID_SHA256=$("$root/scripts/host-machine-id-sha256.sh") || return 2
+  FILESYSTEM=$(findmnt -n -o FSTYPE --target "$data") || return 2
+  SOURCE=$(findmnt -n -o SOURCE --target "$data") || return 2
+}
+
+# Source provenance for either an external binary or a binary built from this checkout.
+performance_binary_identity() {
+  local root=$1 binary=$2 profile=$3 provided_sha=$4 provided_commit=$5 digest commit
+  if [[ -n "$provided_sha" ]]; then
+    digest=$provided_sha
+  else
+    digest=$(sha256sum "$binary" | awk '{print $1}') || return 2
+  fi
+  commit=$provided_commit
+  if [[ -z "$commit" && "$profile" != external ]]; then
+    commit=$(git -C "$root" rev-parse HEAD) || return 2
+  fi
+  [[ "$digest" =~ ^[0-9a-f]{64}$ && "$commit" =~ ^[0-9a-f]{40}$ ]] || {
+    echo "invalid or missing binary source identity for $binary" >&2
+    return 2
+  }
+  printf '%s %s\n' "$digest" "$commit"
+}
+
 performance_check_free_space() {
   local profile=$1 phase=$2 path=${3:-${PERFORMANCE_FREE_SPACE_PATH:-${DATA_DIR:-$PWD}}}
   [[ "$profile" == smoke ]] && return 0

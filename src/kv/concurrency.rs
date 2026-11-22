@@ -10,13 +10,13 @@ use super::{
     },
 };
 use all_db_bench_common::concurrency::{WorkerMeasurement, partition_work, run_workers};
+use all_db_bench_common::run_directory::{ReportMode, finish_database, prepare_database};
 use all_db_bench_common::{client_summary::ClientSummary, measurement::SetupTimings};
 use anyhow::{Context, Result, bail};
 use clap::{Parser, ValueEnum};
 use hdrhistogram::Histogram;
 use serde::Serialize;
 use std::{
-    fs,
     path::{Path, PathBuf},
     sync::Arc,
     time::Instant,
@@ -574,19 +574,7 @@ fn prepare_run_path(args: &Args, mode: DatabaseMode) -> Result<PathBuf> {
     )
     .to_lowercase()
     .replace('_', "-");
-    let path = args.root.join(run_name);
-    if path.exists() && mode != DatabaseMode::Reuse {
-        fs::remove_dir_all(&path).context("remove stale concurrency run directory")?;
-    }
-    if mode == DatabaseMode::Reuse && !path.exists() {
-        bail!(
-            "--reuse-db requested but prepared database path does not exist: {}",
-            path.display()
-        );
-    }
-    fs::create_dir_all(&path)?;
-
-    Ok(path)
+    prepare_database(&args.root, &run_name, mode == DatabaseMode::Reuse)
 }
 
 /// Run the shared-database multi-client scaling benchmark.
@@ -665,22 +653,13 @@ pub async fn run() -> Result<()> {
         concurrency_handle,
         run,
     )?;
-    let line = serde_json::to_string(&result)?;
-    if args.output == "-" {
-        println!("{line}");
-    } else {
-        use std::io::Write;
-        let mut f = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&args.output)?;
-        writeln!(f, "{line}")?;
-    }
-
-    if !args.keep_db {
-        fs::remove_dir_all(&path).context("remove completed concurrency database")?;
-    }
-    Ok(())
+    finish_database(
+        &path,
+        args.keep_db,
+        &result,
+        &args.output,
+        ReportMode::AppendLine,
+    )
 }
 
 #[cfg(test)]

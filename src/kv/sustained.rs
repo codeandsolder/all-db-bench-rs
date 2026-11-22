@@ -5,19 +5,16 @@ use super::{
     metrics::{dir_size, measure_settle, peak_rss_kib},
     types::{AccessPattern, Durability, EngineKind, KeyShape, ValuePattern, Workload},
 };
+use all_db_bench_common::run_directory::{ReportMode, finish_database, prepare_database};
 use all_db_bench_common::{
     measurement::SetupTimings,
     sustained::{Foreground, MutationStream, SustainedEvidence, SustainedPattern, WorkPlan},
 };
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use clap::Parser;
 use rand::{RngExt, SeedableRng, rngs::SmallRng};
 use serde::Serialize;
-use std::{
-    fs,
-    path::{Path, PathBuf},
-    time::Instant,
-};
+use std::{path::PathBuf, time::Instant};
 
 #[derive(Debug, Parser)]
 #[command(about = "Fixed-work windowed sustained-write/compaction benchmark")]
@@ -100,42 +97,21 @@ async fn warm_reads(engine: &mut Engine, args: &Args) -> Result<()> {
 }
 
 fn prepare_path(args: &Args) -> Result<PathBuf> {
-    let path = args.root.join(
-        format!(
-            "sustained-{:?}-{:?}-{:?}-n{}-o{}-w{}-v{}-tx{}-t{}",
-            args.engine,
-            args.durability,
-            args.pattern,
-            args.records,
-            args.ops,
-            args.window_ops,
-            args.value_bytes,
-            args.txn_size,
-            args.trial
-        )
-        .to_lowercase()
-        .replace('_', "-"),
-    );
-    if path.exists() {
-        fs::remove_dir_all(&path).context("remove stale sustained-run directory")?;
-    }
-    fs::create_dir_all(&path)?;
-    Ok(path)
-}
-
-fn write_report(result: &impl Serialize, destination: &str) -> Result<()> {
-    let json = serde_json::to_string_pretty(result)?;
-    if destination == "-" {
-        println!("{json}");
-    } else {
-        let output = Path::new(destination);
-        if let Some(parent) = output.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(output, format!("{json}\n"))?;
-    }
-
-    Ok(())
+    let name = format!(
+        "sustained-{:?}-{:?}-{:?}-n{}-o{}-w{}-v{}-tx{}-t{}",
+        args.engine,
+        args.durability,
+        args.pattern,
+        args.records,
+        args.ops,
+        args.window_ops,
+        args.value_bytes,
+        args.txn_size,
+        args.trial
+    )
+    .to_lowercase()
+    .replace('_', "-");
+    prepare_database(&args.root, &name, false)
 }
 
 async fn prepare_data(engine: &mut Engine, args: &Args, open_s: f64) -> Result<SetupTimings> {
@@ -272,10 +248,11 @@ pub async fn run() -> Result<()> {
     };
     let result = report(&args, mapping.to_string(), evidence);
 
-    write_report(&result, &args.output)?;
-
-    if !args.keep_db {
-        fs::remove_dir_all(&path).context("remove sustained-run database")?;
-    }
-    Ok(())
+    finish_database(
+        &path,
+        args.keep_db,
+        &result,
+        &args.output,
+        ReportMode::ReplacePretty,
+    )
 }

@@ -1,18 +1,15 @@
+use all_db_bench_common::run_directory::{ReportMode, finish_database, prepare_database};
 use all_db_bench_common::{
     measurement::SetupTimings,
     measurement::measure_settle,
     record_payload::{PayloadPattern, payload_for},
     sustained::{Foreground, MutationStream, SustainedEvidence, SustainedPattern, WorkPlan},
 };
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::Args as ClapArgs;
 use rand::{RngExt, SeedableRng, rngs::SmallRng};
 use serde::Serialize;
-use std::{
-    fs,
-    path::{Path, PathBuf},
-    time::Instant,
-};
+use std::{path::PathBuf, time::Instant};
 
 use crate::{
     Durability, READ_MATERIALIZATION, RecordData, WRITE_MATERIALIZATION, backend::RecordBackend,
@@ -140,33 +137,12 @@ fn prepare_path<K: std::fmt::Debug>(engine_kind: K, args: &SustainedArgs) -> Res
     let payload_bytes = args.payload_bytes;
     let txn_size = args.txn_size;
     let trial = args.trial;
-    let path = args.root.join(
-        format!(
+    let name = format!(
             "record-sustained-{engine_kind:?}-{durability:?}-{pattern:?}-n{records}-o{ops}-w{window_ops}-p{payload_bytes}-tx{txn_size}-t{trial}"
         )
         .to_lowercase()
-        .replace('_', "-"),
-    );
-    if path.exists() {
-        fs::remove_dir_all(&path).context("remove stale record sustained-run directory")?;
-    }
-    fs::create_dir_all(&path)?;
-    Ok(path)
-}
-
-fn write_report(result: &impl Serialize, destination: &str) -> Result<()> {
-    let json = serde_json::to_string_pretty(result)?;
-    if destination == "-" {
-        println!("{json}");
-    } else {
-        let output = Path::new(destination);
-        if let Some(parent) = output.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(output, format!("{json}\n"))?;
-    }
-
-    Ok(())
+        .replace('_', "-");
+    prepare_database(&args.root, &name, false)
 }
 
 fn report<B: RecordBackend>(
@@ -273,10 +249,11 @@ pub async fn run<B: RecordBackend>(engine_kind: B::Kind, args: SustainedArgs) ->
     };
     let result = report::<B>(engine_kind, &args, evidence);
 
-    write_report(&result, &args.output)?;
-
-    if !args.keep_db {
-        fs::remove_dir_all(&path).context("remove record sustained-run database")?;
-    }
-    Ok(())
+    finish_database(
+        &path,
+        args.keep_db,
+        &result,
+        &args.output,
+        ReportMode::ReplacePretty,
+    )
 }

@@ -1,22 +1,21 @@
 use all_db_bench_common::{
-    metrics::{ProcDelta, ProcSnapshot, SystemDelta, SystemSnapshot},
+    measurement::{MeasurementInterval, SetupTimings},
+    single::{SingleEvidence, SingleOptions},
+};
+use all_db_bench_common::{
     record_payload::{PayloadPattern, payload_for},
     recovery::{PresenceCounts, RecoveryVerification},
 };
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use clap::Args as ClapArgs;
 use hdrhistogram::Histogram;
 use rand::{RngExt, SeedableRng, rngs::SmallRng};
 use serde::Serialize;
-use std::{
-    fs,
-    path::{Path, PathBuf},
-    time::Instant,
-};
+use std::time::Instant;
 
 use crate::{
     Durability, Quantiles, READ_MATERIALIZATION, RecordData, WRITE_MATERIALIZATION, Workload,
-    backend::RecordBackend, count_as_f64, dir_size, hist, peak_rss_kib, quantiles, record,
+    backend::RecordBackend, hist, quantiles, record,
 };
 
 #[derive(Clone, Debug, ClapArgs)]
@@ -41,26 +40,8 @@ pub struct SingleArgs {
     seed: u64,
     #[arg(long, default_value = "baseline")]
     scenario: String,
-    #[arg(long, default_value = "data")]
-    root: PathBuf,
-    #[arg(long, default_value = "-")]
-    output: String,
-    #[arg(long, default_value_t = false)]
-    keep_db: bool,
-    #[arg(long, default_value_t = false)]
-    reuse_db: bool,
-    #[arg(long, default_value_t = false)]
-    skip_prefill: bool,
-    #[arg(long, default_value_t = 5_000)]
-    warmup_reads: u64,
-    #[arg(long)]
-    db_name: Option<String>,
-    #[arg(long)]
-    progress_file: Option<PathBuf>,
-    #[arg(long)]
-    verify_prefix_records: Option<u64>,
-    #[arg(long, default_value_t = 0)]
-    verify_tail_records: u64,
+    #[command(flatten)]
+    single: SingleOptions,
 }
 
 #[derive(Debug, Serialize)]
@@ -73,8 +54,6 @@ struct Measurement<K> {
     durability_mapping: &'static str,
     workload: Workload,
     records: u64,
-    ops_requested: u64,
-    ops_completed: u64,
     payload_bytes: usize,
     payload_pattern: PayloadPattern,
     txn_size: usize,
@@ -83,25 +62,11 @@ struct Measurement<K> {
     trial: u32,
     seed: u64,
     scenario: String,
-    open_s: f64,
-    prefill_s: f64,
-    warmup_s: f64,
-    elapsed_s: f64,
-    ops_per_s: f64,
     operation_latency: Quantiles,
     transaction_latency: Quantiles,
-    db_bytes: u64,
-    peak_rss_kib: u64,
-    measured_process: ProcDelta,
-    system_before: SystemSnapshot,
-    system_after: SystemSnapshot,
-    measured_system_delta: SystemDelta,
-    path: String,
-    db_kept: bool,
-    reused_db: bool,
-    prefill_skipped: bool,
-    warmup_reads: u64,
-    verification: Option<RecoveryVerification>,
+
+    #[serde(flatten)]
+    evidence: SingleEvidence,
 }
 
 #[expect(
@@ -223,10 +188,7 @@ async fn run_workload<B: RecordBackend>(
                 engine.upsert_one(id, &data).await?;
                 record(tx_hist, t.elapsed());
                 done += 1;
-                if let Some(progress_file) = &args.progress_file {
-                    fs::write(progress_file, format!("{done}\n"))
-                        .context("write record recovery progress marker")?;
-                }
+                args.single.checkpoint(done)?;
             }
         }
         Workload::WriteBurst => {
@@ -256,10 +218,7 @@ async fn run_workload<B: RecordBackend>(
                 engine.upsert_batch(&rows).await?;
                 record(tx_hist, t.elapsed());
                 done = done.saturating_add(u64::try_from(n).unwrap_or(u64::MAX));
-                if let Some(progress_file) = &args.progress_file {
-                    fs::write(progress_file, format!("{done}\n"))
-                        .context("write record recovery progress marker")?;
-                }
+                args.single.checkpoint(done)?;
             }
         }
     }
@@ -299,15 +258,11 @@ async fn verify_recovery<B: RecordBackend>(
 ///
 /// # Errors
 /// Returns an error for invalid benchmark arguments, backend failures, or result I/O failures.
-#[expect(
-    clippy::too_many_lines,
-    reason = "the top-level harness intentionally keeps benchmark phase ordering visible in one linear orchestration"
-)]
 pub async fn run<B: RecordBackend>(engine_kind: B::Kind, args: SingleArgs) -> Result<()> {
-    if args.records == 0 {
-        bail!("--records must be greater than zero");
+    if args.records == 0 || args.ops == 0 || args.txn_size == 0 {
+        bail!("--records, --ops and --txn-size must be greater than zero");
     }
-    if args.progress_file.is_some()
+    if args.single.progress_file.is_some()
         && !matches!(args.workload, Workload::TinyTxn | Workload::WriteBurst)
     {
         bail!("--progress-file requires tiny-txn or write-burst");
@@ -324,43 +279,25 @@ pub async fn run<B: RecordBackend>(engine_kind: B::Kind, args: SingleArgs) -> Re
     )
     .to_lowercase()
     .replace('_', "-");
-    let path = if let Some(name) = &args.db_name {
-        let candidate = Path::new(name);
-        if candidate.components().count() != 1 || name == "." || name == ".." {
-            bail!("--db-name must be one plain path component");
-        }
-        args.root.join(candidate)
-    } else {
-        args.root.join(run_name)
-    };
-    if path.exists() && !args.reuse_db {
-        fs::remove_dir_all(&path).context("remove stale run directory")?;
-    }
-    if args.reuse_db && !path.exists() {
-        bail!(
-            "--reuse-db requested but database path does not exist: {}",
-            path.display()
-        );
-    }
-    fs::create_dir_all(&path)?;
+    let path = args.single.prepare(&run_name)?;
 
     let open_started = Instant::now();
     let engine = B::open(engine_kind, args.durability, &path).await?;
     let open_s = open_started.elapsed().as_secs_f64();
-    let prefill_s = if args.skip_prefill {
+    let prefill_s = if args.single.skip_prefill {
         0.0
     } else {
         let prefill_started = Instant::now();
         prefill(&engine, &args).await?;
         prefill_started.elapsed().as_secs_f64()
     };
-    let verification = if let Some(expected_prefix_records) = args.verify_prefix_records {
+    let verification = if let Some(expected_prefix_records) = args.single.verify_prefix_records {
         Some(
             verify_recovery(
                 &engine,
                 &args,
                 expected_prefix_records,
-                args.verify_tail_records,
+                args.single.verify_tail_records,
             )
             .await?,
         )
@@ -369,24 +306,17 @@ pub async fn run<B: RecordBackend>(engine_kind: B::Kind, args: SingleArgs) -> Re
     };
 
     let warmup_started = Instant::now();
-    for id in 0..args.records.min(args.warmup_reads) {
+    for id in 0..args.records.min(args.single.warmup_reads) {
         std::hint::black_box(engine.get(id).await?);
     }
     let warmup_s = warmup_started.elapsed().as_secs_f64();
 
     let mut op_hist = hist()?;
     let mut tx_hist = hist()?;
-    let system_before = SystemSnapshot::capture();
-    let process_before = ProcSnapshot::capture();
-    let started = Instant::now();
+    let foreground = MeasurementInterval::start();
     let completed = run_workload(&engine, &args, &mut op_hist, &mut tx_hist).await?;
-    let elapsed = started.elapsed();
-    let process_after = ProcSnapshot::capture();
-    let system_after = SystemSnapshot::capture();
-    let measured_process = process_before.delta(&process_after, elapsed);
-    let measured_system_delta = system_before.delta(&system_after);
+    let work = foreground.finish().fixed_work(args.ops, completed)?;
     drop(engine);
-    let db_bytes = dir_size(&path);
 
     let result = Measurement {
         format_version: 8,
@@ -397,8 +327,6 @@ pub async fn run<B: RecordBackend>(engine_kind: B::Kind, args: SingleArgs) -> Re
         durability_mapping: B::mapping(engine_kind, args.durability),
         workload: args.workload,
         records: args.records,
-        ops_requested: args.ops,
-        ops_completed: completed,
         payload_bytes: args.payload_bytes,
         payload_pattern: args.payload_pattern,
         txn_size: args.txn_size,
@@ -407,39 +335,18 @@ pub async fn run<B: RecordBackend>(engine_kind: B::Kind, args: SingleArgs) -> Re
         trial: args.trial,
         seed: args.seed,
         scenario: args.scenario.clone(),
-        open_s,
-        prefill_s,
-        warmup_s,
-        elapsed_s: elapsed.as_secs_f64(),
-        ops_per_s: count_as_f64(completed) / elapsed.as_secs_f64(),
         operation_latency: quantiles(&op_hist),
         transaction_latency: quantiles(&tx_hist),
-        db_bytes,
-        peak_rss_kib: peak_rss_kib(),
-        measured_process,
-        system_before,
-        system_after,
-        measured_system_delta,
-        path: path.display().to_string(),
-        db_kept: args.keep_db,
-        reused_db: args.reuse_db,
-        prefill_skipped: args.skip_prefill,
-        warmup_reads: args.warmup_reads,
-        verification,
+        evidence: args.single.evidence(
+            &path,
+            SetupTimings {
+                open: open_s,
+                prefill: prefill_s,
+                warmup: warmup_s,
+            },
+            work,
+            verification,
+        ),
     };
-    let line = serde_json::to_string(&result)?;
-    if args.output == "-" {
-        println!("{line}");
-    } else {
-        use std::io::Write;
-        let mut f = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&args.output)?;
-        writeln!(f, "{line}")?;
-    }
-    if !args.keep_db {
-        fs::remove_dir_all(&path).context("remove completed run database")?;
-    }
-    Ok(())
+    args.single.finish(&path, &result)
 }

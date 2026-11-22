@@ -1,3 +1,4 @@
+use all_db_bench_common::run_directory::{ReportMode, finish_database, prepare_database};
 use all_db_bench_common::{
     client_summary::{ClientSummary, ClientTiming},
     concurrency::{WorkPartition, WorkerMeasurement, partition_work, run_workers},
@@ -5,13 +6,12 @@ use all_db_bench_common::{
     metrics::{ProcDelta, SystemDelta, SystemSnapshot},
     record_payload::{PayloadPattern, payload_for},
 };
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use clap::{Args as ClapArgs, ValueEnum};
 use hdrhistogram::Histogram;
 use rand::{RngExt, SeedableRng, rngs::SmallRng};
 use serde::Serialize;
 use std::{
-    fs,
     path::{Path, PathBuf},
     time::Instant,
 };
@@ -615,11 +615,7 @@ pub async fn run<B: RecordBackend>(engine_kind: B::Kind, args: ConcurrencyArgs) 
     )
     .to_lowercase()
     .replace('_', "-");
-    let path = args.root.join(run_name);
-    if path.exists() {
-        fs::remove_dir_all(&path).context("remove stale record concurrency run directory")?;
-    }
-    fs::create_dir_all(&path)?;
+    let path = prepare_database(&args.root, &run_name, false)?;
 
     let open_started = Instant::now();
     let engine = B::open(engine_kind, args.durability, &path).await?;
@@ -664,22 +660,13 @@ pub async fn run<B: RecordBackend>(engine_kind: B::Kind, args: ConcurrencyArgs) 
         concurrency_handle,
         run,
     )?;
-    let line = serde_json::to_string(&result)?;
-    if args.output == "-" {
-        println!("{line}");
-    } else {
-        use std::io::Write;
-        let mut f = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&args.output)?;
-        writeln!(f, "{line}")?;
-    }
-
-    if !args.keep_db {
-        fs::remove_dir_all(&path).context("remove completed record concurrency database")?;
-    }
-    Ok(())
+    finish_database(
+        &path,
+        args.keep_db,
+        &result,
+        &args.output,
+        ReportMode::AppendLine,
+    )
 }
 
 #[cfg(test)]
