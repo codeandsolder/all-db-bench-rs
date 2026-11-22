@@ -203,11 +203,11 @@ mod tests {
         assert_eq!(problems, [] as [std::string::String; 0]);
         let growth = groups
             .iter()
-            .find(|group| group.clients == 8 && group.state_evolution == "growth")
+            .find(|group| group.key.clients == 8 && group.key.state_evolution == "growth")
             .context("growth c8")?;
         let bounded = groups
             .iter()
-            .find(|group| group.clients == 8 && group.state_evolution == "bounded")
+            .find(|group| group.key.clients == 8 && group.key.state_evolution == "bounded")
             .context("bounded c8")?;
         assert_eq!(growth.speedup_vs_c1, Some(4.0));
         assert_eq!(growth.parallel_efficiency_vs_c1, Some(0.5));
@@ -227,7 +227,7 @@ mod tests {
         let (groups, _) = summarize_rows(&[kv, record, record_c8], Some(1))?;
         let c8 = groups
             .iter()
-            .find(|group| group.lane == "record-concurrency" && group.clients == 8)
+            .find(|group| group.key.lane == "record-concurrency" && group.key.clients == 8)
             .context("record c8")?;
         assert_eq!(c8.speedup_vs_c1, Some(2.0));
         Ok(())
@@ -248,9 +248,34 @@ mod tests {
         assert_eq!(problems, [] as [std::string::String; 0]);
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].open_s_median, Some(0.25));
-        assert_eq!(groups[0].settle_cpu_ns_median, Some(100.0));
-        assert_eq!(groups[0].settle_write_bytes_median, Some(200.0));
-        assert_eq!(groups[0].settle_db_delta_bytes_median, Some(100.0));
+        assert_eq!(groups[0].settle.cpu_ns, Some(100.0));
+        assert_eq!(groups[0].settle.write_bytes, Some(200.0));
+        assert_eq!(groups[0].settle.db_delta_bytes, Some(100.0));
+        Ok(())
+    }
+
+    #[test]
+    fn flat_summary_retains_all_identity_dimensions_and_resource_keys() -> Result<()> {
+        let mut row = kv_row(8, "bounded", 8192, 1, 100.0);
+        row["measured_process"] = json!({"cpu_runtime_ns": 100_000, "read_bytes": 50_000});
+        row["measured_system_delta"] =
+            json!({"accounting_wall_ns": 1_000_000, "psi_cpu_some_us": 250});
+        let key = group_key(&row)?;
+        let (groups, _) = summarize_rows(&[row], Some(1))?;
+        let encoded = serde_json::to_value(&groups[0])?;
+        let mut identity = serde_json::to_value(&key)?;
+        for (field, value) in identity.as_object().context("identity object")? {
+            assert_eq!(&encoded[field], value, "{field}");
+        }
+        identity["clients"] = json!(1);
+        assert_eq!(serde_json::to_value(key.single_client())?, identity);
+        assert_eq!(encoded["ops_per_s_median"], 100.0);
+        assert_eq!(encoded["cpu_ns_per_op_median"], 2.0);
+        assert_eq!(encoded["read_bytes_per_op_median"], 1.0);
+        assert_eq!(encoded["cpu_psi_some_fraction_median"], 0.25);
+        assert!(encoded["settle_cpu_ns_median"].is_null());
+        assert!(encoded.get("key").is_none());
+        assert!(encoded.get("process").is_none());
         Ok(())
     }
 
