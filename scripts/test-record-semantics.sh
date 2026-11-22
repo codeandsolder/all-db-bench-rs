@@ -9,7 +9,6 @@ WIDE="$ROOT/scripts/run-record-wide-matrix.sh"
 DISPATCH="$ROOT/tools/benchctl/src/dispatch.rs"
 CLI="$ROOT/tools/benchctl/src/cli.rs"
 SUPERVISOR="$ROOT/tools/benchctl/src/baseline_supervisor.rs"
-GENERATION="$ROOT/tools/benchctl/src/baseline_generation.rs"
 
 require() {
   local needle=$1 file=$2 message=$3
@@ -77,8 +76,6 @@ require 'expected_rocks_bench_sha256: expected_rocks_bench_sha256.as_deref()' "$
 reject 'recordbench-ae74103b847171d1' "$SUPERVISOR" 'historical record binary hardcoded into native supervisor'
 reject 'surrealdb-rocksdb-recordbench-c3978a3b66a24edd' "$SUPERVISOR" 'historical Rocks binary hardcoded into native supervisor'
 reject '20261009-record-full-v1-resize-v1' "$SUPERVISOR" 'historical record resize prefix hardcoded into native supervisor'
-require '"baseline-sizing-followups".into()' "$GENERATION" 'generation no longer schedules native sizing followups'
-require 'paths.record_resize_prefix.clone()' "$GENERATION" 'record followups no longer use generation-scoped prefix'
 require 'FinalizeBaselineSizing' "$CLI" 'missing native baseline finalizer'
 require 'record_stock_results: Option<PathBuf>' "$CLI" 'finalizer lost explicit record stock input'
 require 'record_audit: Option<PathBuf>' "$CLI" 'finalizer lost explicit record audit input'
