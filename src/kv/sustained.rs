@@ -1,3 +1,4 @@
+use super::backend_ops::{BackendOps, RetryMode};
 use super::{
     data::{key, sample_existing_id, value},
     engine::Engine,
@@ -90,7 +91,7 @@ async fn warm_reads(engine: &mut Engine, args: &Args) -> Result<()> {
     for _ in 0..args.records.min(args.warmup_reads) {
         let id = rng.random_range(0..args.records);
         let _ = engine
-            .get(&key(id, args.key_bytes, args.key_shape, args.seed))
+            .read(&key(id, args.key_bytes, args.key_shape, args.seed))
             .await?;
     }
     Ok(())
@@ -210,7 +211,12 @@ pub async fn run() -> Result<()> {
             )?;
             let started = Instant::now();
             engine
-                .write_batch(args.durability, &batch.puts, &batch.deletes)
+                .commit(
+                    args.durability,
+                    &batch.puts,
+                    &batch.deletes,
+                    RetryMode::SingleAttempt,
+                )
                 .await?;
             run.record_transaction(
                 &mut window,

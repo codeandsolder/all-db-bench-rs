@@ -484,7 +484,7 @@ impl<D: Borrow<ParityDb>> SyncBackend for ParityHandle<D> {
 #[cfg(feature = "kv-external")]
 impl SyncBackend for RocksDb {
     fn read_sync(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
-        Ok(self.get(key)?.map(|v| v.to_vec()))
+        Ok(self.get(key)?)
     }
 
     fn commit_sync(
@@ -580,53 +580,57 @@ impl BackendOps for Persy {
         mode: RetryMode,
     ) -> Result<u64> {
         const MAX_LOCK_TIMEOUT_RETRIES: u64 = 100;
-        let jitter_seed = puts
-            .first()
-            .map(|(key, _)| key.as_slice())
-            .or_else(|| deletes.first().map(Vec::as_slice))
-            .and_then(|key| key.last().copied())
-            .unwrap_or(0) as u64;
+        let jitter_seed = u64::from(
+            puts.first()
+                .map(|(key, _)| key.as_slice())
+                .or_else(|| deletes.first().map(Vec::as_slice))
+                .and_then(|key| key.last().copied())
+                .unwrap_or(0),
+        );
         let mut retries = 0u64;
         loop {
-            let mut tx = match durability {
-                Durability::Relaxed => {
-                    self.begin_with(PersyTxConfig::new().set_background_sync(true))?
-                }
-                Durability::Sync => self.begin()?,
-            };
-            for (k, v) in puts {
-                tx.put::<PersyByteVec, PersyByteVec>(
-                    "kv",
-                    PersyByteVec::from(k.clone()),
-                    PersyByteVec::from(v.clone()),
-                )?;
-            }
-            for k in deletes {
-                tx.remove::<PersyByteVec, PersyByteVec>("kv", PersyByteVec::from(k.clone()), None)?;
-            }
-            match tx.prepare() {
-                Ok(prepared) => {
-                    prepared.commit()?;
-                    return Ok(retries);
-                }
-                Err(error) if mode == RetryMode::SingleAttempt => return Err(error.into()),
-                Err(error) => match error.error() {
-                    PersyPrepareError::TransactionTimeout => {
-                        retries = retries.saturating_add(1);
-                        if retries > MAX_LOCK_TIMEOUT_RETRIES {
-                            bail!(
-                                "Persy transaction lock timeout exceeded {MAX_LOCK_TIMEOUT_RETRIES} retries"
-                            );
-                        }
-                        // Transactions that collided tend to time out together. A tiny,
-                        // deterministic per-key/retry skew prevents immediate lock-step
-                        // reacquisition while keeping all retry time inside measured latency.
-                        let backoff_us = 100 + ((jitter_seed + retries * 17) % 40) * 50;
-                        tokio::time::sleep(std::time::Duration::from_micros(backoff_us)).await;
+            // The native transaction and its prepare error are thread-confined.
+            // Finish or release them before the asynchronous backoff.
+            {
+                let mut tx = match durability {
+                    Durability::Relaxed => {
+                        self.begin_with(PersyTxConfig::new().set_background_sync(true))?
                     }
-                    other => return Err(anyhow::Error::new(other)),
-                },
+                    Durability::Sync => self.begin()?,
+                };
+                for (k, v) in puts {
+                    tx.put::<PersyByteVec, PersyByteVec>(
+                        "kv",
+                        PersyByteVec::from(k.clone()),
+                        PersyByteVec::from(v.clone()),
+                    )?;
+                }
+                for k in deletes {
+                    tx.remove::<PersyByteVec, PersyByteVec>(
+                        "kv",
+                        PersyByteVec::from(k.clone()),
+                        None,
+                    )?;
+                }
+                match tx.prepare() {
+                    Ok(prepared) => {
+                        prepared.commit()?;
+                        return Ok(retries);
+                    }
+                    Err(error) if mode == RetryMode::SingleAttempt => return Err(error.into()),
+                    Err(error) => match error.error() {
+                        PersyPrepareError::TransactionTimeout => {}
+                        other => return Err(anyhow::Error::new(other)),
+                    },
+                }
             }
+            retries += 1;
+            if retries > MAX_LOCK_TIMEOUT_RETRIES {
+                bail!("Persy transaction lock timeout exceeded {MAX_LOCK_TIMEOUT_RETRIES} retries");
+            }
+            // Prevent lock-step reacquisition; all retry time is measured.
+            let backoff_us = 100 + ((jitter_seed + retries * 17) % 40) * 50;
+            tokio::time::sleep(std::time::Duration::from_micros(backoff_us)).await;
         }
     }
 
@@ -692,11 +696,13 @@ impl SyncBackend for JammDb {
     fn read_sync(&self, key: &[u8]) -> Result<Option<Vec<u8>>> {
         let tx = self.tx(false)?;
         let bucket = tx.get_bucket("kv")?;
-        Ok(match bucket.get(key) {
+        let value = match bucket.get(key) {
             Some(JammData::KeyValue(kv)) => Some(kv.value().to_vec()),
             Some(JammData::Bucket(_)) => bail!("jammdb KV bucket contains nested bucket"),
             None => None,
-        })
+        };
+        drop(tx);
+        Ok(value)
     }
 
     fn commit_sync(
@@ -718,8 +724,7 @@ impl SyncBackend for JammDb {
                 let _ = bucket.delete(k.as_slice())?;
             }
         }
-        tx.commit()?;
-        Ok(())
+        Ok(tx.commit()?)
     }
 
     fn count_range_sync(&self, start: &[u8], end: &[u8]) -> Result<usize> {
@@ -737,6 +742,7 @@ impl SyncBackend for JammDb {
                 n += 1;
             }
         }
+        drop(tx);
         Ok(n)
     }
 }

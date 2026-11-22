@@ -332,7 +332,22 @@ impl Engine {
         }
     }
 
-    pub(super) async fn get(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>> {
+    pub(super) async fn close(&mut self) -> Result<()> {
+        match self {
+            Self::Surrealkv(tree) => tree.close().await?,
+            Self::Turbokv(slot) => {
+                if let Some(db) = slot.take() {
+                    db.0.close().await?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+}
+
+impl BackendOps for Engine {
+    async fn read(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>> {
         match self {
             Self::Redb(db) => db.read(key).await,
             Self::Fjall(db) => db.read(key).await,
@@ -366,13 +381,13 @@ impl Engine {
         }
     }
 
-    pub(super) async fn write_batch(
+    async fn commit(
         &mut self,
         durability: Durability,
         puts: &[(Vec<u8>, Vec<u8>)],
         deletes: &[Vec<u8>],
-    ) -> Result<()> {
-        let mode = RetryMode::SingleAttempt;
+        mode: RetryMode,
+    ) -> Result<u64> {
         match self {
             Self::Redb(db) => db.commit(durability, puts, deletes, mode).await,
             Self::Fjall(db) => db.commit(durability, puts, deletes, mode).await,
@@ -411,10 +426,9 @@ impl Engine {
                 Ok(0)
             }
         }
-        .map(|_| ())
     }
 
-    pub(super) async fn scan_count(&mut self, start: &[u8], end: &[u8]) -> Result<usize> {
+    async fn count_range(&mut self, start: &[u8], end: &[u8]) -> Result<usize> {
         match self {
             Self::Redb(db) => db.count_range(start, end).await,
             Self::Fjall(db) => db.count_range(start, end).await,
@@ -444,24 +458,11 @@ impl Engine {
             Self::Lkv(_) => bail!("lkv 0.2.1 exposes full iteration but no keyed range seek"),
         }
     }
-
-    pub(super) async fn close(&mut self) -> Result<()> {
-        match self {
-            Self::Surrealkv(tree) => tree.close().await?,
-            Self::Turbokv(slot) => {
-                if let Some(db) = slot.take() {
-                    db.0.close().await?;
-                }
-            }
-            _ => {}
-        }
-        Ok(())
-    }
 }
 
 #[cfg(test)]
 mod shutdown_tests {
-    use super::{Durability, Engine, EngineKind};
+    use super::{BackendOps, Durability, Engine, EngineKind, RetryMode};
     use anyhow::{Context, Result, ensure};
     use clap::ValueEnum;
     use std::{fs, path::PathBuf, time::SystemTime};
@@ -485,12 +486,15 @@ mod shutdown_tests {
         let original = (1..=4)
             .map(|id| (key(id), vec![u8::try_from(id).unwrap_or_default(); 16]))
             .collect::<Vec<_>>();
-        engine.write_batch(durability, &original, &[]).await?;
         engine
-            .write_batch(
+            .commit(durability, &original, &[], RetryMode::SingleAttempt)
+            .await?;
+        engine
+            .commit(
                 durability,
                 &[(key(2), vec![42; 16]), (key(5), vec![5; 16])],
                 &[key(1), key(3)],
+                RetryMode::SingleAttempt,
             )
             .await?;
         let actual = [
@@ -502,26 +506,26 @@ mod shutdown_tests {
         ];
         for (id, expected) in (1..=5).zip(actual) {
             ensure!(
-                engine.get(&key(id)).await? == expected,
+                engine.read(&key(id)).await? == expected,
                 "unexpected value at {id}"
             );
         }
         ensure!(
-            engine.get(&key(6)).await?.is_none(),
+            engine.read(&key(6)).await?.is_none(),
             "missing key returned a value"
         );
         if kind.supports_range_scan() {
             ensure!(
-                engine.scan_count(&key(1), &key(5)).await? == 2,
+                engine.count_range(&key(1), &key(5)).await? == 2,
                 "range must count only existing keys and exclude endpoint"
             );
             ensure!(
-                engine.scan_count(&key(2), &key(3)).await? == 1,
+                engine.count_range(&key(2), &key(3)).await? == 1,
                 "inclusive lower bound"
             );
         } else {
             ensure!(
-                engine.scan_count(&key(1), &key(5)).await.is_err(),
+                engine.count_range(&key(1), &key(5)).await.is_err(),
                 "unordered backend exposed range"
             );
         }

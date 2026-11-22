@@ -1,5 +1,6 @@
 use super::{
     engine::Engine,
+    fixed_work::WorkSpec,
     lifecycle::{DatasetSpec, prefill, warm_existing_reads},
     metrics::{
         ProcDelta, Quantiles, SystemDelta, SystemSnapshot, count_as_f64, dir_size, hist,
@@ -215,17 +216,7 @@ fn run_clients<C: BackendOps + Clone + Send + 'static>(
             let mut engine = prototype.clone();
             let args = args.clone();
             let runtime = runtime.clone();
-            move || {
-                runtime.block_on(run_client(
-                    &mut engine,
-                    &args,
-                    client,
-                    ops.count,
-                    ops.offset,
-                    slots.offset,
-                    slots.count,
-                ))
-            }
+            move || runtime.block_on(run_client(&mut engine, &args, client, ops, slots))
         })
         .collect();
     let WorkerMeasurement {
@@ -471,6 +462,27 @@ fn report_measurement(
 }
 
 impl Args {
+    const fn work_spec(&self) -> WorkSpec {
+        WorkSpec {
+            dataset: DatasetSpec {
+                records: self.records,
+                key_bytes: self.key_bytes,
+                key_shape: self.key_shape,
+                seed: self.seed,
+                value_bytes: self.value_bytes,
+                value_pattern: self.value_pattern,
+                durability: self.durability,
+            },
+            workload: self.workload,
+            total_ops: self.ops,
+            access_pattern: self.access_pattern,
+            miss_percent: self.miss_percent,
+            write_pattern: self.write_pattern,
+            txn_size: self.txn_size,
+            scan_len: self.scan_len,
+        }
+    }
+
     const fn uses_churn_pool(&self) -> bool {
         matches!(self.state_evolution, StateEvolution::Bounded)
             && matches!(self.workload, Workload::Balanced | Workload::Churn)
@@ -486,26 +498,10 @@ impl Args {
 }
 
 fn validate_args(args: &Args) -> Result<()> {
-    if args.records == 0 {
-        bail!("--records must be greater than zero");
-    }
-    if args.ops == 0 {
-        bail!("--ops must be greater than zero");
-    }
+    args.work_spec()
+        .validate(args.engine, args.churn_pool_slots())?;
     if args.clients == 0 || args.clients as u64 > args.ops {
         bail!("--clients must be in 1..=ops");
-    }
-    if args.key_bytes < 8 {
-        bail!("--key-bytes must be at least 8");
-    }
-    if args.miss_percent > 100 {
-        bail!("--miss-percent must be in 0..=100");
-    }
-    if args.key_shape == KeyShape::Hashed && matches!(args.workload, Workload::RangeScan) {
-        bail!("hashed keys are incompatible with ID-ordered range-scan");
-    }
-    if matches!(args.workload, Workload::DeleteBurst) && args.ops > args.records {
-        bail!("delete-burst requires total ops <= records");
     }
     if args.verify_bounded_state && !args.uses_churn_pool() {
         bail!("--verify-bounded-state requires bounded balanced or churn workload");
@@ -538,9 +534,6 @@ fn validate_args(args: &Args) -> Result<()> {
                     "bounded-churn-slots must be >= clients*300 ({minimum_slots}) to avoid slot reuse within a 1000-op epoch"
                 );
             }
-            args.records
-                .checked_add(args.bounded_churn_slots.saturating_mul(2))
-                .context("bounded churn key-id range overflow")?;
         }
     }
     if matches!(args.engine, EngineKind::Lkv) {
@@ -589,15 +582,7 @@ pub async fn run() -> Result<()> {
         let open_started = Instant::now();
         let mut engine = Engine::open(args.engine, args.durability, &path).await?;
         let open_s = open_started.elapsed().as_secs_f64();
-        let dataset = DatasetSpec {
-            records: args.records,
-            key_bytes: args.key_bytes,
-            key_shape: args.key_shape,
-            seed: args.seed,
-            value_bytes: args.value_bytes,
-            value_pattern: args.value_pattern,
-            durability: args.durability,
-        };
+        let dataset = args.work_spec().dataset;
 
         let prefill_s = if mode == DatabaseMode::Reuse {
             0.0
