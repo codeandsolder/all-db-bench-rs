@@ -1,4 +1,5 @@
-use crate::json_io::read_json;
+use crate::baseline_identity::{matches_followup, matches_trials, run_id};
+use crate::json_io::{read_json, read_ndjson};
 use crate::json_value::json_truthy;
 use crate::json_value::py_string;
 use crate::numeric::align_up;
@@ -241,7 +242,7 @@ fn field_string(row: &Value, field: &str) -> String {
 
 #[derive(Serialize)]
 pub struct TrialStatistics {
-    trials: Vec<i64>,
+    pub(super) trials: Vec<i64>,
     #[serde(rename = "median_elapsed_s")]
     pub(super) median_elapsed: f64,
     #[serde(rename = "measured_total_s")]
@@ -298,13 +299,7 @@ impl TrialStatistics {
     }
 
     fn validate_trials(&self, first: &Value, expect_trials: i64, problems: &mut Vec<String>) {
-        if usize::try_from(expect_trials).ok() != Some(self.trials.len())
-            || self
-                .trials
-                .iter()
-                .enumerate()
-                .any(|(index, trial)| i64::try_from(index + 1).ok() != Some(*trial))
-        {
+        if !matches_trials(&self.trials, expect_trials) {
             problems.push(format!(
                 "{}/{}/{}: trials={:?}, expected 1..={expect_trials}",
                 field_string(first, "engine"),
@@ -679,18 +674,6 @@ pub fn render_audit_markdown(report: &Value) -> Result<String> {
     Ok(lines.join("\n") + "\n")
 }
 
-fn read_ndjson(path: &Path) -> Result<Vec<Value>> {
-    let text =
-        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
-    text.lines()
-        .filter(|line| !line.trim().is_empty())
-        .map(|line| {
-            serde_json::from_str(line)
-                .with_context(|| format!("invalid NDJSON in {}", path.display()))
-        })
-        .collect()
-}
-
 pub fn run_audit(args: AuditArgs<'_>) -> Result<i32> {
     let rows = read_ndjson(args.results)?;
     let report = audit_rows(&rows, args.expect_trials, args.config)?;
@@ -705,30 +688,6 @@ pub fn run_audit(args: AuditArgs<'_>) -> Result<i32> {
         print!("{markdown}");
     }
     Ok(i32::from(json_truthy(report.get("problems"))))
-}
-
-fn slug(value: &str) -> String {
-    value
-        .chars()
-        .map(|ch| {
-            if ch.is_alphanumeric() || matches!(ch, '-' | '_') {
-                ch
-            } else {
-                '-'
-            }
-        })
-        .collect()
-}
-
-fn group_run_id(group: &Value, prefix: &str) -> Result<String> {
-    Ok(format!(
-        "{prefix}-{}-{}-{}-e{}-t{}",
-        slug(&field_string(group, "engine")),
-        slug(&field_string(group, "durability")),
-        slug(&field_string(group, "workload")),
-        value_i64(group.get("suggested_effective_ops"))?,
-        value_i64(group.get("suggested_trials"))?,
-    ))
 }
 
 fn config_from_audit(audit: &Value) -> Result<SizingConfig> {
@@ -798,9 +757,7 @@ fn validate_repair_identity(original: &Value, audited: &Value, run_id: &str) -> 
             bail!("quality repair identity mismatch for {run_id}: {field}");
         }
     }
-    if value_i64(original.get("suggested_effective_ops"))?
-        != value_i64(audited.get("ops_requested"))?
-    {
+    if !matches_followup(original, audited) {
         bail!("quality repair operation count mismatch for {run_id}");
     }
     Ok(())
@@ -890,7 +847,7 @@ pub fn refine_plan(
     let mut promoted = 0_i64;
     let mut seen = HashSet::new();
     for original in source_groups {
-        let run_id = group_run_id(original, resize_prefix)?;
+        let run_id = run_id(original, resize_prefix)?;
         if !seen.insert(run_id.clone()) {
             bail!("duplicate initial quality-repair run: {run_id}");
         }
@@ -946,7 +903,7 @@ pub fn render_refine_markdown(plan: &Value, resize_prefix: &str) -> Result<Strin
         let workload = field_string(group, "workload");
         let suggested_ops = comma_int(value_i64(group.get("suggested_effective_ops"))?);
         let suggested_trials = value_i64(group.get("suggested_trials"))?;
-        let run_id = group_run_id(group, resize_prefix)?;
+        let run_id = run_id(group, resize_prefix)?;
         lines.push(format!(
             "| {engine} | {durability} | {workload} | {status} | {strategy} | {suggested_ops} | {suggested_trials} | `{run_id}` |"
         ));
@@ -979,7 +936,7 @@ pub fn run_refine(args: RefineArgs<'_>) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{SizingConfig, audit_rows, group_run_id, refine_plan, round_up_ops};
+    use super::{SizingConfig, audit_rows, refine_plan, round_up_ops, run_id};
     use anyhow::Context;
     use anyhow::Result;
     use serde_json::{Value, json};
@@ -1086,7 +1043,7 @@ mod tests {
         group["suggested_effective_ops"] = json!(50_000);
         group["suggested_trials"] = json!(1);
         let quality = json!({"quality_policy_version":1,"groups":[group.clone()]});
-        let run_dir = root.join(group_run_id(&group, "resize")?);
+        let run_dir = root.join(run_id(&group, "resize")?);
         fs::create_dir_all(&run_dir)?;
         let result = (|| -> Result<()> {
             fs::write(

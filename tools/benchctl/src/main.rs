@@ -12,6 +12,7 @@ macro_rules! int_as_f64 {
 }
 
 mod baseline_generation;
+mod baseline_identity;
 mod baseline_selection;
 mod baseline_sizing;
 mod baseline_supervisor;

@@ -1,5 +1,6 @@
+use crate::baseline_identity::{matches_trials, run_id};
 use crate::baseline_sizing::TrialStatistics;
-use crate::json_io::read_json;
+use crate::json_io::{read_json, read_ndjson};
 use crate::json_value::json_truthy;
 use crate::json_value::py_string;
 use crate::summary;
@@ -142,44 +143,6 @@ fn sort_key(key: &[Value]) -> Vec<String> {
     key.iter().map(py_string).collect()
 }
 
-fn slug(value: &str) -> String {
-    value
-        .chars()
-        .map(|ch| {
-            if ch.is_alphanumeric() || matches!(ch, '-' | '_') {
-                ch
-            } else {
-                '-'
-            }
-        })
-        .collect()
-}
-
-pub fn run_id(group: &Value, resize_prefix: &str) -> Result<String> {
-    Ok(format!(
-        "{resize_prefix}-{}-{}-{}-e{}-t{}",
-        slug(&py_string(group.get("engine").unwrap_or(&Value::Null))),
-        slug(&py_string(group.get("durability").unwrap_or(&Value::Null))),
-        slug(&py_string(group.get("workload").unwrap_or(&Value::Null))),
-        value_i64(group.get("suggested_effective_ops"))?,
-        value_i64(group.get("suggested_trials"))?,
-    ))
-}
-
-fn read_ndjson(path: &Path) -> Result<Vec<Value>> {
-    let content =
-        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
-    content
-        .lines()
-        .enumerate()
-        .filter(|(_, line)| !line.trim().is_empty())
-        .map(|(index, line)| {
-            serde_json::from_str(line)
-                .with_context(|| format!("invalid JSON at {}:{}", path.display(), index + 1))
-        })
-        .collect()
-}
-
 fn semantic_manifest_fields(row: &Value) -> Map<String, Value> {
     let mut fields = Map::new();
     if row.get("lane").and_then(Value::as_str) == Some("record") {
@@ -231,13 +194,7 @@ fn validate_trials(rows: &[Value], label: &str, expected_count: i64) -> Result<(
         .map(|row| value_i64(row.get("trial")))
         .collect::<Result<Vec<_>>>()?;
     trials.sort_unstable();
-    if expected_count <= 0
-        || usize::try_from(expected_count).ok() != Some(trials.len())
-        || trials
-            .iter()
-            .enumerate()
-            .any(|(index, trial)| i64::try_from(index + 1).ok() != Some(*trial))
-    {
+    if !matches_trials(&trials, expected_count) {
         bail!("{label}: expected trials 1..={expected_count}, got {trials:?}");
     }
     Ok(())
