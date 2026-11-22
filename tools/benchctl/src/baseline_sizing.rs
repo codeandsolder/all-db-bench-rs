@@ -4,8 +4,13 @@ use crate::json_value::py_string;
 use crate::numeric::align_up;
 use anyhow::{Context, Result, bail};
 use num_traits::ToPrimitive;
+use serde::Serialize;
 use serde_json::{Value, json};
-use std::{collections::HashMap, fs, path::Path};
+use std::{
+    collections::{HashMap, HashSet},
+    fs,
+    path::Path,
+};
 
 pub const SIZING_POLICY_VERSION: i64 = 3;
 const READ_ONLY_WORKLOADS: [&str; 3] = ["indexed-read", "point-read", "range-scan"];
@@ -234,62 +239,166 @@ fn field_string(row: &Value, field: &str) -> String {
     row.get(field).map_or_else(|| "None".to_owned(), py_string)
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
-)]
+#[derive(Serialize)]
+struct TrialStatistics {
+    trials: Vec<i64>,
+    #[serde(rename = "median_elapsed_s")]
+    median_elapsed: f64,
+    #[serde(rename = "measured_total_s")]
+    measured_total: f64,
+    #[serde(rename = "min_elapsed_s")]
+    min_elapsed: f64,
+    #[serde(rename = "max_elapsed_s")]
+    max_elapsed: f64,
+    #[serde(rename = "median_ops_per_s")]
+    median_rate: f64,
+    throughput_cv: f64,
+    throughput_relative_spread: f64,
+}
+
+impl TrialStatistics {
+    fn from_rows(rows: &[&Value]) -> Result<Self> {
+        let mut trials = Vec::with_capacity(rows.len());
+        let mut elapsed = Vec::with_capacity(rows.len());
+        let mut rates = Vec::with_capacity(rows.len());
+        for row in rows {
+            trials.push(value_i64(row.get("trial"))?);
+            let seconds = value_f64(row.get("elapsed_s"))?;
+            let rate = value_f64(row.get("ops_per_s"))?;
+            if !seconds.is_finite() || seconds <= 0.0 || !rate.is_finite() || rate <= 0.0 {
+                bail!("invalid sizing sample: elapsed_s={seconds}, ops_per_s={rate}");
+            }
+            elapsed.push(seconds);
+            rates.push(rate);
+        }
+        trials.sort_unstable();
+        let median_elapsed = median(&elapsed).context("sizing group has no elapsed values")?;
+        let measured_total = elapsed.iter().sum::<f64>();
+        let median_rate = median(&rates).context("sizing group has no throughput values")?;
+        let throughput_cv = cv(&rates);
+        let throughput_relative_spread = (rates.iter().copied().fold(f64::NEG_INFINITY, f64::max)
+            - rates.iter().copied().fold(f64::INFINITY, f64::min))
+            / median_rate;
+        if !measured_total.is_finite()
+            || !throughput_cv.is_finite()
+            || !throughput_relative_spread.is_finite()
+        {
+            bail!("non-finite sizing statistics");
+        }
+        Ok(Self {
+            trials,
+            median_elapsed,
+            measured_total,
+            min_elapsed: elapsed.iter().copied().fold(f64::INFINITY, f64::min),
+            max_elapsed: elapsed.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+            median_rate,
+            throughput_cv,
+            throughput_relative_spread,
+        })
+    }
+
+    fn validate_trials(&self, first: &Value, expect_trials: i64, problems: &mut Vec<String>) {
+        if usize::try_from(expect_trials).ok() != Some(self.trials.len())
+            || self
+                .trials
+                .iter()
+                .enumerate()
+                .any(|(index, trial)| i64::try_from(index + 1).ok() != Some(*trial))
+        {
+            problems.push(format!(
+                "{}/{}/{}: trials={:?}, expected 1..={expect_trials}",
+                field_string(first, "engine"),
+                field_string(first, "durability"),
+                field_string(first, "workload"),
+                self.trials,
+            ));
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct ResizeDecision {
+    resize_strategy: Option<&'static str>,
+    suggested_effective_ops: Option<i64>,
+    runner_ops_override: Option<i64>,
+    suggested_trials: Option<i64>,
+    minimum_required_trials: Option<i64>,
+    sampling_cap_insufficient: bool,
+}
+
+impl ResizeDecision {
+    const fn none() -> Self {
+        Self {
+            resize_strategy: None,
+            suggested_effective_ops: None,
+            runner_ops_override: None,
+            suggested_trials: None,
+            minimum_required_trials: None,
+            sampling_cap_insufficient: false,
+        }
+    }
+
+    fn needed(
+        first: &Value,
+        stats: &TrialStatistics,
+        read_only: bool,
+        expect_trials: i64,
+        config: SizingConfig,
+    ) -> Result<Self> {
+        let effective_ops = value_i64(first.get("ops_requested"))?;
+        if read_only {
+            let scaled = int_as_f64!(effective_ops) * config.read_only_target_seconds
+                / stats.median_elapsed.max(1e-9);
+            let suggested = round_up_ops(scaled)?;
+            return Ok(Self {
+                resize_strategy: Some("more-ops"),
+                suggested_effective_ops: Some(suggested),
+                runner_ops_override: Some(runner_ops_override(first, suggested)?),
+                suggested_trials: Some(expect_trials),
+                ..Self::none()
+            });
+        }
+        let minimum = round_up_odd_trials(
+            config.stateful_min_total_seconds / stats.median_elapsed.max(1e-9),
+        )?;
+        let suggested = round_up_trials(
+            config.stateful_target_total_seconds / stats.median_elapsed.max(1e-9),
+            config.stateful_max_trials,
+        )?;
+        let cap = if config.stateful_max_trials % 2 == 1 {
+            config.stateful_max_trials
+        } else {
+            config.stateful_max_trials - 1
+        };
+        Ok(Self {
+            resize_strategy: Some("more-trials"),
+            suggested_effective_ops: Some(effective_ops),
+            runner_ops_override: Some(runner_ops_override(first, effective_ops)?),
+            suggested_trials: Some(suggested),
+            minimum_required_trials: Some(minimum),
+            sampling_cap_insufficient: minimum > cap,
+        })
+    }
+}
+
 fn report_group(
-    first: &Value,
-    rows: &[Value],
+    rows: &[&Value],
     expect_trials: i64,
     config: SizingConfig,
     problems: &mut Vec<String>,
 ) -> Result<Value> {
-    let mut trials = rows
-        .iter()
-        .map(|row| value_i64(row.get("trial")))
-        .collect::<Result<Vec<_>>>()?;
-    trials.sort_unstable();
-    let expected = (1..=expect_trials).collect::<Vec<_>>();
-    if trials != expected {
-        problems.push(format!(
-            "{}/{}/{}: trials={trials:?}, expected={expected:?}",
-            field_string(first, "engine"),
-            field_string(first, "durability"),
-            field_string(first, "workload"),
-        ));
-    }
-
-    let elapsed = rows
-        .iter()
-        .map(|row| value_f64(row.get("elapsed_s")))
-        .collect::<Result<Vec<_>>>()?;
-    let rates = rows
-        .iter()
-        .map(|row| value_f64(row.get("ops_per_s")))
-        .collect::<Result<Vec<_>>>()?;
-    let median_elapsed = median(&elapsed).context("sizing group has no elapsed values")?;
-    let measured_total = elapsed.iter().sum::<f64>();
-    let median_rate = median(&rates).context("sizing group has no throughput values")?;
-    let throughput_cv = cv(&rates);
-    let relative_spread = if median_rate == 0.0 {
-        f64::INFINITY
-    } else {
-        (rates.iter().copied().fold(f64::NEG_INFINITY, f64::max)
-            - rates.iter().copied().fold(f64::INFINITY, f64::min))
-            / median_rate
-    };
-    if !relative_spread.is_finite() {
-        bail!("sizing group has zero median throughput");
-    }
+    let first = rows.first().context("internal empty sizing group")?;
+    let evidence = TrialStatistics::from_rows(rows)?;
+    evidence.validate_trials(first, expect_trials, problems);
     let workload = field_string(first, "workload");
     let read_only = READ_ONLY_WORKLOADS.contains(&workload.as_str());
     let undersized = if read_only {
-        median_elapsed < config.read_only_min_seconds
+        evidence.median_elapsed < config.read_only_min_seconds
     } else {
-        measured_total < config.stateful_min_total_seconds
+        evidence.measured_total < config.stateful_min_total_seconds
     };
-    let variable = throughput_cv > config.max_cv || relative_spread > config.max_relative_spread;
+    let variable = evidence.throughput_cv > config.max_cv
+        || evidence.throughput_relative_spread > config.max_relative_spread;
     let status = if undersized {
         "undersized"
     } else if variable {
@@ -297,89 +406,75 @@ fn report_group(
     } else {
         "accepted"
     };
-
-    let effective_ops = value_i64(first.get("ops_requested"))?;
-    let mut suggested_effective_ops = None;
-    let mut runner_override = None;
-    let mut suggested_trials = None;
-    let mut minimum_required_trials = None;
-    let mut sampling_cap_insufficient = false;
-    let mut resize_strategy = None;
-
-    if undersized && read_only {
-        let scaled =
-            int_as_f64!(effective_ops) * config.read_only_target_seconds / median_elapsed.max(1e-9);
-        let suggested = round_up_ops(scaled)?;
-        suggested_effective_ops = Some(suggested);
-        runner_override = Some(runner_ops_override(first, suggested)?);
-        suggested_trials = Some(expect_trials);
-        resize_strategy = Some("more-ops");
-    } else if undersized {
-        suggested_effective_ops = Some(effective_ops);
-        runner_override = Some(runner_ops_override(first, effective_ops)?);
-        let minimum =
-            round_up_odd_trials(config.stateful_min_total_seconds / median_elapsed.max(1e-9))?;
-        let suggested = round_up_trials(
-            config.stateful_target_total_seconds / median_elapsed.max(1e-9),
-            config.stateful_max_trials,
-        )?;
-        minimum_required_trials = Some(minimum);
-        suggested_trials = Some(suggested);
-        let effective_cap = if config.stateful_max_trials % 2 == 1 {
+    let decision = if undersized {
+        ResizeDecision::needed(first, &evidence, read_only, expect_trials, config)?
+    } else {
+        ResizeDecision::none()
+    };
+    if decision.sampling_cap_insufficient {
+        let cap = if config.stateful_max_trials % 2 == 1 {
             config.stateful_max_trials
         } else {
             config.stateful_max_trials - 1
         };
-        sampling_cap_insufficient = minimum > effective_cap;
-        if sampling_cap_insufficient {
-            problems.push(format!(
-                "{}/{}/{workload}: stateful sampling cap={effective_cap} trials cannot meet the minimum floor; requires at least {minimum} trials",
-                field_string(first, "engine"),
-                field_string(first, "durability"),
-            ));
-        }
-        resize_strategy = Some("more-trials");
+        let minimum = decision
+            .minimum_required_trials
+            .context("sampling requirement missing")?;
+        problems.push(format!(
+            "{}/{}/{workload}: stateful sampling cap={cap} trials cannot meet the minimum floor; requires at least {minimum} trials",
+            field_string(first, "engine"), field_string(first, "durability"),
+        ));
     }
-
-    let min_elapsed = elapsed.iter().copied().fold(f64::INFINITY, f64::min);
-    let max_elapsed = elapsed.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    Ok(json!({
-        "engine": first.get("engine").cloned().unwrap_or(Value::Null),
-        "engine_version": first.get("engine_version").cloned().unwrap_or(Value::Null),
-        "durability": first.get("durability").cloned().unwrap_or(Value::Null),
-        "workload": workload,
-        "read_materialization": first.get("read_materialization").cloned().unwrap_or_else(|| json!("legacy-read-v0")),
-        "write_materialization": first.get("write_materialization").cloned().unwrap_or_else(|| json!("legacy-return-v0")),
-        "records": first.get("records").cloned().unwrap_or(Value::Null),
-        "ops_requested": effective_ops,
-        "trials": trials,
-        "median_elapsed_s": median_elapsed,
-        "measured_total_s": measured_total,
-        "min_elapsed_s": min_elapsed,
-        "max_elapsed_s": max_elapsed,
-        "median_ops_per_s": median_rate,
-        "throughput_cv": throughput_cv,
-        "throughput_relative_spread": relative_spread,
-        "read_only": read_only,
-        "status": status,
-        "resize_strategy": resize_strategy,
-        "suggested_effective_ops": suggested_effective_ops,
-        "runner_ops_override": runner_override,
-        "suggested_trials": suggested_trials,
-        "minimum_required_trials": minimum_required_trials,
-        "sampling_cap_insufficient": sampling_cap_insufficient,
-    }))
+    let effective_ops = value_i64(first.get("ops_requested"))?;
+    if effective_ops <= 0 {
+        bail!("invalid sizing operation count: {effective_ops}");
+    }
+    let mut report = serde_json::Map::from_iter([
+        ("engine".into(), identity_value(first, "engine")),
+        (
+            "engine_version".into(),
+            identity_value(first, "engine_version"),
+        ),
+        ("durability".into(), identity_value(first, "durability")),
+        ("workload".into(), json!(workload)),
+        (
+            "read_materialization".into(),
+            identity_value(first, "read_materialization"),
+        ),
+        (
+            "write_materialization".into(),
+            identity_value(first, "write_materialization"),
+        ),
+        ("records".into(), identity_value(first, "records")),
+        ("ops_requested".into(), json!(effective_ops)),
+        ("read_only".into(), json!(read_only)),
+        ("status".into(), json!(status)),
+    ]);
+    for metrics in [
+        serde_json::to_value(evidence)?,
+        serde_json::to_value(decision)?,
+    ] {
+        let Value::Object(fields) = metrics else {
+            bail!("invalid sizing report fields");
+        };
+        report.extend(fields);
+    }
+    Ok(Value::Object(report))
 }
 
 pub fn audit_rows(rows: &[Value], expect_trials: i64, config: SizingConfig) -> Result<Value> {
-    let mut grouped = HashMap::<String, (Vec<Value>, Vec<Value>)>::new();
+    if expect_trials <= 0 {
+        bail!("expected trials must be positive");
+    }
+    let mut grouped = HashMap::<String, (Vec<Value>, Vec<&Value>)>::new();
     for row in rows {
         let key = group_key(row);
         let encoded = encoded_key(&key)?;
         grouped
             .entry(encoded)
-            .and_modify(|(_, group)| group.push(row.clone()))
-            .or_insert_with(|| (key, vec![row.clone()]));
+            .or_insert_with(|| (key, Vec::new()))
+            .1
+            .push(row);
     }
     let mut groups = grouped.into_values().collect::<Vec<_>>();
     groups.sort_by_key(|(key, _)| sort_key(key));
@@ -387,14 +482,7 @@ pub fn audit_rows(rows: &[Value], expect_trials: i64, config: SizingConfig) -> R
     let mut output_groups = Vec::new();
     let mut problems = Vec::new();
     for (_, rows) in groups {
-        let first = rows.first().context("internal empty sizing group")?;
-        output_groups.push(report_group(
-            first,
-            &rows,
-            expect_trials,
-            config,
-            &mut problems,
-        )?);
+        output_groups.push(report_group(&rows, expect_trials, config, &mut problems)?);
     }
 
     let count_status = |status: &str| {
@@ -659,10 +747,117 @@ fn config_from_audit(audit: &Value) -> Result<SizingConfig> {
     })
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
-)]
+fn load_repair_audit(
+    original: &Value,
+    resize_root: &Path,
+    initial_rid: &str,
+    config: SizingConfig,
+) -> Result<Value> {
+    let run_dir = resize_root.join(initial_rid);
+    let results_path = run_dir.join("results.ndjson");
+    let summary_path = run_dir.join("summary.json");
+    if !results_path.is_file() || !summary_path.is_file() {
+        bail!("missing initial quality-repair result: {initial_rid}");
+    }
+    let expected_trials = value_i64(original.get("suggested_trials"))?;
+    let summary = read_json(&summary_path)?;
+    if value_i64(summary.get("row_count"))? != expected_trials
+        || value_i64(summary.get("group_count"))? != 1
+        || json_truthy(summary.get("problems"))
+    {
+        bail!("invalid initial quality-repair summary: {initial_rid}");
+    }
+    let rows = read_ndjson(&results_path)?;
+    let report = audit_rows(&rows, expected_trials, config)?;
+    if json_truthy(report.get("problems")) || value_i64(report.get("group_count"))? != 1 {
+        bail!(
+            "clean repair audit failed: {:?}",
+            report.get("problems").unwrap_or(&Value::Null)
+        );
+    }
+    let audited = report
+        .get("groups")
+        .and_then(Value::as_array)
+        .and_then(|groups| groups.first())
+        .context("clean repair audit returned no group")?;
+    validate_repair_identity(original, audited, initial_rid)?;
+    Ok(audited.clone())
+}
+
+fn validate_repair_identity(original: &Value, audited: &Value, run_id: &str) -> Result<()> {
+    for field in [
+        "engine",
+        "engine_version",
+        "durability",
+        "workload",
+        "records",
+        "read_materialization",
+        "write_materialization",
+    ] {
+        if identity_value(original, field) != identity_value(audited, field) {
+            bail!("quality repair identity mismatch for {run_id}: {field}");
+        }
+    }
+    if value_i64(original.get("suggested_effective_ops"))?
+        != value_i64(audited.get("ops_requested"))?
+    {
+        bail!("quality repair operation count mismatch for {run_id}");
+    }
+    Ok(())
+}
+
+fn refine_group(original: &Value, audited: &Value, initial_rid: &str) -> Result<(Value, bool)> {
+    let mut item = original
+        .as_object()
+        .cloned()
+        .context("quality repair group is not an object")?;
+    item.insert(
+        "quality_repair_initial_run_id".to_owned(),
+        json!(initial_rid),
+    );
+    for (target, source) in [
+        ("quality_repair_clean_status", "status"),
+        ("quality_repair_clean_median_elapsed_s", "median_elapsed_s"),
+        ("quality_repair_clean_measured_total_s", "measured_total_s"),
+        ("quality_repair_clean_throughput_cv", "throughput_cv"),
+        (
+            "quality_repair_clean_throughput_relative_spread",
+            "throughput_relative_spread",
+        ),
+    ] {
+        item.insert(
+            target.to_owned(),
+            audited.get(source).cloned().unwrap_or(Value::Null),
+        );
+    }
+    let undersized = audited.get("status").and_then(Value::as_str) == Some("undersized");
+    item.insert("quality_repair_refined".to_owned(), json!(undersized));
+    item.insert(
+        "quality_repair_refinement_strategy".to_owned(),
+        audited
+            .get("resize_strategy")
+            .cloned()
+            .unwrap_or(Value::Null),
+    );
+    if undersized {
+        if audited
+            .get("sampling_cap_insufficient")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            bail!("quality repair cannot meet sampling floor within cap: {initial_rid}");
+        }
+        for field in [
+            "suggested_effective_ops",
+            "runner_ops_override",
+            "suggested_trials",
+        ] {
+            item.insert(field.to_owned(), json!(value_i64(audited.get(field))?));
+        }
+    }
+    Ok((Value::Object(item), undersized))
+}
+
 pub fn refine_plan(
     quality_plan: &Value,
     sizing_audit: &Value,
@@ -690,89 +885,19 @@ pub fn refine_plan(
     let source_groups = quality_plan
         .get("groups")
         .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    let mut refined = Vec::new();
+        .context("quality plan groups missing")?;
+    let mut refined = Vec::with_capacity(source_groups.len());
     let mut promoted = 0_i64;
+    let mut seen = HashSet::new();
     for original in source_groups {
-        let initial_rid = group_run_id(&original, resize_prefix)?;
-        let run_dir = resize_root.join(&initial_rid);
-        let results_path = run_dir.join("results.ndjson");
-        let summary_path = run_dir.join("summary.json");
-        if !results_path.is_file() || !summary_path.is_file() {
-            bail!("missing initial quality-repair result: {initial_rid}");
+        let run_id = group_run_id(original, resize_prefix)?;
+        if !seen.insert(run_id.clone()) {
+            bail!("duplicate initial quality-repair run: {run_id}");
         }
-        let expected_trials = value_i64(original.get("suggested_trials"))?;
-        let summary = read_json(&summary_path)?;
-        if value_i64(summary.get("row_count"))? != expected_trials
-            || value_i64(summary.get("group_count"))? != 1
-            || json_truthy(summary.get("problems"))
-        {
-            bail!("invalid initial quality-repair summary: {initial_rid}");
-        }
-        let rows = read_ndjson(&results_path)?;
-        let report = audit_rows(&rows, expected_trials, config)?;
-        if json_truthy(report.get("problems")) || value_i64(report.get("group_count"))? != 1 {
-            bail!(
-                "clean repair audit failed: {:?}",
-                report.get("problems").unwrap_or(&Value::Null)
-            );
-        }
-        let audited = report
-            .get("groups")
-            .and_then(Value::as_array)
-            .and_then(|groups| groups.first())
-            .context("clean repair audit returned no group")?;
-        let mut item = original
-            .as_object()
-            .cloned()
-            .context("quality repair group is not an object")?;
-        item.insert(
-            "quality_repair_initial_run_id".to_owned(),
-            json!(initial_rid),
-        );
-        for (target, source) in [
-            ("quality_repair_clean_status", "status"),
-            ("quality_repair_clean_median_elapsed_s", "median_elapsed_s"),
-            ("quality_repair_clean_measured_total_s", "measured_total_s"),
-            ("quality_repair_clean_throughput_cv", "throughput_cv"),
-            (
-                "quality_repair_clean_throughput_relative_spread",
-                "throughput_relative_spread",
-            ),
-        ] {
-            item.insert(
-                target.to_owned(),
-                audited.get(source).cloned().unwrap_or(Value::Null),
-            );
-        }
-        let undersized = audited.get("status").and_then(Value::as_str) == Some("undersized");
-        item.insert("quality_repair_refined".to_owned(), json!(undersized));
-        item.insert(
-            "quality_repair_refinement_strategy".to_owned(),
-            audited
-                .get("resize_strategy")
-                .cloned()
-                .unwrap_or(Value::Null),
-        );
-        if undersized {
-            if audited
-                .get("sampling_cap_insufficient")
-                .and_then(Value::as_bool)
-                .unwrap_or(false)
-            {
-                bail!("quality repair cannot meet sampling floor within cap: {initial_rid}");
-            }
-            for field in [
-                "suggested_effective_ops",
-                "runner_ops_override",
-                "suggested_trials",
-            ] {
-                item.insert(field.to_owned(), json!(value_i64(audited.get(field))?));
-            }
-            promoted += 1;
-        }
-        refined.push(Value::Object(item));
+        let audited = load_repair_audit(original, resize_root, &run_id, config)?;
+        let (item, undersized) = refine_group(original, &audited, &run_id)?;
+        promoted += i64::from(undersized);
+        refined.push(item);
     }
     let mut result = quality_plan
         .as_object()
@@ -854,9 +979,14 @@ pub fn run_refine(args: RefineArgs<'_>) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{SizingConfig, audit_rows, round_up_ops};
+    use super::{SizingConfig, audit_rows, group_run_id, refine_plan, round_up_ops};
+    use anyhow::Context;
     use anyhow::Result;
     use serde_json::{Value, json};
+    use std::{
+        fs,
+        sync::atomic::{AtomicU64, Ordering},
+    };
 
     fn row(engine: &str, elapsed: f64, rate: f64, trial: i64, workload: &str) -> Value {
         json!({
@@ -914,6 +1044,98 @@ mod tests {
         assert_eq!(group["runner_ops_override"], 500_000);
         assert_eq!(group["suggested_trials"], 11);
         Ok(())
+    }
+
+    #[test]
+    fn rejects_nonpositive_and_nonfinite_sizing_samples() -> Result<()> {
+        for (field, invalid) in [
+            ("elapsed_s", json!(0.0)),
+            ("elapsed_s", json!(-1.0)),
+            ("elapsed_s", json!("NaN")),
+            ("ops_per_s", json!(0.0)),
+            ("ops_per_s", json!("inf")),
+            ("ops_requested", json!(0)),
+        ] {
+            let mut invalid_row = row("bad", 3.0, 100.0, 1, "point-read");
+            invalid_row[field] = invalid;
+            assert!(
+                audit_rows(&[invalid_row], 1, SizingConfig::default()).is_err(),
+                "{field}"
+            );
+        }
+        let report = audit_rows(
+            &[row("huge", 3.0, 100.0, 1, "point-read")],
+            i64::MAX,
+            SizingConfig::default(),
+        )?;
+        assert_eq!(report["problems"].as_array().map(Vec::len), Some(1));
+        Ok(())
+    }
+
+    #[test]
+    fn quality_refinement_requires_matching_measurement_identity() -> Result<()> {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "sizing-repair-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let stock = row("fast", 3.0, 20_000.0, 1, "point-read");
+        let audit = audit_rows(std::slice::from_ref(&stock), 1, SizingConfig::default())?;
+        let mut group = audit["groups"][0].clone();
+        group["suggested_effective_ops"] = json!(50_000);
+        group["suggested_trials"] = json!(1);
+        let quality = json!({"quality_policy_version":1,"groups":[group.clone()]});
+        let run_dir = root.join(group_run_id(&group, "resize")?);
+        fs::create_dir_all(&run_dir)?;
+        let result = (|| -> Result<()> {
+            fs::write(
+                run_dir.join("summary.json"),
+                r#"{"row_count":1,"group_count":1,"problems":[]}"#,
+            )?;
+            let results = run_dir.join("results.ndjson");
+            let write = |sample: &Value| -> Result<()> {
+                fs::write(&results, format!("{}\n", serde_json::to_string(sample)?))?;
+                Ok(())
+            };
+            write(&stock)?;
+            let refined = refine_plan(&quality, &audit, &root, "resize")?;
+            assert_eq!(refined["refined_group_count"], 0);
+            assert_eq!(
+                refined["groups"][0]["quality_repair_clean_status"],
+                "accepted"
+            );
+            let mut shorter = stock.clone();
+            shorter["elapsed_s"] = json!(0.5);
+            write(&shorter)?;
+            let refined = refine_plan(&quality, &audit, &root, "resize")?;
+            assert_eq!(refined["refined_group_count"], 1);
+            assert_eq!(refined["groups"][0]["suggested_effective_ops"], 300_000);
+            for (field, value) in [
+                ("engine", json!("other")),
+                ("engine_version", json!("2")),
+                ("records", json!(99_999)),
+                ("ops_requested", json!(49_999)),
+                ("workload", json!("range-scan")),
+                ("durability", json!("relaxed")),
+                ("read_materialization", json!("different")),
+                ("write_materialization", json!("different")),
+            ] {
+                let mut invalid = stock.clone();
+                invalid[field] = value;
+                write(&invalid)?;
+                assert!(
+                    refine_plan(&quality, &audit, &root, "resize").is_err(),
+                    "{field}"
+                );
+            }
+            write(&stock)?;
+            let duplicate = json!({"quality_policy_version":1,"groups":[group.clone(),group]});
+            assert!(refine_plan(&duplicate, &audit, &root, "resize").is_err());
+            Ok(())
+        })();
+        fs::remove_dir_all(root).context("remove quality refinement test directory")?;
+        result
     }
 
     #[test]
