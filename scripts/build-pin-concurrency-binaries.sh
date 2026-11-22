@@ -1,11 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT=${ROOT:-"$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"}
-OUT=${1:-/srv/scratch/db-bench-work/concurrency-quick/bin}
-mkdir -p "$OUT"
-TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target}
-ROCKS_TARGET_DIR=${SURREAL_ROCKS_TARGET_DIR:-/tmp/rust-db-surreal-rocks-target}
+# shellcheck source=pin-build-common.sh
+source "$(dirname -- "${BASH_SOURCE[0]}")/pin-build-common.sh" "$@"
+
 
 CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" \
   build --release --locked --features kv-all --bin kvconcurrency
@@ -32,4 +30,4 @@ jq -nS \
   --arg record_path "$record" --arg record_sha "$record_sha" \
   --arg rocks_path "$rocks" --arg rocks_sha "$rocks_sha" \
   '{repo_commit:$repo_commit,kv:{path:$kv_path,sha256:$kv_sha},record:{path:$record_path,sha256:$record_sha},rocks:{path:$rocks_path,sha256:$rocks_sha}}' > "$OUT/manifest.json"
-cat "$OUT/manifest.json"
+publish_pin_build
