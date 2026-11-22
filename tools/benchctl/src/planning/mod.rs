@@ -3,7 +3,7 @@ use crate::json_io::read_json;
 use crate::json_value::json_truthy;
 use crate::support::{canonical_identity_sha256, support_identity};
 use anyhow::{Context, Result, bail};
-use serde_json::{Map, Number, Value};
+use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -14,6 +14,7 @@ use std::{
 
 mod audit;
 mod kv;
+mod kv_identity;
 mod kv_materialize;
 mod record;
 mod record_calibration;
@@ -97,12 +98,6 @@ fn clone_field(value: &Value, key: &str) -> Result<Value> {
         .get(key)
         .cloned()
         .with_context(|| format!("missing {key}"))
-}
-
-fn number(value: f64) -> Result<Value> {
-    Number::from_f64(value)
-        .map(Value::Number)
-        .with_context(|| format!("cannot encode non-finite float {value}"))
 }
 
 fn rounded_ops(value: f64) -> Result<i64> {

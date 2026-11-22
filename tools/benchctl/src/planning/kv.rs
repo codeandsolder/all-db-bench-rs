@@ -1,3 +1,4 @@
+use super::kv_identity::{FamilyKey, ResultKey, family_key, result_key};
 use super::{
     DEFAULT_BOUNDED_CHURN_SLOTS, KV_PLAN_VERSION, canonical_identity_sha256, case_paths,
     case_set_sha256, clone_field, get_f64, get_i64, get_str, json_truthy, read_json, rounded_ops,
@@ -10,64 +11,6 @@ use std::{collections::BTreeMap, path::Path};
 const FIXED_WORKLOADS: [&str; 3] = ["point-read", "range-scan", "read-heavy"];
 const BOUNDED_WORKLOADS: [&str; 4] = ["balanced", "tiny-txn", "write-burst", "churn"];
 const DELETE_WORKLOAD: &str = "delete-burst";
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct FamilyKey {
-    scenario: String,
-    engine: String,
-    durability: String,
-    workload: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct ResultKey {
-    family: FamilyKey,
-    clients: i64,
-    records: i64,
-    ops: i64,
-    trial: i64,
-    state_evolution: String,
-    write_pattern: String,
-    bounded_churn_slots: i64,
-}
-
-fn family_key(value: &Value) -> Result<FamilyKey> {
-    Ok(FamilyKey {
-        scenario: get_str(value, "scenario")?.to_owned(),
-        engine: get_str(value, "engine")?.to_owned(),
-        durability: get_str(value, "durability")?.to_owned(),
-        workload: get_str(value, "workload")?.to_owned(),
-    })
-}
-
-fn result_key(value: &Value) -> Result<ResultKey> {
-    let ops = value
-        .get("ops")
-        .or_else(|| value.get("ops_requested"))
-        .and_then(super::value_i64)
-        .context("missing or invalid ops/ops_requested")?;
-    Ok(ResultKey {
-        family: family_key(value)?,
-        clients: get_i64(value, "clients")?,
-        records: get_i64(value, "records")?,
-        ops,
-        trial: get_i64(value, "trial")?,
-        state_evolution: value
-            .get("state_evolution")
-            .and_then(Value::as_str)
-            .unwrap_or("growth")
-            .to_owned(),
-        write_pattern: value
-            .get("write_pattern")
-            .and_then(Value::as_str)
-            .unwrap_or("append")
-            .to_owned(),
-        bounded_churn_slots: value
-            .get("bounded_churn_slots")
-            .and_then(super::value_i64)
-            .unwrap_or(0),
-    })
-}
 
 fn load_complete_audit(path: &Path) -> Result<Value> {
     let audit = read_json(path)?;
