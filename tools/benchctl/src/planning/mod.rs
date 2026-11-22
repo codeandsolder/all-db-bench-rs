@@ -6,6 +6,7 @@ use anyhow::{Context, Result, bail};
 use serde_json::{Map, Number, Value};
 use sha2::{Digest, Sha256};
 use std::{
+    collections::{BTreeMap, BTreeSet},
     fs::{self, File},
     io::Read,
     path::{Path, PathBuf},
@@ -153,6 +154,61 @@ fn case_paths(run_dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
+fn load_calibration_cases<K: Ord + std::fmt::Debug>(
+    plan: &Value,
+    paths: &[PathBuf],
+    key: impl Fn(&Value) -> Result<K>,
+    validate: impl Fn(&Value, &Path) -> Result<()>,
+) -> Result<BTreeMap<K, Value>> {
+    let cases = plan
+        .get("cases")
+        .and_then(Value::as_array)
+        .context("calibration plan cases must be an array")?;
+    let mut planned = BTreeSet::new();
+    for item in cases {
+        if !planned.insert(key(item)?) {
+            bail!("duplicate calibration plan identity");
+        }
+    }
+    if i64::try_from(planned.len()).context("planned count overflow")?
+        != get_i64(plan, "case_count")?
+    {
+        bail!("calibration plan case count mismatch");
+    }
+    let mut results = BTreeMap::new();
+    for path in paths {
+        let row = read_json(path)?;
+        validate(&row, path)?;
+        let identity = key(&row)?;
+        if !planned.contains(&identity) {
+            bail!(
+                "calibration result outside plan: {}: {identity:?}",
+                path.display()
+            );
+        }
+        if get_i64(&row, "ops_completed")? != get_i64(&row, "ops_requested")? {
+            bail!("partial calibration result: {}", path.display());
+        }
+        let elapsed = get_f64(&row, "elapsed_s")?;
+        let rate = get_f64(&row, "ops_per_s")?;
+        if !elapsed.is_finite() || elapsed <= 0.0 || !rate.is_finite() || rate <= 0.0 {
+            bail!("invalid calibration timing: {}", path.display());
+        }
+        match results.entry(identity) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(row);
+            }
+            std::collections::btree_map::Entry::Occupied(entry) => {
+                bail!("duplicate calibration result: {:?}", entry.key());
+            }
+        }
+    }
+    if planned.iter().ne(results.keys()) {
+        bail!("calibration results do not exactly cover plan");
+    }
+    Ok(results)
+}
+
 fn case_set_sha256(paths: &[PathBuf]) -> Result<String> {
     let mut sorted = paths.to_vec();
     sorted.sort_by(|left, right| left.file_name().cmp(&right.file_name()));
@@ -290,5 +346,50 @@ impl TestDir {
 impl Drop for TestDir {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+#[cfg(test)]
+mod calibration_case_tests {
+    use super::{TestDir, get_i64, load_calibration_cases, write_json};
+    use anyhow::Result;
+    use serde_json::json;
+
+    #[test]
+    fn calibration_requires_exact_complete_positive_results() -> Result<()> {
+        let dir = TestDir::new("case-coverage")?;
+        let first = dir.0.join("first.json");
+        let second = dir.0.join("second.json");
+        let plan = json!({"case_count": 2, "cases": [{"id": 1}, {"id": 2}]});
+        let valid = json!({"id": 1, "ops_requested": 10, "ops_completed": 10,
+                           "elapsed_s": 1.0, "ops_per_s": 10.0});
+        write_json(&first, &valid)?;
+        let load = |plan, paths: &[std::path::PathBuf]| {
+            load_calibration_cases(plan, paths, |row| get_i64(row, "id"), |_, _| Ok(()))
+        };
+        assert!(load(&plan, std::slice::from_ref(&first)).is_err());
+        assert!(load(&plan, &[first.clone(), first.clone()]).is_err());
+        let paths = [first, second.clone()];
+        for (key, value) in [
+            ("id", json!(3)),
+            ("ops_completed", json!(9)),
+            ("elapsed_s", json!(0.0)),
+            ("ops_per_s", json!(-1.0)),
+        ] {
+            let mut invalid = valid.clone();
+            invalid["id"] = json!(2);
+            invalid[key] = value;
+            write_json(&second, &invalid)?;
+            assert!(load(&plan, &paths).is_err());
+        }
+        let mut valid_second = valid;
+        valid_second["id"] = json!(2);
+        write_json(&second, &valid_second)?;
+        assert_eq!(load(&plan, &paths)?.len(), 2);
+        let duplicate = json!({"case_count": 2, "cases": [{"id": 1}, {"id": 1}]});
+        assert!(load(&duplicate, &paths).is_err());
+        let wrong_count = json!({"case_count": 3, "cases": [{"id": 1}, {"id": 2}]});
+        assert!(load(&wrong_count, &paths).is_err());
+        Ok(())
     }
 }

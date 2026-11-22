@@ -249,10 +249,6 @@ struct CalibrationResults {
     provenance: Map<String, Value>,
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
-)]
 fn load_calibration_results(
     repo: &Path,
     plan_path: &Path,
@@ -303,41 +299,7 @@ fn load_calibration_results(
             get_i64(&plan, "case_count")?
         );
     }
-    let planned_cases = plan
-        .get("cases")
-        .and_then(Value::as_array)
-        .context("calibration plan cases must be an array")?;
-    let mut planned = BTreeMap::new();
-    for item in planned_cases {
-        if planned.insert(result_key(item)?, item.clone()).is_some() {
-            bail!("duplicate calibration plan identity");
-        }
-    }
-    let mut results = BTreeMap::new();
-    for path in &paths {
-        let row = read_json(path)?;
-        let identity = result_key(&row)?;
-        if !planned.contains_key(&identity) {
-            bail!(
-                "calibration result outside plan: {}: {identity:?}",
-                path.display()
-            );
-        }
-        if results.insert(identity.clone(), row.clone()).is_some() {
-            bail!("duplicate calibration result: {identity:?}");
-        }
-        if get_i64(&row, "ops_completed")? != get_i64(&row, "ops_requested")? {
-            bail!("partial calibration result: {}", path.display());
-        }
-        let elapsed = get_f64(&row, "elapsed_s")?;
-        let rate = get_f64(&row, "ops_per_s")?;
-        if !elapsed.is_finite() || elapsed <= 0.0 || !rate.is_finite() || rate <= 0.0 {
-            bail!("invalid calibration timing: {}", path.display());
-        }
-    }
-    if planned.keys().ne(results.keys()) {
-        bail!("missing calibration results");
-    }
+    let results = super::load_calibration_cases(&plan, &paths, result_key, |_, _| Ok(()))?;
     let mut provenance = Map::new();
     provenance.insert("calibration_plan_sha256".to_owned(), json!(plan_sha));
     provenance.insert(
@@ -399,68 +361,76 @@ fn merge_object(target: &mut Map<String, Value>, source: &Map<String, Value>) {
     }
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "benchmark orchestration and report construction intentionally keep phase ordering and schema assembly visible in one linear function"
-)]
-fn build_final_plans(
-    repo: &Path,
-    audit_path: &Path,
-    calibration_plan_path: &Path,
-    calibration_run_dir: &Path,
+#[derive(Default)]
+struct PlanCases {
+    families: Vec<Value>,
+    cases: Vec<Value>,
+}
+
+impl PlanCases {
+    fn add_trials(
+        &mut self,
+        family: &Value,
+        final_trials: i64,
+        ops: i64,
+        state: &str,
+        write_pattern: &str,
+        slots: i64,
+    ) -> Result<()> {
+        let clients = family
+            .get("clients")
+            .and_then(Value::as_array)
+            .context("family clients must be array")?;
+        for trial in 1..=final_trials {
+            for client in clients {
+                self.cases.push(case_template(
+                    family,
+                    ops,
+                    client.as_i64().context("invalid family client")?,
+                    trial,
+                    state,
+                    write_pattern,
+                    slots,
+                )?);
+            }
+        }
+        Ok(())
+    }
+
+    fn into_plan(self, mut common: Map<String, Value>, kind: &str) -> Value {
+        common.insert("kind".to_owned(), json!(kind));
+        common.insert("family_count".to_owned(), json!(self.families.len()));
+        common.insert("families".to_owned(), Value::Array(self.families));
+        common.insert("case_count".to_owned(), json!(self.cases.len()));
+        common.insert("cases".to_owned(), Value::Array(self.cases));
+        Value::Object(common)
+    }
+}
+
+fn plan_families(
+    audit: &Value,
+    calibration: &CalibrationResults,
+    target_s: f64,
     final_trials: i64,
-) -> Result<(Value, Value)> {
-    if final_trials < 1 {
-        bail!("final_trials must be positive");
-    }
-    let audit = load_complete_audit(audit_path)?;
-    let target_s = target_seconds(&audit)?;
-    let calibration = load_calibration_results(repo, calibration_plan_path, calibration_run_dir)?;
-    let audit_sha = sha256(audit_path)?;
-    if calibration
-        .plan
-        .get("source_sizing_audit_sha256")
-        .and_then(Value::as_str)
-        != Some(audit_sha.as_str())
-    {
-        bail!("calibration plan was generated from a different sizing audit");
-    }
-    let mut final_cases = Vec::new();
-    let mut delete_cases = Vec::new();
-    let mut selected = Vec::new();
-    let mut delete_families = Vec::new();
+) -> Result<(PlanCases, PlanCases)> {
+    let mut steady = PlanCases::default();
+    let mut delete = PlanCases::default();
     for family in audit
         .get("families")
         .and_then(Value::as_array)
         .context("missing audit families")?
     {
         let workload = get_str(family, "workload")?;
-        let clients = family
-            .get("clients")
-            .and_then(Value::as_array)
-            .context("family clients must be array")?;
         if workload == DELETE_WORKLOAD {
             let ops = get_i64(family, "current_ops")?;
-            delete_families.push(json!({
+            delete.families.push(json!({
                 "scenario": clone_field(family, "scenario")?,
                 "engine": clone_field(family, "engine")?,
                 "durability": clone_field(family, "durability")?,
                 "workload": workload,
                 "ops": ops,
             }));
-            for trial in 1..=final_trials {
-                for client in clients {
-                    delete_cases.push(case_template(
-                        family,
-                        ops,
-                        client.as_i64().context("invalid family client")?,
-                        trial,
-                        "growth",
-                        "append",
-                        0,
-                    )?);
-                }
-            }
+            delete.add_trials(family, final_trials, ops, "growth", "append", 0)?;
             continue;
         }
         let (ops, source, state, write_pattern, slots) = if FIXED_WORKLOADS.contains(&workload) {
@@ -497,7 +467,7 @@ fn build_final_plans(
         } else {
             bail!("unclassified workload: {workload}");
         };
-        selected.push(json!({
+        steady.families.push(json!({
             "scenario": clone_field(family, "scenario")?,
             "engine": clone_field(family, "engine")?,
             "durability": clone_field(family, "durability")?,
@@ -508,20 +478,34 @@ fn build_final_plans(
             "write_pattern": write_pattern,
             "bounded_churn_slots": slots,
         }));
-        for trial in 1..=final_trials {
-            for client in clients {
-                final_cases.push(case_template(
-                    family,
-                    ops,
-                    client.as_i64().context("invalid family client")?,
-                    trial,
-                    state,
-                    write_pattern,
-                    slots,
-                )?);
-            }
-        }
+        steady.add_trials(family, final_trials, ops, state, write_pattern, slots)?;
     }
+    Ok((steady, delete))
+}
+
+fn build_final_plans(
+    repo: &Path,
+    audit_path: &Path,
+    calibration_plan_path: &Path,
+    calibration_run_dir: &Path,
+    final_trials: i64,
+) -> Result<(Value, Value)> {
+    if final_trials < 1 {
+        bail!("final_trials must be positive");
+    }
+    let audit = load_complete_audit(audit_path)?;
+    let target_s = target_seconds(&audit)?;
+    let calibration = load_calibration_results(repo, calibration_plan_path, calibration_run_dir)?;
+    let audit_sha = sha256(audit_path)?;
+    if calibration
+        .plan
+        .get("source_sizing_audit_sha256")
+        .and_then(Value::as_str)
+        != Some(audit_sha.as_str())
+    {
+        bail!("calibration plan was generated from a different sizing audit");
+    }
+    let (steady, delete) = plan_families(&audit, &calibration, target_s, final_trials)?;
 
     let mut common = Map::new();
     common.insert(
@@ -540,20 +524,10 @@ fn build_final_plans(
     common.insert("target_seconds".to_owned(), json!(target_s));
     merge_object(&mut common, &calibration.provenance);
 
-    let mut steady = common.clone();
-    steady.insert("kind".to_owned(), json!("steady-scaling-final"));
-    steady.insert("family_count".to_owned(), json!(selected.len()));
-    steady.insert("families".to_owned(), Value::Array(selected));
-    steady.insert("case_count".to_owned(), json!(final_cases.len()));
-    steady.insert("cases".to_owned(), Value::Array(final_cases));
-
-    let mut delete = common;
-    delete.insert("kind".to_owned(), json!("finite-delete-diagnostic"));
-    delete.insert("family_count".to_owned(), json!(delete_families.len()));
-    delete.insert("families".to_owned(), Value::Array(delete_families));
-    delete.insert("case_count".to_owned(), json!(delete_cases.len()));
-    delete.insert("cases".to_owned(), Value::Array(delete_cases));
-    Ok((Value::Object(steady), Value::Object(delete)))
+    Ok((
+        steady.into_plan(common.clone(), "steady-scaling-final"),
+        delete.into_plan(common, "finite-delete-diagnostic"),
+    ))
 }
 
 #[derive(Clone, Copy)]
