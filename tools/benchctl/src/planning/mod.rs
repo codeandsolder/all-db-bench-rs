@@ -1,3 +1,5 @@
+#[cfg(test)]
+use crate::file_hash::noise_source_sha256;
 use crate::file_hash::{lower_hex, sha256};
 use crate::json_io::read_json;
 use crate::json_value::{exact_i64 as value_i64, json_truthy};
@@ -281,8 +283,8 @@ fn kv_support(repo: &Path) -> Result<Value> {
         "concurrency_runner_common_sha256": sha256(&repo.join("scripts/concurrency-runner-common.sh"))?,
         "continuous_noise_common_sha256": sha256(&repo.join("scripts/continuous-noise-runner-common.sh"))?,
         "concurrency_policy_sha256": sha256(&repo.join("scripts/concurrency-matrix-policy.sh"))?,
-        "noise_guard_sha256": sha256(&repo.join("tools/benchctl/src/noise.rs"))?,
-        "continuous_noise_guard_sha256": sha256(&repo.join("tools/benchctl/src/noise.rs"))?,
+        "noise_guard_sha256": noise_source_sha256(repo)?,
+        "continuous_noise_guard_sha256": noise_source_sha256(repo)?,
         "benchmark_binary_sha256": "a".repeat(64),
         "build_profile": "external",
         "hostname": "test-host",
@@ -316,8 +318,8 @@ fn record_support(repo: &Path) -> Result<Value> {
         "concurrency_runner_common_sha256": sha256(&repo.join("scripts/concurrency-runner-common.sh"))?,
         "continuous_noise_common_sha256": sha256(&repo.join("scripts/continuous-noise-runner-common.sh"))?,
         "concurrency_policy_sha256": sha256(&repo.join("scripts/concurrency-matrix-policy.sh"))?,
-        "noise_guard_sha256": sha256(&repo.join("tools/benchctl/src/noise.rs"))?,
-        "continuous_noise_guard_sha256": sha256(&repo.join("tools/benchctl/src/noise.rs"))?,
+        "noise_guard_sha256": noise_source_sha256(repo)?,
+        "continuous_noise_guard_sha256": noise_source_sha256(repo)?,
         "benchmark_binary_sha256": "a".repeat(64),
         "build_profile": "external",
         "surrealdb_rocksdb_binary_sha256": "b".repeat(64),

@@ -1,4 +1,4 @@
-use crate::file_hash::{lower_hex, sha256};
+use crate::file_hash::{lower_hex, noise_source_sha256, sha256};
 use crate::json_value::json_truthy;
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value, json};
@@ -205,14 +205,6 @@ fn kv_source_identity(repo: &Path, support: &Value) -> Result<Value> {
             "continuous_noise_common_sha256",
             repo.join("scripts/continuous-noise-runner-common.sh"),
         ),
-        (
-            "noise_guard_sha256",
-            repo.join("tools/benchctl/src/noise.rs"),
-        ),
-        (
-            "continuous_noise_guard_sha256",
-            repo.join("tools/benchctl/src/noise.rs"),
-        ),
     ];
     let mut identity = Map::new();
     for (field, path) in files {
@@ -221,6 +213,13 @@ fn kv_source_identity(repo: &Path, support: &Value) -> Result<Value> {
             bail!("KV runtime provenance mismatch: {field}");
         }
         identity.insert(field.to_owned(), json!(actual));
+    }
+    let noise = noise_source_sha256(repo)?;
+    for field in ["noise_guard_sha256", "continuous_noise_guard_sha256"] {
+        if support.get(field).and_then(Value::as_str) != Some(noise.as_str()) {
+            bail!("KV runtime provenance mismatch: {field}");
+        }
+        identity.insert(field.to_owned(), json!(noise));
     }
     for field in [
         "admission_policy",

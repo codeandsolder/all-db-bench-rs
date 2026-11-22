@@ -87,7 +87,7 @@ INSTALLER_SHA=$(sha256sum "$ROOT/scripts/ensure-tsdb-binaries.sh" | awk '{print 
 PROCESS_CAPTURE_SHA=$BENCHCTL_SHA
 MERGE_RESULT_SHA=$BENCHCTL_SHA
 SUMMARIZER_SHA=$BENCHCTL_SHA
-NOISE_GUARD_SHA=$(sha256sum "$ROOT/tools/benchctl/src/noise.rs" | awk '{print $1}')
+NOISE_GUARD_SHA=$("$ROOT/scripts/noise-source-sha256.sh" "$ROOT")
 free_bytes=$(df -B1 --output=avail "$DATA_DIR" | tail -n1 | tr -d ' ')
 min_free_bytes=$((MIN_FREE_GIB * 1024 * 1024 * 1024))
 if (( free_bytes < min_free_bytes )); then

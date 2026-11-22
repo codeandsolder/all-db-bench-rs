@@ -34,7 +34,7 @@ if [[ -n "${ROCKS_BENCH_BIN:-}" ]]; then ROCKS_BIN="$ROCKS_BENCH_BIN"; ROCKS_BUI
 elif [[ "$PROFILE" == smoke ]]; then ROCKS_BIN="$ROCKS_TARGET_DIR/debug/surrealdb-rocksdb-recordbench"; ROCKS_BUILD_PROFILE=debug; "$ROOT/scripts/cargo-local-1.99.sh" build --locked --manifest-path "$ROOT/engines/surrealdb-rocksdb/Cargo.toml" --target-dir "$ROCKS_TARGET_DIR" || exit $?
 else ROCKS_BIN="$ROCKS_TARGET_DIR/release/surrealdb-rocksdb-recordbench"; ROCKS_BUILD_PROFILE=release; "$ROOT/scripts/cargo-local-1.99.sh" build --release --locked --manifest-path "$ROOT/engines/surrealdb-rocksdb/Cargo.toml" --target-dir "$ROCKS_TARGET_DIR" || exit $?; fi
 BIN_SHA=$(sha256sum "$BIN" | awk '{print $1}'); ROCKS_SHA=$(sha256sum "$ROCKS_BIN" | awk '{print $1}')
-RUNNER_SHA=$(sha256sum "$ROOT/scripts/run-record-matrix.sh" | awk '{print $1}'); NOISE_SHA=$(sha256sum "$ROOT/tools/benchctl/src/noise.rs" | awk '{print $1}'); CONTINUOUS_NOISE_SHA=$(sha256sum "$ROOT/tools/benchctl/src/noise.rs" | awk '{print $1}')
+RUNNER_SHA=$(sha256sum "$ROOT/scripts/run-record-matrix.sh" | awk '{print $1}'); NOISE_SHA=$("$ROOT/scripts/noise-source-sha256.sh" "$ROOT"); CONTINUOUS_NOISE_SHA=$NOISE_SHA
 ADMISSION_POLICY=pre-io+pre/continuous/post-external-v3
 CONTINUOUS_NOISE_SAMPLE_MS=${CONTINUOUS_NOISE_SAMPLE_MS:-250}
 CONTINUOUS_NOISE_MAX_CPU_PERCENT=${CONTINUOUS_NOISE_MAX_CPU_PERCENT:-50}

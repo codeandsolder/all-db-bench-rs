@@ -31,11 +31,12 @@ pub struct ContinuousNoiseArgs<'a> {
 #[cfg(test)]
 mod tests {
     use super::{
-        continuous::{ProcStat, contamination_reasons, continuous_descendants},
+        continuous::{contamination_reasons, continuous_descendants},
         external::{
             ProcessRow, aggregate_foreign_cpu_percent, classify_process, cpu_percent_from_samples,
             descendant_pids, is_kernel_thread, low_priority_sccache_tree,
         },
+        proc::ProcStat,
     };
     use std::collections::{BTreeMap, BTreeSet};
 
@@ -234,6 +235,7 @@ mod tests {
                 10,
                 ProcStat {
                     ppid: 1,
+                    pgrp: 10,
                     nice: 0,
                     cpu_ticks: 0,
                     start_ticks: 100,
@@ -243,6 +245,7 @@ mod tests {
                 11,
                 ProcStat {
                     ppid: 10,
+                    pgrp: 10,
                     nice: 0,
                     cpu_ticks: 0,
                     start_ticks: 101,
@@ -252,6 +255,7 @@ mod tests {
                 12,
                 ProcStat {
                     ppid: 11,
+                    pgrp: 10,
                     nice: 0,
                     cpu_ticks: 0,
                     start_ticks: 102,
@@ -261,6 +265,7 @@ mod tests {
                 20,
                 ProcStat {
                     ppid: 1,
+                    pgrp: 10,
                     nice: 0,
                     cpu_ticks: 0,
                     start_ticks: 200,

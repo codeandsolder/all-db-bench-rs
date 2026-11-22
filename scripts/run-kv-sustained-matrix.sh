@@ -51,8 +51,8 @@ fi
 RUNNER_SHA=$(sha256sum "$ROOT/scripts/run-kv-sustained-matrix.sh" | awk '{print $1}')
 POLICY_SHA=$(sha256sum "$ROOT/scripts/sustained-matrix-policy.sh" | awk '{print $1}')
 COMMON_SHA=$(sha256sum "$ROOT/scripts/performance-runner-common.sh" | awk '{print $1}')
-NOISE_SHA=$(sha256sum "$ROOT/tools/benchctl/src/noise.rs" | awk '{print $1}')
-CONTINUOUS_NOISE_SHA=$(sha256sum "$ROOT/tools/benchctl/src/noise.rs" | awk '{print $1}')
+NOISE_SHA=$("$ROOT/scripts/noise-source-sha256.sh" "$ROOT")
+CONTINUOUS_NOISE_SHA=$NOISE_SHA
 CONTINUOUS_NOISE_COMMON_SHA=$(sha256sum "$ROOT/scripts/continuous-noise-runner-common.sh" | awk '{print $1}')
 HOST_NAME=$(hostname); MACHINE_ID_SHA256=$("$ROOT/scripts/host-machine-id-sha256.sh")
 FILESYSTEM=$(findmnt -n -o FSTYPE --target "$DATA_DIR"); SOURCE=$(findmnt -n -o SOURCE --target "$DATA_DIR")

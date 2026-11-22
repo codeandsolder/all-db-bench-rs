@@ -1,6 +1,6 @@
 use super::{
     ExternalNoiseArgs,
-    proc::{ancestor_pids, clock_ticks_per_second, proc_pids, uptime_seconds},
+    proc::{ancestor_pids, clock_ticks_per_second, proc_pids, proc_stat, uptime_seconds},
 };
 use anyhow::{Context, Result, bail};
 use regex::Regex;
@@ -70,13 +70,7 @@ pub(super) fn classify_process(
 }
 
 fn parse_proc_cpu(pid: u32) -> Option<(u64, u64)> {
-    let raw = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    let close = raw.rfind(')')?;
-    let fields = raw.get(close + 2..)?.split_whitespace().collect::<Vec<_>>();
-    let utime = fields.get(11)?.parse::<u64>().ok()?;
-    let stime = fields.get(12)?.parse::<u64>().ok()?;
-    let start = fields.get(19)?.parse::<u64>().ok()?;
-    Some((utime.saturating_add(stime), start))
+    proc_stat(pid).map(|stat| (stat.cpu_ticks, stat.start_ticks))
 }
 
 pub(super) fn cpu_percent_from_samples(
@@ -144,14 +138,17 @@ fn metadata_rows() -> Result<Vec<MetadataRow>> {
 }
 
 fn process_rows(sample_seconds: f64) -> Result<Vec<ProcessRow>> {
-    let before = proc_pids()
+    let before = proc_pids()?
         .into_iter()
         .filter_map(|pid| parse_proc_cpu(pid).map(|stat| (pid, stat)))
         .collect::<BTreeMap<_, _>>();
     let started = Instant::now();
-    thread::sleep(Duration::from_secs_f64(sample_seconds.max(0.0)));
+    thread::sleep(
+        Duration::try_from_secs_f64(sample_seconds.max(0.0))
+            .context("sample period out of range")?,
+    );
     let elapsed = started.elapsed().as_secs_f64().max(1e-9);
-    let uptime_s = uptime_seconds();
+    let uptime_s = uptime_seconds()?;
     let ticks = clock_ticks_per_second()?;
     let mut rows = Vec::new();
     for (pid, ppid, nice, comm, args) in metadata_rows()? {

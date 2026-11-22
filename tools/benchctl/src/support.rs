@@ -1,4 +1,4 @@
-use crate::file_hash::{lower_hex, sha256};
+use crate::file_hash::{lower_hex, noise_source_sha256, sha256};
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
@@ -189,14 +189,6 @@ fn validate_runtime_provenance(
             "concurrency_policy_sha256",
             repo.join("scripts/concurrency-matrix-policy.sh"),
         ),
-        (
-            "noise_guard_sha256",
-            repo.join("tools/benchctl/src/noise.rs"),
-        ),
-        (
-            "continuous_noise_guard_sha256",
-            repo.join("tools/benchctl/src/noise.rs"),
-        ),
     ] {
         let actual = sha256(&path)?;
         if identity[key].as_str() != Some(actual.as_str()) {
@@ -204,6 +196,12 @@ fn validate_runtime_provenance(
                 "runtime provenance mismatch for {key} in {label}: {:?} != {actual}",
                 identity[key]
             );
+        }
+    }
+    let noise = noise_source_sha256(repo)?;
+    for key in ["noise_guard_sha256", "continuous_noise_guard_sha256"] {
+        if identity[key].as_str() != Some(noise.as_str()) {
+            bail!("runtime provenance mismatch for {key} in {label}");
         }
     }
     let head = git_head(repo)?;
@@ -418,8 +416,8 @@ pub fn run_support_identity(
 #[cfg(test)]
 mod tests {
     use super::{
-        CONTINUOUS_ADMISSION, canonical_identity_sha256, git_head, sha256, support_identity,
-        verify_plan_identity,
+        CONTINUOUS_ADMISSION, canonical_identity_sha256, git_head, noise_source_sha256, sha256,
+        support_identity, verify_plan_identity,
     };
     use anyhow::{Context, Result};
     use serde_json::{Value, json};
@@ -441,8 +439,8 @@ mod tests {
             "concurrency_runner_common_sha256": sha256(&repo.join("scripts/concurrency-runner-common.sh"))?,
             "continuous_noise_common_sha256": sha256(&repo.join("scripts/continuous-noise-runner-common.sh"))?,
             "concurrency_policy_sha256": sha256(&repo.join("scripts/concurrency-matrix-policy.sh"))?,
-            "noise_guard_sha256": sha256(&repo.join("tools/benchctl/src/noise.rs"))?,
-            "continuous_noise_guard_sha256": sha256(&repo.join("tools/benchctl/src/noise.rs"))?,
+            "noise_guard_sha256": noise_source_sha256(&repo)?,
+            "continuous_noise_guard_sha256": noise_source_sha256(&repo)?,
             "benchmark_binary_sha256": "a".repeat(64),
             "build_profile": "external",
             "hostname": "test-host",
