@@ -13,8 +13,8 @@ use super::{
     data::key,
     engine::Engine,
     engine_policy::compression_mapping,
-    fixed_work::{WorkExecutor, WorkMode, WorkSpec, WorkStats},
-    lifecycle::{DatasetSpec, prefill, warm_existing_reads},
+    fixed_work::{FixedWorkArgs, WorkExecutor, WorkMode, WorkStats},
+    lifecycle::{prefill, warm_existing_reads},
     metrics::{ProcDelta, Quantiles, SettleMeasurement, SystemDelta, measure_settle, quantiles},
     types::{
         AccessPattern, Durability, EngineCompression, EngineKind, KeyShape, ValuePattern, Workload,
@@ -25,40 +25,10 @@ use super::{
 #[derive(Debug, Parser)]
 #[command(about = "One fresh database per invocation; output is one JSON record")]
 struct Args {
-    #[arg(long, value_enum)]
-    engine: EngineKind,
-    #[arg(long, value_enum)]
-    durability: Durability,
-    #[arg(long, value_enum)]
-    workload: Workload,
-    #[arg(long, default_value_t = 100_000)]
-    records: u64,
-    #[arg(long, default_value_t = 50_000)]
-    ops: u64,
-    #[arg(long, default_value_t = 256)]
-    value_bytes: usize,
-    #[arg(long, value_enum, default_value_t = ValuePattern::PseudoRandom)]
-    value_pattern: ValuePattern,
+    #[command(flatten)]
+    work: FixedWorkArgs,
     #[arg(long, value_enum, default_value_t = EngineCompression::Default)]
     engine_compression: EngineCompression,
-    #[arg(long, default_value_t = 8)]
-    key_bytes: usize,
-    #[arg(long, value_enum, default_value_t = KeyShape::Sequential)]
-    key_shape: KeyShape,
-    #[arg(long, value_enum, default_value_t = AccessPattern::Auto)]
-    access_pattern: AccessPattern,
-    #[arg(long, default_value_t = 0)]
-    miss_percent: u8,
-    #[arg(long, value_enum, default_value_t = WritePattern::Append)]
-    write_pattern: WritePattern,
-    #[arg(long, default_value_t = 100)]
-    txn_size: usize,
-    #[arg(long, default_value_t = 100)]
-    scan_len: u64,
-    #[arg(long, default_value_t = 1)]
-    trial: u32,
-    #[arg(long, default_value_t = 0x5eed_2026)]
-    seed: u64,
     #[arg(long, default_value = "baseline")]
     scenario: String,
     #[command(flatten)]
@@ -116,7 +86,12 @@ async fn verify_recovery(
     for id in 0..expected_prefix_records {
         prefix.observe(
             engine
-                .read(&key(id, args.key_bytes, args.key_shape, args.seed))
+                .read(&key(
+                    id,
+                    args.work.key_bytes,
+                    args.work.key_shape,
+                    args.work.seed,
+                ))
                 .await?
                 .is_some(),
         );
@@ -125,7 +100,12 @@ async fn verify_recovery(
     for id in expected_prefix_records..expected_prefix_records.saturating_add(tail_records) {
         tail.observe(
             engine
-                .read(&key(id, args.key_bytes, args.key_shape, args.seed))
+                .read(&key(
+                    id,
+                    args.work.key_bytes,
+                    args.work.key_shape,
+                    args.work.seed,
+                ))
                 .await?
                 .is_some(),
         );
@@ -135,7 +115,7 @@ async fn verify_recovery(
         tail_records,
         &prefix,
         &tail,
-        args.txn_size,
+        args.work.txn_size,
         started.elapsed().as_secs_f64(),
     ))
 }
@@ -150,13 +130,18 @@ struct Prepared {
 async fn prepare(args: &Args, path: &Path) -> Result<Prepared> {
     let open = MeasurementInterval::start();
     let mut engine = if args.engine_compression == EngineCompression::Default {
-        Engine::open(args.engine, args.durability, path).await?
+        Engine::open(args.work.engine, args.work.durability, path).await?
     } else {
-        Engine::open_with_compression(args.engine, args.durability, path, args.engine_compression)
-            .await?
+        Engine::open_with_compression(
+            args.work.engine,
+            args.work.durability,
+            path,
+            args.engine_compression,
+        )
+        .await?
     };
     let open = open.finish();
-    let dataset = args.work_spec().dataset;
+    let dataset = args.work.spec().dataset;
     let prefill_s = if args.single.skip_prefill {
         0.0
     } else {
@@ -183,8 +168,8 @@ async fn prepare(args: &Args, path: &Path) -> Result<Prepared> {
         &mut engine,
         dataset,
         args.single.warmup_reads,
-        args.access_pattern,
-        args.workload,
+        args.work.access_pattern,
+        args.work.workload,
     )
     .await?;
     let warmup_s = warmup_started.elapsed().as_secs_f64();
@@ -202,27 +187,20 @@ async fn prepare(args: &Args, path: &Path) -> Result<Prepared> {
     })
 }
 
-impl Args {
-    const fn work_spec(&self) -> WorkSpec {
-        WorkSpec {
-            dataset: DatasetSpec {
-                records: self.records,
-                key_bytes: self.key_bytes,
-                key_shape: self.key_shape,
-                seed: self.seed,
-                value_bytes: self.value_bytes,
-                value_pattern: self.value_pattern,
-                durability: self.durability,
-            },
-            workload: self.workload,
-            total_ops: self.ops,
-            access_pattern: self.access_pattern,
-            miss_percent: self.miss_percent,
-            write_pattern: self.write_pattern,
-            txn_size: self.txn_size,
-            scan_len: self.scan_len,
-        }
+fn validate_args(args: &Args, spec: super::fixed_work::WorkSpec) -> Result<()> {
+    spec.validate(args.work.engine, 0)?;
+    if args.single.progress_file.is_some()
+        && !matches!(args.work.workload, Workload::TinyTxn | Workload::WriteBurst)
+    {
+        bail!("--progress-file requires tiny-txn or write-burst");
     }
+    if (args.single.progress_file.is_some() || args.single.verify_prefix_records.is_some())
+        && args.work.write_pattern != WritePattern::Append
+    {
+        bail!("recovery progress/verification requires --write-pattern append");
+    }
+
+    Ok(())
 }
 
 /// Run one single-client benchmark invocation and emit its measurement record.
@@ -231,35 +209,25 @@ impl Args {
 /// Returns an error for invalid arguments, backend failures, verification failures, or result I/O failures.
 pub async fn run() -> Result<()> {
     let args = Args::parse();
-    let spec = args.work_spec();
-    spec.validate(args.engine, 0)?;
-    if args.single.progress_file.is_some()
-        && !matches!(args.workload, Workload::TinyTxn | Workload::WriteBurst)
-    {
-        bail!("--progress-file requires tiny-txn or write-burst");
-    }
-    if (args.single.progress_file.is_some() || args.single.verify_prefix_records.is_some())
-        && args.write_pattern != WritePattern::Append
-    {
-        bail!("recovery progress/verification requires --write-pattern append");
-    }
+    let spec = args.work.spec();
+    validate_args(&args, spec)?;
 
-    let mapping = args.engine.durability_mapping(args.durability)?;
-    let compression_mapping = compression_mapping(args.engine, args.engine_compression)?;
+    let mapping = args.work.engine.durability_mapping(args.work.durability)?;
+    let compression_mapping = compression_mapping(args.work.engine, args.engine_compression)?;
     let run_name = format!(
         "{:?}-{:?}-{:?}-c{:?}-n{}-k{}-{:?}-v{}-{:?}-tx{}-scan{}-trial{}",
-        args.engine,
-        args.durability,
-        args.workload,
+        args.work.engine,
+        args.work.durability,
+        args.work.workload,
         args.engine_compression,
-        args.records,
-        args.key_bytes,
-        args.key_shape,
-        args.value_bytes,
-        args.value_pattern,
-        args.txn_size,
-        args.scan_len,
-        args.trial
+        args.work.records,
+        args.work.key_bytes,
+        args.work.key_shape,
+        args.work.value_bytes,
+        args.work.value_pattern,
+        args.work.txn_size,
+        args.work.scan_len,
+        args.work.trial
     )
     .to_lowercase()
     .replace('_', "-");
@@ -278,16 +246,18 @@ pub async fn run() -> Result<()> {
         spec,
         all_db_bench_common::concurrency::WorkPartition {
             offset: 0,
-            count: args.ops,
+            count: args.work.ops,
         },
         WorkMode::Single(&args.single),
-        args.seed ^ u64::from(args.trial),
+        args.work.seed ^ u64::from(args.work.trial),
         None,
         stats,
     )?;
     executor.run(&mut engine).await?;
     let stats = executor.stats;
-    let work = foreground.finish().fixed_work(args.ops, stats.completed)?;
+    let work = foreground
+        .finish()
+        .fixed_work(args.work.ops, stats.completed)?;
     let post_workload_settle = measure_settle(
         &path,
         args.settle_ms,
@@ -300,25 +270,25 @@ pub async fn run() -> Result<()> {
 
     let result = Measurement {
         format_version: 8,
-        engine: args.engine,
-        engine_version: args.engine.version(),
-        durability: args.durability,
+        engine: args.work.engine,
+        engine_version: args.work.engine.version(),
+        durability: args.work.durability,
         durability_mapping: mapping,
-        workload: args.workload,
-        records: args.records,
-        value_bytes: args.value_bytes,
-        value_pattern: args.value_pattern,
+        workload: args.work.workload,
+        records: args.work.records,
+        value_bytes: args.work.value_bytes,
+        value_pattern: args.work.value_pattern,
         engine_compression: args.engine_compression,
         engine_compression_mapping: compression_mapping,
-        key_bytes: args.key_bytes,
-        key_shape: args.key_shape,
-        access_pattern: args.access_pattern,
-        miss_percent: args.miss_percent,
-        write_pattern: args.write_pattern,
-        txn_size: args.txn_size,
-        scan_len: args.scan_len,
-        trial: args.trial,
-        seed: args.seed,
+        key_bytes: args.work.key_bytes,
+        key_shape: args.work.key_shape,
+        access_pattern: args.work.access_pattern,
+        miss_percent: args.work.miss_percent,
+        write_pattern: args.work.write_pattern,
+        txn_size: args.work.txn_size,
+        scan_len: args.work.scan_len,
+        trial: args.work.trial,
+        seed: args.work.seed,
         scenario: args.scenario.clone(),
         open_process: open.process,
         open_system_delta: open.system_delta,

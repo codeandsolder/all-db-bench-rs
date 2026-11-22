@@ -34,10 +34,10 @@ pub(super) async fn run_client<C: BackendOps + Send>(
         None
     };
     let mut executor = WorkExecutor::new(
-        args.work_spec(),
+        args.work.spec(),
         ops,
         WorkMode::Concurrent,
-        args.seed ^ u64::from(args.trial) ^ salt,
+        args.work.seed ^ u64::from(args.work.trial) ^ salt,
         pool,
         WorkStats::new()?,
     )?;
@@ -66,17 +66,28 @@ pub(super) async fn verify_bounded_churn_state<C: BackendOps + Send>(
     args: &Args,
 ) -> Result<()> {
     for slot in 0..args.bounded_churn_slots {
-        let a_id = args.records.saturating_add(slot);
+        let a_id = args.work.records.saturating_add(slot);
         let b_id = args
+            .work
             .records
             .saturating_add(args.bounded_churn_slots)
             .saturating_add(slot);
         let a = client
-            .read(&key(a_id, args.key_bytes, args.key_shape, args.seed))
+            .read(&key(
+                a_id,
+                args.work.key_bytes,
+                args.work.key_shape,
+                args.work.seed,
+            ))
             .await?
             .is_some();
         let b = client
-            .read(&key(b_id, args.key_bytes, args.key_shape, args.seed))
+            .read(&key(
+                b_id,
+                args.work.key_bytes,
+                args.work.key_shape,
+                args.work.seed,
+            ))
             .await?
             .is_some();
         if a == b {

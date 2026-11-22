@@ -79,12 +79,22 @@ pub fn verify_binary(path: &Path, expected_sha256: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn acquire_lock(path: &Path) -> Result<Option<File>> {
+pub struct CampaignLock(File);
+
+impl Drop for CampaignLock {
+    fn drop(&mut self) {
+        // Explicitly release the open-file-description lock even if a child
+        // created by a concurrent fork still holds an inherited descriptor.
+        let _ = FileExt::unlock(&self.0);
+    }
+}
+
+pub fn acquire_lock(path: &Path) -> Result<Option<CampaignLock>> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create lock directory {}", parent.display()))?;
     }
-    let mut file = OpenOptions::new()
+    let file = OpenOptions::new()
         .create(true)
         .read(true)
         .write(true)
@@ -99,13 +109,15 @@ pub fn acquire_lock(path: &Path) -> Result<Option<File>> {
                 .with_context(|| format!("failed to lock campaign lock {}", path.display()));
         }
     }
+    let mut guard = CampaignLock(file);
+    let file = &mut guard.0;
     file.set_len(0)
         .with_context(|| format!("failed to truncate campaign lock {}", path.display()))?;
     writeln!(file, "pid={}", std::process::id())
         .with_context(|| format!("failed to write campaign lock {}", path.display()))?;
     file.flush()
         .with_context(|| format!("failed to flush campaign lock {}", path.display()))?;
-    Ok(Some(file))
+    Ok(Some(guard))
 }
 
 fn utc_now() -> Result<String> {
@@ -592,8 +604,10 @@ mod tests {
         let path = dir.0.join("campaign.lock");
         let first = acquire_lock(&path)?.context("first lock acquisition")?;
         assert!(acquire_lock(&path)?.is_none());
+        let inherited = first.0.try_clone()?;
         drop(first);
         assert!(acquire_lock(&path)?.is_some());
+        drop(inherited);
         Ok(())
     }
 

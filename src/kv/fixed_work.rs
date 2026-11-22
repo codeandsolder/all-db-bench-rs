@@ -3,7 +3,9 @@ use super::{
     data::{key, sample_existing_id, sample_read_id, value},
     lifecycle::DatasetSpec,
     metrics::{hist, record},
-    types::{AccessPattern, EngineKind, KeyShape, Workload, WritePattern},
+    types::{
+        AccessPattern, Durability, EngineKind, KeyShape, ValuePattern, Workload, WritePattern,
+    },
     workload::{bounded_churn_swap, mixed_epoch_targets},
 };
 use all_db_bench_common::{concurrency::WorkPartition, single::SingleOptions};
@@ -11,6 +13,65 @@ use anyhow::{Context, Result, bail};
 use hdrhistogram::Histogram;
 use rand::{RngExt, SeedableRng, rngs::SmallRng, seq::SliceRandom};
 use std::time::Instant;
+
+#[derive(Clone, Debug, clap::Args)]
+pub(super) struct FixedWorkArgs {
+    #[arg(long, value_enum)]
+    pub(super) engine: EngineKind,
+    #[arg(long, value_enum)]
+    pub(super) durability: Durability,
+    #[arg(long, value_enum)]
+    pub(super) workload: Workload,
+    #[arg(long, default_value_t = 100_000)]
+    pub(super) records: u64,
+    #[arg(long, default_value_t = 50_000)]
+    pub(super) ops: u64,
+    #[arg(long, default_value_t = 256)]
+    pub(super) value_bytes: usize,
+    #[arg(long, value_enum, default_value_t = ValuePattern::PseudoRandom)]
+    pub(super) value_pattern: ValuePattern,
+    #[arg(long, default_value_t = 8)]
+    pub(super) key_bytes: usize,
+    #[arg(long, value_enum, default_value_t = KeyShape::Sequential)]
+    pub(super) key_shape: KeyShape,
+    #[arg(long, value_enum, default_value_t = AccessPattern::Auto)]
+    pub(super) access_pattern: AccessPattern,
+    #[arg(long, default_value_t = 0)]
+    pub(super) miss_percent: u8,
+    #[arg(long, value_enum, default_value_t = WritePattern::Append)]
+    pub(super) write_pattern: WritePattern,
+    #[arg(long, default_value_t = 100)]
+    pub(super) txn_size: usize,
+    #[arg(long, default_value_t = 100)]
+    pub(super) scan_len: u64,
+    #[arg(long, default_value_t = 1)]
+    pub(super) trial: u32,
+    #[arg(long, default_value_t = 0x5eed_2026)]
+    pub(super) seed: u64,
+}
+
+impl FixedWorkArgs {
+    pub(super) const fn spec(&self) -> WorkSpec {
+        WorkSpec {
+            dataset: DatasetSpec {
+                records: self.records,
+                key_bytes: self.key_bytes,
+                key_shape: self.key_shape,
+                seed: self.seed,
+                value_bytes: self.value_bytes,
+                value_pattern: self.value_pattern,
+                durability: self.durability,
+            },
+            workload: self.workload,
+            total_ops: self.ops,
+            access_pattern: self.access_pattern,
+            miss_percent: self.miss_percent,
+            write_pattern: self.write_pattern,
+            txn_size: self.txn_size,
+            scan_len: self.scan_len,
+        }
+    }
+}
 
 #[derive(Clone, Copy)]
 pub(super) struct WorkSpec {

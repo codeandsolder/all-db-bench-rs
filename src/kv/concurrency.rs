@@ -1,7 +1,7 @@
 use super::{
     engine::Engine,
-    fixed_work::WorkSpec,
-    lifecycle::{DatasetSpec, prefill, warm_existing_reads},
+    fixed_work::FixedWorkArgs,
+    lifecycle::{prefill, warm_existing_reads},
     metrics::{
         ProcDelta, Quantiles, SystemDelta, SystemSnapshot, count_as_f64, dir_size, hist,
         peak_rss_kib, quantiles,
@@ -67,47 +67,16 @@ impl DatabasePreparation {
 #[derive(Clone, Debug, Parser)]
 #[command(about = "Shared-database multi-client scaling benchmark")]
 struct Args {
-    #[arg(long, value_enum)]
-    engine: EngineKind,
-    #[arg(long, value_enum)]
-    durability: Durability,
-    #[arg(long, value_enum)]
-    workload: Workload,
-    #[arg(long, default_value_t = 100_000)]
-    records: u64,
-    /// Total logical operations across all clients, not operations per client.
-    #[arg(long, default_value_t = 50_000)]
-    ops: u64,
-    #[arg(long, default_value_t = 256)]
-    value_bytes: usize,
-    #[arg(long, value_enum, default_value_t = ValuePattern::PseudoRandom)]
-    value_pattern: ValuePattern,
-    #[arg(long, default_value_t = 8)]
-    key_bytes: usize,
-    #[arg(long, value_enum, default_value_t = KeyShape::Sequential)]
-    key_shape: KeyShape,
-    #[arg(long, value_enum, default_value_t = AccessPattern::Auto)]
-    access_pattern: AccessPattern,
-    #[arg(long, default_value_t = 0)]
-    miss_percent: u8,
-    #[arg(long, value_enum, default_value_t = WritePattern::Append)]
-    write_pattern: WritePattern,
+    #[command(flatten)]
+    work: FixedWorkArgs,
     #[arg(long, value_enum, default_value_t = StateEvolution::Growth)]
     state_evolution: StateEvolution,
     #[arg(long, default_value_t = 8_192)]
     bounded_churn_slots: u64,
     #[arg(long, default_value_t = false)]
     verify_bounded_state: bool,
-    #[arg(long, default_value_t = 100)]
-    txn_size: usize,
-    #[arg(long, default_value_t = 100)]
-    scan_len: u64,
     #[arg(long, default_value_t = 1)]
     clients: usize,
-    #[arg(long, default_value_t = 1)]
-    trial: u32,
-    #[arg(long, default_value_t = 0x5eed_2026)]
-    seed: u64,
     #[arg(long, default_value = "concurrency")]
     scenario: String,
     #[arg(long, default_value = "data")]
@@ -208,7 +177,7 @@ fn run_clients<C: BackendOps + Clone + Send + 'static>(
     runtime: &tokio::runtime::Handle,
 ) -> Result<AggregateRun> {
     let slots = args.churn_pool_slots();
-    let tasks = partition_work(args.ops, args.clients, 1)?
+    let tasks = partition_work(args.work.ops, args.clients, 1)?
         .into_iter()
         .zip(partition_work(slots, args.clients, 1)?)
         .enumerate()
@@ -409,22 +378,22 @@ fn report_measurement(
     Ok(Measurement {
         format_version: 6,
         lane: "kv-concurrency",
-        engine: args.engine,
-        engine_version: args.engine.version(),
-        durability: args.durability,
+        engine: args.work.engine,
+        engine_version: args.work.engine.version(),
+        durability: args.work.durability,
         durability_mapping,
-        workload: args.workload,
-        records: args.records,
-        ops_requested: args.ops,
+        workload: args.work.workload,
+        records: args.work.records,
+        ops_requested: args.work.ops,
         ops_completed: run.completed,
         clients: args.clients,
-        value_bytes: args.value_bytes,
-        value_pattern: args.value_pattern,
-        key_bytes: args.key_bytes,
-        key_shape: args.key_shape,
-        access_pattern: args.access_pattern,
-        miss_percent: args.miss_percent,
-        write_pattern: args.write_pattern,
+        value_bytes: args.work.value_bytes,
+        value_pattern: args.work.value_pattern,
+        key_bytes: args.work.key_bytes,
+        key_shape: args.work.key_shape,
+        access_pattern: args.work.access_pattern,
+        miss_percent: args.work.miss_percent,
+        write_pattern: args.work.write_pattern,
         state_evolution: args.state_evolution,
         bounded_churn_slots: if args.state_evolution == StateEvolution::Bounded {
             args.bounded_churn_slots
@@ -433,10 +402,10 @@ fn report_measurement(
         },
         verify_bounded_state: args.verify_bounded_state,
         bounded_state_verified: run.bounded_state_verified,
-        txn_size: args.txn_size,
-        scan_len: args.scan_len,
-        trial: args.trial,
-        seed: args.seed,
+        txn_size: args.work.txn_size,
+        scan_len: args.work.scan_len,
+        trial: args.work.trial,
+        seed: args.work.seed,
         scenario: args.scenario.clone(),
         setup,
         elapsed_s: run.elapsed_s,
@@ -462,30 +431,9 @@ fn report_measurement(
 }
 
 impl Args {
-    const fn work_spec(&self) -> WorkSpec {
-        WorkSpec {
-            dataset: DatasetSpec {
-                records: self.records,
-                key_bytes: self.key_bytes,
-                key_shape: self.key_shape,
-                seed: self.seed,
-                value_bytes: self.value_bytes,
-                value_pattern: self.value_pattern,
-                durability: self.durability,
-            },
-            workload: self.workload,
-            total_ops: self.ops,
-            access_pattern: self.access_pattern,
-            miss_percent: self.miss_percent,
-            write_pattern: self.write_pattern,
-            txn_size: self.txn_size,
-            scan_len: self.scan_len,
-        }
-    }
-
     const fn uses_churn_pool(&self) -> bool {
         matches!(self.state_evolution, StateEvolution::Bounded)
-            && matches!(self.workload, Workload::Balanced | Workload::Churn)
+            && matches!(self.work.workload, Workload::Balanced | Workload::Churn)
     }
 
     const fn churn_pool_slots(&self) -> u64 {
@@ -498,32 +446,33 @@ impl Args {
 }
 
 fn validate_args(args: &Args) -> Result<()> {
-    args.work_spec()
-        .validate(args.engine, args.churn_pool_slots())?;
-    if args.clients == 0 || args.clients as u64 > args.ops {
+    args.work
+        .spec()
+        .validate(args.work.engine, args.churn_pool_slots())?;
+    if args.clients == 0 || args.clients as u64 > args.work.ops {
         bail!("--clients must be in 1..=ops");
     }
     if args.verify_bounded_state && !args.uses_churn_pool() {
         bail!("--verify-bounded-state requires bounded balanced or churn workload");
     }
     if args.state_evolution == StateEvolution::Bounded {
-        if matches!(args.workload, Workload::DeleteBurst) {
+        if matches!(args.work.workload, Workload::DeleteBurst) {
             bail!(
                 "bounded state evolution is unsupported for delete-burst; it is a finite transition diagnostic"
             );
         }
-        if matches!(args.workload, Workload::TinyTxn | Workload::WriteBurst)
-            && args.write_pattern == WritePattern::Append
+        if matches!(args.work.workload, Workload::TinyTxn | Workload::WriteBurst)
+            && args.work.write_pattern == WritePattern::Append
         {
             bail!(
                 "bounded tiny-txn/write-burst requires update-uniform or update-hot write pattern"
             );
         }
-        if matches!(args.workload, Workload::Balanced | Workload::Churn) {
-            if args.write_pattern != WritePattern::UpdateUniform {
+        if matches!(args.work.workload, Workload::Balanced | Workload::Churn) {
+            if args.work.write_pattern != WritePattern::UpdateUniform {
                 bail!("bounded balanced/churn requires canonical write-pattern=update-uniform");
             }
-            if args.txn_size < 2 {
+            if args.work.txn_size < 2 {
                 bail!(
                     "bounded balanced/churn requires txn-size >= 2 for paired delete/insert toggles"
                 );
@@ -536,7 +485,7 @@ fn validate_args(args: &Args) -> Result<()> {
             }
         }
     }
-    if matches!(args.engine, EngineKind::Lkv) {
+    if matches!(args.work.engine, EngineKind::Lkv) {
         bail!(
             "lkv concurrency unsupported: no native shared/cloneable writer handle; external serialization is intentionally not benchmarked"
         );
@@ -548,18 +497,18 @@ fn validate_args(args: &Args) -> Result<()> {
 fn prepare_run_path(args: &Args, mode: DatabaseMode) -> Result<PathBuf> {
     let run_name = format!(
         "{:?}-{:?}-{:?}-c{}-n{}-k{}-{:?}-v{}-{:?}-tx{}-scan{}-trial{}",
-        args.engine,
-        args.durability,
-        args.workload,
+        args.work.engine,
+        args.work.durability,
+        args.work.workload,
         args.clients,
-        args.records,
-        args.key_bytes,
-        args.key_shape,
-        args.value_bytes,
-        args.value_pattern,
-        args.txn_size,
-        args.scan_len,
-        args.trial,
+        args.work.records,
+        args.work.key_bytes,
+        args.work.key_shape,
+        args.work.value_bytes,
+        args.work.value_pattern,
+        args.work.txn_size,
+        args.work.scan_len,
+        args.work.trial,
     )
     .to_lowercase()
     .replace('_', "-");
@@ -574,15 +523,15 @@ pub async fn run() -> Result<()> {
     let args = Args::parse();
     validate_args(&args)?;
 
-    let durability_mapping = args.engine.durability_mapping(args.durability)?;
+    let durability_mapping = args.work.engine.durability_mapping(args.work.durability)?;
     let mode = args.database.mode();
     let path = prepare_run_path(&args, mode)?;
 
     let (setup, (concurrency_handle, run)) = {
         let open_started = Instant::now();
-        let mut engine = Engine::open(args.engine, args.durability, &path).await?;
+        let mut engine = Engine::open(args.work.engine, args.work.durability, &path).await?;
         let open_s = open_started.elapsed().as_secs_f64();
-        let dataset = args.work_spec().dataset;
+        let dataset = args.work.spec().dataset;
 
         let prefill_s = if mode == DatabaseMode::Reuse {
             0.0
@@ -603,8 +552,8 @@ pub async fn run() -> Result<()> {
             &mut engine,
             dataset,
             args.warmup_reads,
-            args.access_pattern,
-            args.workload,
+            args.work.access_pattern,
+            args.work.workload,
         )
         .await?;
         let warmup_s = warmup_started.elapsed().as_secs_f64();
@@ -618,11 +567,11 @@ pub async fn run() -> Result<()> {
             dispatch(engine, &args).await?,
         )
     };
-    if run.completed != args.ops {
+    if run.completed != args.work.ops {
         bail!(
             "concurrency run completed {} operations, expected {}",
             run.completed,
-            args.ops
+            args.work.ops
         );
     }
 
