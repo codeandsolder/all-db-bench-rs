@@ -21,9 +21,7 @@ build_root="${RUNNER_TEMP:-$HOME/build}"
 mkdir -p "$build_root"
 PIN_BUILD_ROOT=$(mktemp -d "$build_root/all-db-pin.XXXXXXXX")
 PIN_OUTPUT="$OUT"
-OUT=$(mktemp -d "$(dirname "$PIN_OUTPUT")/.all-db-pin.XXXXXXXX")
-TARGET_DIR="$PIN_BUILD_ROOT/target"
-ROCKS_TARGET_DIR="$PIN_BUILD_ROOT/rocks-target"
+OUT=""
 cleanup_pin_build() {
   rm -rf -- "$PIN_BUILD_ROOT"
   if [[ -n "${OUT:-}" && "$OUT" != "$PIN_OUTPUT" ]]; then
@@ -33,6 +31,10 @@ cleanup_pin_build() {
 trap cleanup_pin_build EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+OUT=$(mktemp -d "$(dirname "$PIN_OUTPUT")/.all-db-pin.XXXXXXXX")
+TARGET_DIR="$PIN_BUILD_ROOT/target"
+ROCKS_TARGET_DIR="$PIN_BUILD_ROOT/rocks-target"
+cd -- "$ROOT"
 # Native compiler/cache policy is maintained by cargo-local-1.99.sh.
 # Manifest paths must refer to their final published location, not staging.
 publish_pin_build() {
