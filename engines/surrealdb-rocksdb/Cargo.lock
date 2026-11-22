@@ -61,6 +61,7 @@ dependencies = [
  "anyhow",
  "clap",
  "hdrhistogram",
+ "rand 0.10.3",
  "serde",
 ]
 

@@ -1,6 +1,7 @@
 use all_db_bench_common::{
-    client_summary::{ClientSummary, ClientTiming, SetupTimings},
+    client_summary::{ClientSummary, ClientTiming},
     concurrency::{WorkPartition, WorkerMeasurement, partition_work, run_workers},
+    measurement::SetupTimings,
     metrics::{ProcDelta, SystemDelta, SystemSnapshot},
     record_payload::{PayloadPattern, payload_for},
 };

@@ -111,20 +111,10 @@ impl<T> ClientSummary<T> {
     }
 }
 
-/// Timing of the database preparation phases shared by both concurrency lanes.
-#[derive(Debug, Serialize)]
-pub struct SetupTimings {
-    #[serde(rename = "open_s")]
-    pub open: f64,
-    #[serde(rename = "prefill_s")]
-    pub prefill: f64,
-    #[serde(rename = "warmup_s")]
-    pub warmup: f64,
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{ClientSummary, ClientTiming, SetupTimings};
+    use super::{ClientSummary, ClientTiming};
+    use crate::measurement::SetupTimings;
     use anyhow::Result;
     use serde::Serialize;
     use serde_json::json;

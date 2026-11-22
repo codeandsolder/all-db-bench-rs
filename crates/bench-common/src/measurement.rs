@@ -8,6 +8,17 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// Timing of the database preparation phases shared by the benchmark lanes.
+#[derive(Debug, Serialize)]
+pub struct SetupTimings {
+    #[serde(rename = "open_s")]
+    pub open: f64,
+    #[serde(rename = "prefill_s")]
+    pub prefill: f64,
+    #[serde(rename = "warmup_s")]
+    pub warmup: f64,
+}
+
 const HIST_MAX_NS: u64 = 60_000_000_000;
 
 #[derive(Debug, Serialize)]

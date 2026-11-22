@@ -9,8 +9,8 @@ use super::{
         AccessPattern, Durability, EngineKind, KeyShape, ValuePattern, Workload, WritePattern,
     },
 };
-use all_db_bench_common::client_summary::{ClientSummary, SetupTimings};
 use all_db_bench_common::concurrency::{WorkerMeasurement, partition_work, run_workers};
+use all_db_bench_common::{client_summary::ClientSummary, measurement::SetupTimings};
 use anyhow::{Context, Result, bail};
 use clap::{Parser, ValueEnum};
 use hdrhistogram::Histogram;
