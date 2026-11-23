@@ -94,4 +94,7 @@ workspace = true
 toml_edit = "=0.25.19"
 
 [patch.crates-io]
+# Preserve generic Batch identity in SurrealDB DiskANN 0.61 until fixed upstream.
+# Tracking: https://github.com/codeandsolder/all-db-bench-rs/issues/95
+surrealdb-diskann = { path = "vendor/surrealdb-diskann" }
 zlib-rs = { git = "https://github.com/codeandsolder/zlib-rs-fast.git", rev = "1ec3a5612ee28803a7756fa52bd013389507a2db" }
