@@ -32,7 +32,7 @@ fn duration_millis_u64(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
-#[must_use]
+#[must_use = "use the converted count when computing benchmark rates"]
 #[expect(
     clippy::cast_precision_loss,
     reason = "benchmark rates are reported as f64; sub-unit precision above 2^53 operations is immaterial"
@@ -46,7 +46,7 @@ pub fn record_duration(histogram: &mut Histogram<u64>, duration: Duration) {
     let _ = histogram.record(ns.max(1));
 }
 
-#[must_use]
+#[must_use = "include the sampled latency quantiles in the report"]
 pub fn quantiles(histogram: &Histogram<u64>) -> Quantiles {
     let us = |value: u64| Duration::from_nanos(value).as_secs_f64() * 1_000_000.0;
     if histogram.is_empty() {
@@ -69,7 +69,7 @@ pub fn quantiles(histogram: &Histogram<u64>) -> Quantiles {
     }
 }
 
-#[must_use]
+#[must_use = "record the measured peak resident memory"]
 pub fn peak_rss_kib() -> u64 {
     let Ok(status) = fs::read_to_string("/proc/self/status") else {
         return 0;
@@ -83,7 +83,7 @@ pub fn peak_rss_kib() -> u64 {
         .unwrap_or(0)
 }
 
-#[must_use]
+#[must_use = "record the measured on-disk footprint"]
 pub fn dir_size(path: &Path) -> u64 {
     fn walk(path: &Path, sum: &mut u64) {
         let Ok(metadata) = fs::symlink_metadata(path) else {
