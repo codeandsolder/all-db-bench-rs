@@ -15,7 +15,10 @@ use manifold::{
     column_family::{ColumnFamily as ManifoldCf, ColumnFamilyDatabase as ManifoldDb},
 };
 use parity_db::{Db as ParityDb, Options as ParityOptions};
-use redb::{Database as RedbDb, Durability as RedbDurability, ReadableDatabase, TableDefinition};
+use redb::{
+    Database as RedbDb, Durability as RedbDurability, ReadableDatabase, ReadableTable,
+    TableDefinition,
+};
 use surrealkv::{
     CompressionType as SurrealCompression, Durability as SurrealDurability, LSMIterator,
     Mode as SurrealMode, Options as SurrealOptions, Tree as SurrealTree,

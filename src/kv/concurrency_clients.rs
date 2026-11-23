@@ -13,7 +13,7 @@ use manifold::{
     column_family::{ColumnFamily as ManifoldCf, ColumnFamilyDatabase as ManifoldDb},
 };
 use parity_db::Db as ParityDb;
-use redb::{Database as RedbDb, Durability as RedbDurability, ReadableDatabase};
+use redb::{Database as RedbDb, Durability as RedbDurability, ReadableDatabase, ReadableTable};
 use surrealkv::{
     Durability as SurrealDurability, Error as SurrealError, LSMIterator, Mode as SurrealMode,
     Tree as SurrealTree,
