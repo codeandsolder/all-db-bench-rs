@@ -1,17 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT=${ROOT:-"$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"}
-OUT=${1:-/srv/scratch/db-bench-work/record-full-v1/bin}
-TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/rust-db-record-full-v1-target}
-ROCKS_TARGET_DIR=${SURREAL_ROCKS_TARGET_DIR:-/tmp/rust-db-record-full-v1-rocks-target}
+# shellcheck source=pin-build-common.sh
+source "$(dirname -- "${BASH_SOURCE[0]}")/pin-build-common.sh" "$@"
 
-if [[ -n "$(git -C "$ROOT" status --porcelain=v1 --untracked-files=normal)" ]]; then
-  echo "refusing to pin benchmark binaries from a dirty checkout (tracked or untracked changes present)" >&2
-  exit 2
-fi
 
-mkdir -p "$OUT"
 
 # These release binaries use ThinLTO + one codegen unit and can each consume
 # several GiB while linking. Build them serially so pinning is reliable on the
@@ -86,4 +79,4 @@ printf '  }\n}\n' >> "$manifest_tmp"
 
 jq -e . "$manifest_tmp" >/dev/null
 mv "$manifest_tmp" "$OUT/manifest.json"
-cat "$OUT/manifest.json"
+publish_pin_build

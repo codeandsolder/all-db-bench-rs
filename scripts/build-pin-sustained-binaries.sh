@@ -1,12 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
-ROOT=${ROOT:-"$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"}
-OUT=${1:-/srv/scratch/db-bench-work/sustained-quick/bin}
-mkdir -p "$OUT"
-TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target}
-CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" build --release --locked --features kv-all --bin kvsustained
-CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" build --release --locked --features record --bin recordsustained
-ROCKS_TARGET_DIR=${SURREAL_ROCKS_TARGET_DIR:-/tmp/rust-db-surreal-rocks-target}
+# shellcheck source=pin-build-common.sh
+source "$(dirname -- "${BASH_SOURCE[0]}")/pin-build-common.sh" "$@"
+
 CARGO_TARGET_DIR="$ROCKS_TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" build --release --locked --manifest-path "$ROOT/engines/surrealdb-rocksdb/Cargo.toml" --bin surrealdb-rocksdb-recordsustained
 commit=$(git -C "$ROOT" rev-parse HEAD)
 short=${commit:0:16}
@@ -25,4 +21,4 @@ jq -nS \
   --arg record_path "$record" --arg record_sha "$record_sha" \
   --arg rocks_path "$record_rocksdb" --arg rocks_sha "$record_rocksdb_sha" \
   '{repo_commit:$repo_commit,kv:{path:$kv_path,sha256:$kv_sha},record:{path:$record_path,sha256:$record_sha},record_rocksdb:{path:$rocks_path,sha256:$rocks_sha}}' > "$OUT/manifest.json"
-cat "$OUT/manifest.json"
+publish_pin_build

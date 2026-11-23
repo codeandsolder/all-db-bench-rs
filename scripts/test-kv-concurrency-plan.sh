@@ -2,13 +2,14 @@
 set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 bash -n "$ROOT/scripts/run-kv-concurrency-plan.sh"
-PLAN=/srv/scratch/db-bench-work/concurrency-sizing-audit/20261007-kv-concurrency-missing-client-groups-v1.json
-if [[ -s "$PLAN" ]]; then
+PLAN=${1:?usage: test-kv-concurrency-plan.sh PLAN.json}
+[[ -s "$PLAN" ]] || { echo "Missing plan fixture: $PLAN" >&2; exit 2; }
+{
   tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
   "$ROOT/scripts/benchctl.sh" kv-concurrency-plan-materialize "$PLAN" "$tmp/plan.tsv" "$tmp/meta.json"
   [[ $(wc -l < "$tmp/plan.tsv") -eq 297 ]]
   jq -e '.plan_version == 1 and .expect_trials == 1 and .case_count == 297' "$tmp/meta.json" >/dev/null
-fi
+}
 echo kv-concurrency-plan-ok
 
 # v1 plans must remain runnable by historical binaries that predate state-evolution flags.
