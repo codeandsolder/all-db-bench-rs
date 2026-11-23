@@ -18,26 +18,26 @@ jobs:
       contents: read
     uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@21aa933d276f9193e50d4047ea25da6b467337dc # main
     with:
-      rust-toolchain: "1.99.1"
+      rust-toolchain: "nightly-2026-11-19"
       rust-components: "rustfmt clippy"
       rustflags: "-C target-cpu=x86-64-v2 -C target-feature=+aes,+sse2"
       timeout-minutes: 90
       sccache-cache-size-mib: 6144
       command: |
-        cargo +1.99.1 fmt --all -- --check
-        cargo +1.99.1 fmt --manifest-path engines/surrealdb-rocksdb/Cargo.toml -- --check
+        cargo fmt --all -- --check
+        cargo fmt --manifest-path engines/surrealdb-rocksdb/Cargo.toml -- --check
         bash -n scripts/*.sh deploy/rental/*.sh
         ./scripts/test-rental-deployment.sh
         ./scripts/test-record-semantics.sh
         ./scripts/test-no-python-tooling.sh
 
-        cargo +1.99.1 test --locked --workspace --all-targets
-        cargo +1.99.1 clippy --locked --workspace --all-targets -- -D warnings
+        cargo test --locked --workspace --all-targets
+        cargo clippy --locked --workspace --all-targets -- -D warnings
 
-        cargo +1.99.1 test --locked -p rust-db-realistic-bench --all-targets --features record
-        cargo +1.99.1 clippy --locked -p rust-db-realistic-bench --all-targets --features record -- -D warnings
-        cargo +1.99.1 test --locked -p rust-db-realistic-bench --all-targets --features kv-all
-        cargo +1.99.1 clippy --locked -p rust-db-realistic-bench --all-targets --features kv-all -- -D warnings
+        cargo test --locked -p rust-db-realistic-bench --all-targets --features record
+        cargo clippy --locked -p rust-db-realistic-bench --all-targets --features record -- -D warnings
+        cargo test --locked -p rust-db-realistic-bench --all-targets --features kv-all
+        cargo clippy --locked -p rust-db-realistic-bench --all-targets --features kv-all -- -D warnings
 
-        cargo +1.99.1 test --locked --manifest-path engines/surrealdb-rocksdb/Cargo.toml --all-targets
-        cargo +1.99.1 clippy --locked --manifest-path engines/surrealdb-rocksdb/Cargo.toml --all-targets -- -D warnings
+        cargo test --locked --manifest-path engines/surrealdb-rocksdb/Cargo.toml --all-targets
+        cargo clippy --locked --manifest-path engines/surrealdb-rocksdb/Cargo.toml --all-targets -- -D warnings
