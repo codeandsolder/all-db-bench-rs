@@ -9,13 +9,13 @@ pub struct MixedEpochTargets {
 }
 
 impl MixedEpochTargets {
-    #[must_use]
+    #[must_use = "use the operation count when scheduling an epoch"]
     pub const fn total(self) -> u64 {
         self.reads + self.updates + self.inserts + self.deletes
     }
 }
 
-#[must_use]
+#[must_use = "use the calculated read/write mix to drive the epoch"]
 pub fn mixed_epoch_targets(
     workload: Workload,
     epoch: u64,
@@ -72,7 +72,7 @@ pub struct BoundedChurnSwap {
     pub put_id: u64,
 }
 
-#[must_use]
+#[must_use = "apply both the deletion and insertion in the bounded churn swap"]
 pub const fn bounded_churn_swap(
     records: u64,
     total_slots: u64,

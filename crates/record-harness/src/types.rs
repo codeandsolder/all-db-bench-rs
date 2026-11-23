@@ -34,7 +34,7 @@ pub struct ReadDigest {
 }
 
 impl ReadDigest {
-    #[must_use]
+    #[must_use = "retain the read digest for checksum validation"]
     pub const fn new(bucket: u32, payload_len: usize) -> Self {
         Self {
             bucket,
@@ -42,7 +42,7 @@ impl ReadDigest {
         }
     }
 
-    #[must_use]
+    #[must_use = "include this checksum when validating read materialization"]
     pub fn checksum(self) -> u64 {
         (u64::from(self.bucket) << 32) ^ self.payload_len as u64
     }
