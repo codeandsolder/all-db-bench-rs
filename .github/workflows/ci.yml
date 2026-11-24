@@ -22,7 +22,7 @@ jobs:
       rust-components: "rustfmt clippy"
       rustflags: "-C target-cpu=x86-64-v2 -C target-feature=+aes,+sse2"
       timeout-minutes: 90
-      sccache-cache-size-mib: 6144
+      sccache-cache-size-mib: 8192
       command: |
         if ! command -v rg >/dev/null 2>&1; then
           sudo apt-get update -qq
