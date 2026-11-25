@@ -34,8 +34,8 @@ jobs:
         cargo clippy --locked --workspace --all-targets -- -D warnings
 
         ./scripts/test-diskann-patch.sh
-        cargo --config patches/cargo-config.toml test --locked -p rust-db-realistic-bench --all-targets --features record
-        cargo --config patches/cargo-config.toml clippy --locked -p rust-db-realistic-bench --all-targets --features record -- -D warnings
+        cargo test --locked -p rust-db-realistic-bench --all-targets --features record
+        cargo clippy --locked -p rust-db-realistic-bench --all-targets --features record -- -D warnings
         cargo test --locked -p rust-db-realistic-bench --all-targets --features kv-all
         cargo clippy --locked -p rust-db-realistic-bench --all-targets --features kv-all -- -D warnings
 
