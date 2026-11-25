@@ -51,4 +51,5 @@ if [[ -f "$SQLITE_PREFIX/lib/libsqlite3.a" && -f "$SQLITE_PREFIX/include/sqlite3
   export SQLITE3_INCLUDE_DIR="$SQLITE_PREFIX/include"
   export SQLITE3_STATIC=1
 fi
-exec "$CARGO_REAL" "$@"
+"$ROOT/scripts/prepare-diskann-patch.sh"
+exec "$CARGO_REAL" --config "$ROOT/patches/cargo-config.toml" "$@"

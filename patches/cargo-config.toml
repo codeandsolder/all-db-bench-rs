@@ -1,0 +1,3 @@
+# Source-only override: dependency graph and registry checksum stay in Cargo.lock.
+# Prepare using scripts/prepare-diskann-patch.sh before supplying this config.
+paths = [".deps/cargo-patches/surrealdb-diskann-0.61.0"]
