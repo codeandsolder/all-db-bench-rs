@@ -211,7 +211,7 @@ where
 }
 
 impl ProcSnapshot {
-    #[must_use]
+    #[must_use = "retain the process counter snapshot to measure subsequent resource deltas"]
     pub fn capture() -> Self {
         let status = parse_colon_numbers("/proc/self/status");
         let io = parse_colon_numbers("/proc/self/io");
@@ -312,7 +312,7 @@ impl ProcSnapshot {
         }
     }
 
-    #[must_use]
+    #[must_use = "the returned delta contains the measured process resource usage"]
     pub fn delta(&self, after: &Self, elapsed: Duration) -> ProcDelta {
         let accounting_elapsed = self
             .captured_at
@@ -387,7 +387,7 @@ impl ProcSnapshot {
 }
 
 impl SystemSnapshot {
-    #[must_use]
+    #[must_use = "retain the system counter snapshot to measure subsequent resource deltas"]
     pub fn capture() -> Self {
         let mem = parse_colon_numbers("/proc/meminfo");
         let vm = parse_space_numbers("/proc/vmstat");
@@ -416,7 +416,7 @@ impl SystemSnapshot {
         }
     }
 
-    #[must_use]
+    #[must_use = "the returned delta contains the measured system resource usage"]
     pub fn delta(&self, after: &Self) -> SystemDelta {
         let accounting_wall_ns = self
             .captured_at

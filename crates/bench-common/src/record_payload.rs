@@ -23,7 +23,7 @@ fn legacy_payload(id: u64, len: usize, salt: u64) -> String {
     payload_for(PayloadPattern::HexRandom, id, len, salt)
 }
 
-#[must_use]
+#[must_use = "the generated payload is the record content for the workload"]
 pub fn payload_for(pattern: PayloadPattern, id: u64, len: usize, salt: u64) -> String {
     let mut x = id ^ salt ^ 0x9e37_79b9_7f4a_7c15;
     match pattern {

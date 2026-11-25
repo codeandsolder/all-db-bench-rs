@@ -30,7 +30,7 @@ pub enum EngineKind {
 }
 
 impl EngineKind {
-    #[must_use]
+    #[must_use = "the capability result determines whether the engine can run a range-scan workload"]
     pub(crate) const fn supports_range_scan(self) -> bool {
         !matches!(self, Self::Lkv | Self::ParitydbHash)
     }
