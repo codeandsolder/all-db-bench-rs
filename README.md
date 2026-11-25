@@ -195,8 +195,9 @@ SurrealDB 4.0.1 uses DiskANN 0.61.0, whose generic batch argument needs a
 one-line source fix (issue [#95](https://github.com/codeandsolder/all-db-bench-rs/issues/95)).
 The checksum-pinned upstream archive and minimal patch are maintained in
 [codeandsolder/cargo-patches](https://github.com/codeandsolder/cargo-patches).
-Cargo resolves the immutable `surrealdb-diskann-v0.0.1` publication through
-the root patch table. Ordinary locked Cargo builds need no preparation script.
+The root patch table follows the protected `generated/surrealdb-diskann` branch.
+Cargo.lock pins its exact commit; Renovate lockfile maintenance can advance
+that commit without editing the manifest. Locked builds need no preparation script.
 CI verifies that the record feature resolves the patched package exactly once.
 Remove the override and regression gate together when the upstream release
 contains the fix.
