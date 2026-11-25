@@ -34,8 +34,11 @@ jobs:
         cargo test --locked --workspace --all-targets
         cargo clippy --locked --workspace --all-targets -- -D warnings
 
-        cargo test --locked -p rust-db-realistic-bench --all-targets --features record
-        cargo clippy --locked -p rust-db-realistic-bench --all-targets --features record -- -D warnings
+        # SurrealDB and Turso are large crates; keep peak memory bounded on hosted runners.
+        free -h
+        df -h .
+        cargo test --locked --jobs 2 --config profile.test.debug=0 -p rust-db-realistic-bench --all-targets --features record
+        cargo clippy --locked --jobs 2 -p rust-db-realistic-bench --all-targets --features record -- -D warnings
         cargo test --locked -p rust-db-realistic-bench --all-targets --features kv-all
         cargo clippy --locked -p rust-db-realistic-bench --all-targets --features kv-all -- -D warnings
 
