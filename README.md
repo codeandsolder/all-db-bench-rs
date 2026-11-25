@@ -188,20 +188,3 @@ existing KV, record and optional external-TSDB baseline matrices with
 a pinned executable manifest, instance identity, deadline, and results
 handoff. See [rental deployment guide](docs/RENTAL-DEPLOYMENT.md) for
 commands, limitations and validation gates.
-
-### Temporary DiskANN source patch
-
-SurrealDB 4.0.1 uses DiskANN 0.61.0, whose generic batch argument needs a
-one-line source fix (issue [#95](https://github.com/codeandsolder/all-db-bench-rs/issues/95)).
-The native Cargo wrapper and hosted record CI prepare a checksum-verified copy
-in ignored `.deps/cargo-patches/` and use Cargo's source-only path override.
-The registry cache and lockfile remain unchanged. For direct Cargo record builds:
-
-```sh
-./scripts/prepare-diskann-patch.sh
-cargo --config patches/cargo-config.toml build --locked --features record
-```
-
-Remove the preparation, override and patch together when the locked upstream
-release contains the fix. Ordinary Cargo metadata and Renovate lockfile
-resolution do not require the generated source tree.
