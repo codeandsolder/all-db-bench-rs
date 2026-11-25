@@ -46,7 +46,7 @@ required-features = ["record"]
 kv-external = ["dep:rocksdb", "dep:libmdbx", "dep:persy"]
 kv-experimental = ["dep:roughdb", "dep:jammdb", "dep:lsm-db"]
 kv-all = ["kv-external", "kv-experimental"]
-record = ["dep:all-db-bench-record-harness", "dep:surrealdb", "dep:turso", "dep:rusqlite", "surrealdb/kv-surrealkv"]
+record = ["dep:all-db-bench-record-harness", "dep:surrealdb", "dep:turso", "dep:branches", "dep:rusqlite", "surrealdb/kv-surrealkv"]
 
 [dependencies]
 all-db-bench-common = { path = "crates/bench-common" }
@@ -71,6 +71,9 @@ parity-db = "=0.5.7"
 
 surrealdb = { version = "=4.0.1", optional = true, default-features = false }
 turso = { version = "=0.8.4", optional = true, default-features = false }
+# This native benchmark links std; enable only the standard abort implementation
+# until Turso updates its branches 0.4 dependency to the fixed 0.5 series.
+branches = { version = "0.4.6", optional = true, default-features = false, features = ["std"] }
 rocksdb = { version = "=0.25.0", optional = true, default-features = false, features = ["bindgen-runtime", "lz4", "snappy", "zstd"] }
 libmdbx = { version = "=0.9.0", optional = true }
 persy = { version = "=1.8.1", optional = true, features = ["background_ops"] }

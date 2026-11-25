@@ -5179,6 +5179,7 @@ dependencies = [
  "all-db-bench-common",
  "all-db-bench-record-harness",
  "anyhow",
+ "branches",
  "clap",
  "fjall",
  "hdrhistogram",
