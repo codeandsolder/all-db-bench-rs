@@ -29,11 +29,11 @@ jobs:
         ./scripts/test-rental-deployment.sh
         ./scripts/test-record-semantics.sh
         ./scripts/test-no-python-tooling.sh
+        ./scripts/test-diskann-patch.sh
 
         cargo test --locked --workspace --all-targets
         cargo clippy --locked --workspace --all-targets -- -D warnings
 
-        ./scripts/test-diskann-patch.sh
         cargo test --locked -p rust-db-realistic-bench --all-targets --features record
         cargo clippy --locked -p rust-db-realistic-bench --all-targets --features record -- -D warnings
         cargo test --locked -p rust-db-realistic-bench --all-targets --features kv-all
