@@ -94,4 +94,6 @@ workspace = true
 toml_edit = "=0.25.19"
 
 [patch.crates-io]
+# Temporary upstream compile fix: https://github.com/codeandsolder/all-db-bench-rs/issues/95
+surrealdb-diskann = { git = "https://github.com/codeandsolder/cargo-patches.git", tag = "surrealdb-diskann-v0.0.1" }
 zlib-rs = { git = "https://github.com/codeandsolder/zlib-rs-fast.git", rev = "1ec3a5612ee28803a7756fa52bd013389507a2db" }
