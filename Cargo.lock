@@ -5179,6 +5179,7 @@ dependencies = [
  "all-db-bench-common",
  "all-db-bench-record-harness",
  "anyhow",
+ "branches",
  "clap",
  "fjall",
  "hdrhistogram",
@@ -6197,8 +6198,7 @@ dependencies = [
 [[package]]
 name = "surrealdb-diskann"
 version = "0.61.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a953ad510f5c2ead708c8e5ed37df7dec7eb41198bbb6d7fb1d71174851e3511"
+source = "git+https://github.com/codeandsolder/cargo-patches.git?branch=generated/surrealdb-diskann#dc5823048efdc87350bd89800269366fe2a07210"
 dependencies = [
  "anyhow",
  "bytemuck",
