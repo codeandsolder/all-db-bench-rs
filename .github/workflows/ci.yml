@@ -34,11 +34,21 @@ jobs:
         cargo test --locked --workspace --all-targets
         cargo clippy --locked --workspace --all-targets -- -D warnings
 
-        # SurrealDB and Turso are large crates; keep peak memory bounded on hosted runners.
+        # Large record binaries can exceed a hosted runner's physical memory.
+        if [[ "${RUNNER_ENVIRONMENT:-}" == github-hosted ]]; then
+          swap_file="$RUNNER_TEMP/all-db-record.swap"
+          sudo -n fallocate -l 16G "$swap_file"
+          sudo -n chmod 600 "$swap_file"
+          sudo -n mkswap "$swap_file"
+          sudo -n swapon "$swap_file"
+        fi
+        (while sleep 20; do free -h; ps -eo pid,rss,comm --sort=-rss | sed -n '1,8p'; done) &
+        monitor=$!
+        trap 'kill "$monitor" 2>/dev/null || true; wait "$monitor" 2>/dev/null || true' EXIT
         free -h
         df -h .
-        cargo test --locked --jobs 2 --config profile.test.debug=0 -p rust-db-realistic-bench --all-targets --features record
-        cargo clippy --locked --jobs 2 -p rust-db-realistic-bench --all-targets --features record -- -D warnings
+        cargo test --locked --jobs 1 --config profile.test.debug=0 -p rust-db-realistic-bench --all-targets --features record
+        cargo clippy --locked --jobs 1 -p rust-db-realistic-bench --all-targets --features record -- -D warnings
         cargo test --locked -p rust-db-realistic-bench --all-targets --features kv-all
         cargo clippy --locked -p rust-db-realistic-bench --all-targets --features kv-all -- -D warnings
 
