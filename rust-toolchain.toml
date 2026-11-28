@@ -1,0 +1,5 @@
+# Native dated compiler pin. Renovate proposes weekly age- and CI-gated updates.
+[toolchain]
+channel = "nightly-2026-11-23"
+profile = "minimal"
+components = ["clippy", "rustfmt"]

@@ -35,7 +35,7 @@ OUT=$(mktemp -d "$(dirname "$PIN_OUTPUT")/.all-db-pin.XXXXXXXX")
 TARGET_DIR="$PIN_BUILD_ROOT/target"
 ROCKS_TARGET_DIR="$PIN_BUILD_ROOT/rocks-target"
 cd -- "$ROOT"
-# Native compiler/cache policy is maintained by cargo-local-1.99.sh.
+# Native compiler/cache policy is maintained by cargo-local.sh.
 # Manifest paths must refer to their final published location, not staging.
 publish_pin_build() {
   jq --arg stage "$OUT/" --arg final "$PIN_OUTPUT/" \

@@ -2,23 +2,31 @@
 set -euo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "$0")" && pwd)
 ROOT=$(cd -- "$SCRIPT_DIR/.." && pwd)
+unset RUSTUP_TOOLCHAIN
+cd -- "$ROOT"
+toolchain=$(rustup show active-toolchain)
+toolchain=$(printf "%s\n" "$toolchain" | cut -d " " -f1)
+if [[ ! "$toolchain" =~ ^nightly-[0-9]{4}-[0-9]{2}-[0-9]{2}(-.*)?$ ]]; then
+  echo "Expected the project dated nightly, got $toolchain" >&2
+  exit 65
+fi
 if [[ -z "${CARGO_REAL:-}" ]]; then
   if [[ -x /opt/cargo-ephemeral/current/cargo ]]; then
     CARGO_REAL=/opt/cargo-ephemeral/current/cargo
   else
-    CARGO_REAL=$(rustup which cargo --toolchain 1.99.1 2>/dev/null || command -v cargo || true)
+    CARGO_REAL=$(rustup which cargo --toolchain "$toolchain")
   fi
 fi
 if [[ -z "$CARGO_REAL" || ! -x "$CARGO_REAL" ]]; then
   echo "Cargo binary not found (set CARGO_REAL explicitly)" >&2
   exit 127
 fi
-RUSTC_REAL=${RUSTC_REAL:-$(rustup which rustc --toolchain 1.99.1)}
+RUSTC_REAL=$(rustup which rustc --toolchain "$toolchain")
 if [[ ! -x "$RUSTC_REAL" ]]; then
-  echo "Rust 1.99.1 rustc not found: $RUSTC_REAL" >&2
+  echo "Pinned nightly rustc not found: $RUSTC_REAL" >&2
   exit 127
 fi
-export RUSTUP_TOOLCHAIN=1.99.1
+export RUSTUP_TOOLCHAIN="$toolchain"
 export RUSTC="$RUSTC_REAL"
 # shellcheck source=sccache-native-common.sh
 source "$ROOT/scripts/sccache-native-common.sh"

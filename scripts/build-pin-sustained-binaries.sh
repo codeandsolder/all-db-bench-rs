@@ -3,7 +3,7 @@ set -euo pipefail
 # shellcheck source=pin-build-common.sh
 source "$(dirname -- "${BASH_SOURCE[0]}")/pin-build-common.sh" "$@"
 
-CARGO_TARGET_DIR="$ROCKS_TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" build --release --locked --manifest-path "$ROOT/engines/surrealdb-rocksdb/Cargo.toml" --bin surrealdb-rocksdb-recordsustained
+CARGO_TARGET_DIR="$ROCKS_TARGET_DIR" "$ROOT/scripts/cargo-local.sh" build --release --locked --manifest-path "$ROOT/engines/surrealdb-rocksdb/Cargo.toml" --bin surrealdb-rocksdb-recordsustained
 commit=$(git -C "$ROOT" rev-parse HEAD)
 short=${commit:0:16}
 kv="$OUT/kvsustained-$short"
