@@ -52,7 +52,7 @@ fi
 TARGET_DIR=${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target}
 BENCHCTL_TARGET_DIR=${BENCHCTL_TARGET_DIR:-$TARGET_DIR}
 BENCHCTL="$BENCHCTL_TARGET_DIR/debug/all-db-benchctl"
-CARGO_TARGET_DIR="$BENCHCTL_TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" build --locked \
+CARGO_TARGET_DIR="$BENCHCTL_TARGET_DIR" "$ROOT/scripts/cargo-local.sh" build --locked \
   --manifest-path "$ROOT/tools/benchctl/Cargo.toml" --bin all-db-benchctl || exit $?
 BENCHCTL_SHA=$(sha256sum "$BENCHCTL" | awk '{print $1}')
 if [[ -n "${BENCH_BIN:-}" ]]; then
@@ -60,10 +60,10 @@ if [[ -n "${BENCH_BIN:-}" ]]; then
   [[ -x "$BIN" ]] || { echo "BENCH_BIN is not executable: $BIN" >&2; exit 2; }
 elif [[ "$PROFILE" == smoke ]]; then
   BIN="$TARGET_DIR/debug/kvbench"; BUILD_PROFILE=debug
-  CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" build --locked --features kv-all --bin kvbench || exit $?
+  CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local.sh" build --locked --features kv-all --bin kvbench || exit $?
 else
   BIN="$TARGET_DIR/release/kvbench"; BUILD_PROFILE=release
-  CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" build --release --locked --features kv-all --bin kvbench || exit $?
+  CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local.sh" build --release --locked --features kv-all --bin kvbench || exit $?
 fi
 
 BIN_SHA=$(sha256sum "$BIN" | awk '{print $1}')

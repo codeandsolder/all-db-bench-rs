@@ -44,10 +44,10 @@ if [[ -n "${TSDB_BENCH_BIN:-}" ]]; then
   [[ -x "$BIN" ]] || { echo "TSDB_BENCH_BIN is not executable: $BIN" >&2; exit 2; }
 elif [[ "$PROFILE" == smoke ]]; then
   BIN="$TARGET_DIR/debug/tsdb-server-bench"
-  "$ROOT/scripts/cargo-local-1.99.sh" build --locked --manifest-path "$TSDB_MANIFEST" --target-dir "$TARGET_DIR"
+  "$ROOT/scripts/cargo-local.sh" build --locked --manifest-path "$TSDB_MANIFEST" --target-dir "$TARGET_DIR"
 else
   BIN="$TARGET_DIR/release/tsdb-server-bench"
-  "$ROOT/scripts/cargo-local-1.99.sh" build --release --locked --manifest-path "$TSDB_MANIFEST" --target-dir "$TARGET_DIR"
+  "$ROOT/scripts/cargo-local.sh" build --release --locked --manifest-path "$TSDB_MANIFEST" --target-dir "$TARGET_DIR"
 fi
 BIN_SHA=$(sha256sum "$BIN" | awk '{print $1}')
 BENCHCTL_TARGET_DIR=${BENCHCTL_TARGET_DIR:-${CARGO_TARGET_DIR:-/tmp/rust-db-realistic-bench-target}}
@@ -56,7 +56,7 @@ if [[ -n "${BENCHCTL_BIN:-}" ]]; then
   [[ -x "$BENCHCTL" ]] || { echo "BENCHCTL_BIN is not executable: $BENCHCTL" >&2; exit 2; }
 else
   BENCHCTL="$BENCHCTL_TARGET_DIR/debug/all-db-benchctl"
-  CARGO_TARGET_DIR="$BENCHCTL_TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" build --locked \
+  CARGO_TARGET_DIR="$BENCHCTL_TARGET_DIR" "$ROOT/scripts/cargo-local.sh" build --locked \
     --manifest-path "$ROOT/tools/benchctl/Cargo.toml" --bin all-db-benchctl
 fi
 BENCHCTL_SHA=$(sha256sum "$BENCHCTL" | awk '{print $1}')

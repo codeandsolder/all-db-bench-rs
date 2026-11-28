@@ -10,7 +10,7 @@ source "$(dirname -- "${BASH_SOURCE[0]}")/pin-build-common.sh" "$@"
 # several GiB while linking. Build them serially so pinning is reliable on the
 # 16 GiB benchmark host instead of inducing memory pressure or linker SIGTERM.
 for bin in recordbench recordconcurrency recordsustained; do
-  CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" build \
+  CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local.sh" build \
     --release --locked --features record --bin "$bin"
 done
 
@@ -19,7 +19,7 @@ for bin in \
   surrealdb-rocksdb-recordconcurrency \
   surrealdb-rocksdb-recordsustained
 do
-  "$ROOT/scripts/cargo-local-1.99.sh" build \
+  "$ROOT/scripts/cargo-local.sh" build \
     --release --locked \
     --manifest-path "$ROOT/engines/surrealdb-rocksdb/Cargo.toml" \
     --target-dir "$ROCKS_TARGET_DIR" \
@@ -36,7 +36,7 @@ done
 
 commit=$(git -C "$ROOT" rev-parse HEAD)
 short=${commit:0:16}
-rustc_version=$(rustc +1.99.1 --version)
+rustc_version=$(rustc --version)
 
 declare -A sources=(
   [recordbench]="$TARGET_DIR/release/recordbench"

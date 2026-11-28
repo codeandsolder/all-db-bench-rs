@@ -49,10 +49,10 @@ if [[ -n "${BENCH_BIN:-}" ]]; then
   [[ -x "$BIN" ]] || { echo "BENCH_BIN is not executable: $BIN" >&2; exit 2; }
 elif [[ "$PROFILE" == smoke ]]; then
   BIN="$TARGET_DIR/debug/recordconcurrency"; BUILD_PROFILE=debug
-  CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" build --locked --features record --bin recordconcurrency || exit $?
+  CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local.sh" build --locked --features record --bin recordconcurrency || exit $?
 else
   BIN="$TARGET_DIR/release/recordconcurrency"; BUILD_PROFILE=release
-  CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" build --release --locked --features record --bin recordconcurrency || exit $?
+  CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local.sh" build --release --locked --features record --bin recordconcurrency || exit $?
 fi
 if [[ -n "${BENCH_BIN_SHA256:-}" ]]; then BIN_SHA="$BENCH_BIN_SHA256"; else BIN_SHA=$(sha256sum "$BIN" | awk '{print $1}'); fi
 ROCKS_TARGET_DIR=${SURREAL_ROCKS_TARGET_DIR:-/tmp/rust-db-surreal-rocks-target}
@@ -61,10 +61,10 @@ if [[ -n "${ROCKS_BENCH_BIN:-}" ]]; then
   [[ -x "$ROCKS_BIN" ]] || { echo "ROCKS_BENCH_BIN is not executable: $ROCKS_BIN" >&2; exit 2; }
 elif [[ "$PROFILE" == smoke ]]; then
   ROCKS_BIN="$ROCKS_TARGET_DIR/debug/surrealdb-rocksdb-recordconcurrency"; ROCKS_BUILD_PROFILE=debug
-  "$ROOT/scripts/cargo-local-1.99.sh" build --locked --manifest-path "$ROOT/engines/surrealdb-rocksdb/Cargo.toml" --target-dir "$ROCKS_TARGET_DIR" --bin surrealdb-rocksdb-recordconcurrency || exit $?
+  "$ROOT/scripts/cargo-local.sh" build --locked --manifest-path "$ROOT/engines/surrealdb-rocksdb/Cargo.toml" --target-dir "$ROCKS_TARGET_DIR" --bin surrealdb-rocksdb-recordconcurrency || exit $?
 else
   ROCKS_BIN="$ROCKS_TARGET_DIR/release/surrealdb-rocksdb-recordconcurrency"; ROCKS_BUILD_PROFILE=release
-  "$ROOT/scripts/cargo-local-1.99.sh" build --release --locked --manifest-path "$ROOT/engines/surrealdb-rocksdb/Cargo.toml" --target-dir "$ROCKS_TARGET_DIR" --bin surrealdb-rocksdb-recordconcurrency || exit $?
+  "$ROOT/scripts/cargo-local.sh" build --release --locked --manifest-path "$ROOT/engines/surrealdb-rocksdb/Cargo.toml" --target-dir "$ROCKS_TARGET_DIR" --bin surrealdb-rocksdb-recordconcurrency || exit $?
 fi
 if [[ -n "${ROCKS_BENCH_BIN_SHA256:-}" ]]; then ROCKS_BIN_SHA="$ROCKS_BENCH_BIN_SHA256"; else ROCKS_BIN_SHA=$(sha256sum "$ROCKS_BIN" | awk '{print $1}'); fi
 RUNNER_SHA=$(sha256sum "$ROOT/scripts/run-record-concurrency-matrix.sh" | awk '{print $1}')

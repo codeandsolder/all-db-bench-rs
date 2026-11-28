@@ -46,9 +46,9 @@ fi
   echo
   echo "## toolchain"
   if command -v rustup >/dev/null 2>&1 && command -v cargo >/dev/null 2>&1; then
-    RUSTC_REAL=$(rustup which rustc --toolchain 1.99.1 2>/dev/null || true)
+    RUSTC_REAL=$(rustup which rustc 2>/dev/null || true)
     [[ -x "$RUSTC_REAL" ]] && "$RUSTC_REAL" --version --verbose || true
-    "$ROOT/scripts/cargo-local-1.99.sh" --version || true
+    "$ROOT/scripts/cargo-local.sh" --version || true
   else
     echo "runtime_toolchain=prebuilt-binaries"
   fi
@@ -144,7 +144,7 @@ fi
   cat /proc/diskstats
   echo
   echo "## provenance"
-  sha256sum Cargo.lock Cargo.toml rust-toolchain crates/bench-common/src/*.rs crates/record-harness/src/*.rs src/*.rs src/kv/*.rs src/record/*.rs src/bin/*.rs scripts/*.sh docs/*.md engines/surrealdb-rocksdb/Cargo.toml engines/surrealdb-rocksdb/src/*.rs engines/surrealdb-rocksdb/src/bin/*.rs 2>/dev/null | sort
+  sha256sum Cargo.lock Cargo.toml rust-toolchain.toml crates/bench-common/src/*.rs crates/record-harness/src/*.rs src/*.rs src/kv/*.rs src/record/*.rs src/bin/*.rs scripts/*.sh docs/*.md engines/surrealdb-rocksdb/Cargo.toml engines/surrealdb-rocksdb/src/*.rs engines/surrealdb-rocksdb/src/bin/*.rs 2>/dev/null | sort
   if [[ -x "$ROOT/.deps/sqlite-3.54.0/bin/sqlite3" ]]; then
     echo "sqlite_runtime=$("$ROOT/.deps/sqlite-3.54.0/bin/sqlite3" --version)"
   fi

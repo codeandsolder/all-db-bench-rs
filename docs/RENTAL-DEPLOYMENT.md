@@ -19,7 +19,7 @@ resources and filesystem were identical.
 
 ## Build a reproducible image
 
-Build from a clean, committed checkout with Rust 1.99.1, healthy managed
+Build from a clean, committed checkout with the pinned nightly, healthy managed
 sccache, native sccache wrappers, and the required system toolchains.
 No build path silently bypasses sccache.
 

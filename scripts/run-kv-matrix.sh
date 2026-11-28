@@ -49,10 +49,10 @@ if [[ -n "${BENCH_BIN:-}" ]]; then
   [[ -x "$BIN" ]] || { echo "BENCH_BIN is not executable: $BIN" >&2; exit 2; }
 elif [[ "$PROFILE" == smoke ]]; then
   BIN="$TARGET_DIR/debug/kvbench"; BUILD_PROFILE=debug
-  CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" build --locked --features kv-all --bin kvbench || exit $?
+  CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local.sh" build --locked --features kv-all --bin kvbench || exit $?
 else
   BIN="$TARGET_DIR/release/kvbench"; BUILD_PROFILE=release
-  CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local-1.99.sh" build --release --locked --features kv-all --bin kvbench || exit $?
+  CARGO_TARGET_DIR="$TARGET_DIR" "$ROOT/scripts/cargo-local.sh" build --release --locked --features kv-all --bin kvbench || exit $?
 fi
 BIN_SHA=$(sha256sum "$BIN" | awk '{print $1}')
 RUNNER_SHA=$(sha256sum "$ROOT/scripts/run-kv-matrix.sh" | awk '{print $1}')
